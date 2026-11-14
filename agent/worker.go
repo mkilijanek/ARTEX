@@ -294,15 +294,17 @@ func workerTrafficBlock(recording bool) string {
 // artifactSpec is section [C]: the code-owned, non-editable tail appended to every
 // pentest agent's prompt — intermediate artifacts must land in the shared work
 // dir, never /tmp. Guaranteed present regardless of how the DB body is edited.
+const artifactRulesPrefix = "\n\n**Intermediate artifact output rules**: all intermediate artifacts — scripts, payloads, captured response bodies, temporary data — **must be written to "
+
 func artifactSpec(dir string) string {
-	return "\n\n**Intermediate artifact output rules**: all intermediate artifacts — scripts, payloads, captured response bodies, temporary data — **must be written to this task's work directory " + dir + "** (a relative path writes here; the absolute path works too) — **do NOT write to /tmp, do NOT use other absolute paths**."
+	return artifactRulesPrefix + "this task's work directory " + dir + "** (a relative path writes here; the absolute path works too) — **do NOT write to /tmp, do NOT use other absolute paths**."
 }
 
 // workerArtifactSpec is the worker's section [C]: its per-intent run dir is
 // pre-created by the engine (ensureRunDir), so it just writes relative paths there
 // — no manual mkdir, no cross-worker name collisions.
 func workerArtifactSpec(runDir string) string {
-	return "\n\n**Intermediate artifact output rules**: all intermediate artifacts — scripts, payloads, captured response bodies, temporary data — **must be written to this intent's dedicated work directory " + runDir + "** (already created automatically; just write with relative paths there — no manual mkdir needed) — **do NOT write to /tmp, do NOT use other absolute paths**."
+	return artifactRulesPrefix + "this intent's dedicated work directory " + runDir + "** (already created automatically; just write with relative paths there — no manual mkdir needed) — **do NOT write to /tmp, do NOT use other absolute paths**."
 }
 
 // ensureRunDir builds and creates an agent's working directory under base:
