@@ -73,14 +73,15 @@ pre-fix echoed-token rows cannot be reconstructed safely without provider data.
 
 ## Implementation status
 
-Phase 0 is complete in local commits. Phase A has a tested instrumentation
-foundation, echoed-input correction, cache-creation price correction and runtime
-retry attribution. Remaining Phase A dimensions and hidden-purpose exclusions
-are listed in the audit; subsequent milestones are not marked complete.
+Phase 0 is complete in local commits. Phase A now includes logical-call/round identity, per-tool byte buckets, explicit
+hidden-call purpose labels, retry attribution and normalized cache accounting.
+Reporting exclusions are listed in the audit; subsequent milestones are not
+marked complete.
 
 Each source change has its own commit with a description and validation notes.
-No GitHub issues, milestones or remote branches were changed. This is a local
-implementation batch; it has not been pushed or deployed.
+Phase 0 is published in PR #34; Phase A is published separately against main.
+PRs depend on earlier phases until those changes are merged. No deployment or
+automatic merge is part of this work.
 
 New schema fields are additive under the existing advisory-lock protocol.
 Versioned upstream migrations are still pending review; any later port must

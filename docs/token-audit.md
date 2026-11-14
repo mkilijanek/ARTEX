@@ -44,20 +44,42 @@ must synchronize if shared by concurrent calls. Consumer stops, cancellation,
 provider errors and normal completion are distinct reasons. The observer is a
 measurement hook, not a second usage ledger to add to database counts.
 
-## Remaining instrumentation gaps
+## Phase A completion and reporting boundaries
 
-- Logical round IDs and tool-call IDs are not yet propagated through all harness
-  paths. Intent and agent-lane attribution is available, not a tool cost split.
-- SDK transcript compaction and side-question summarization need explicit purpose
-  tags; current rows contribute to lane totals but cannot support purpose totals.
-- Transport/pool retries below the recorder are not individual ledger rows.
-- Provider-supplied all-zero usage remains ambiguous because the SDK usage type
-  lacks an availability flag. Report it as unknown billing, never free inference.
-- Profiles are joined by mutable name and current price. Costs are estimates at
-  current configured rates, not immutable invoices or historical tariff snapshots.
-- Token echo correction affects new rows only; historical doubled counters cannot
-  be repaired safely without provider evidence. Keep pre/post cohorts separate.
+Logical model calls carry a random `call_id`, a session-local round number and a
+code-selected purpose. Physical runtime retries share that identity and have
+separate attempt numbers. Harness turns are `agent`; SDK transcript compaction
+uses a separately wrapped provider tagged `transcript_summary`. Cold-graph
+compaction is `graph_summary`, side-question answers/summaries are `side_answer`
+and `side_summary`, and approval judgement is `judge`. Findings/review/chat and
+goal decomposition use the same instrumented harness path. Purpose never comes
+from prompt inspection. Summaries without a harness round use round zero.
 
-Phase A issues remain open until these acceptance gaps are resolved. The next
-implementation is explicit hidden-path attribution, followed by security
-prerequisites and bounded trace retrieval. See the baseline for the full order.
+Per-tool byte buckets use full SHA-256 tool-name keys and contain only schema and
+result sizes. They link tool context to the owning model call; provider token
+usage and cost belong to the whole call and are not spuriously divided among
+tools. A result whose originating tool use is outside retained history goes in
+the hash-of-empty-name bucket. Byte buckets exclude JSON array framing.
+
+Phase A acceptance includes the following explicit exclusions and limits:
+
+- Transport/pool retries beneath a decorated provider are excluded from physical
+  attempt reports; SDK summarizer retries are independently metered calls, since
+  the SDK owns that loop. These are not reconstructed from prompt similarity.
+- Third-party MCP services and SDK DeepSeek web-search inference bypass the
+  configured provider boundary. Their external billing is excluded from ARTEX
+  token/cost reports. Bash subprocess model clients are likewise external.
+- Uninstrumented/direct provider callers have purpose `unclassified`, empty call
+  identity and round zero; purpose/round reports must exclude that bucket and
+  report its count. They still contribute to total provider usage.
+- All-zero SDK usage is ambiguous, not proof of free inference. Provider metadata
+  lacks an availability flag. Keep those rows and report unknown billing.
+- Prices are configured current EUR-per-million rates joined by profile name,
+  not historical invoices. Unknown prices remain NULL. Inclusive SDK input counts
+  are priced once across fresh/cache-read/cache-write buckets. Raw gateway usage
+  with different semantics needs its own adapter, not another subtraction here.
+- Historical echoed-token rows are not rewritten; compare post-fix cohorts.
+
+Core dimensions and hidden configured-provider paths are implemented and tested.
+Reports must retain these exclusions rather than claiming universal billing or
+per-tool token precision. Security and context changes remain later phases.
