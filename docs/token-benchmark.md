@@ -157,3 +157,10 @@ no failures. Enabled-mode race tests pass for trace reconstruction, byte bounds,
 pages, source ownership/reopen, projection provenance, negative facts, planner
 resync/restart and concurrent snapshots. Vet passes. ARTEX_BOUNDED_CONTEXT stays
 zero by default; no live-model savings or quality equivalence is claimed.
+
+## Phase C validation (2026-11-15)
+
+Complete agent and sidequestion package suites pass under race detection with
+isolated PostgreSQL where required. Focused opt-in prefix/memo tests and vet
+pass. Default role prompt byte inventories are recorded in the audit; these are
+not provider token or cache-hit measurements. Both switches remain off by default.

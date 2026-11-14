@@ -114,3 +114,32 @@ original evidence; database contents remain complete. Inherited paging checks
 direct-source ownership and terminal state in SQL, and excludes thinking/usage.
 Custom stored tool-schema overrides may need optional paging fields added by the
 operator; default code definitions include them without changing custom policy.
+
+## Phase C compaction and prefix audit
+
+Cold-graph major compaction already reuses unchanged block signatures; it is not
+an unconditional repeated-summary path. SDK transcript compaction and side
+summaries are different paths, now separately attributed by Phase A. Original
+node payloads/evidence and transcript history remain authoritative.
+
+Optional `ARTEX_COMPACTION_MEMO=1` adds a 64-entry, per-Compactor successful-summary
+memo keyed by configured model, full request and full member/anchor source
+records. Source changes invalidate it. Errors, empty results and cancellation are
+not cached. It resets on restart and never replaces the database source records.
+`SummaryStats` separates inference calls from memo hits; provider token/cost rows
+are written only for real calls. Routing-model identity changes are not exposed
+by the SDK: turn this memo off when comparing rotated model configurations.
+
+Optional `ARTEX_CACHE_PREFIX=1` splits the rendered prompt only at an existing
+paragraph before a timestamp, per-run directory or intent tail. Joining segments
+recreates the original text exactly. The provider cache boundary covers only the
+stable prefix. Custom templates without a safe split keep their existing shape.
+Shared artifact-rule literals are factored once in source; their emitted text is
+unchanged. The audit found no evidence justifying deletion of safety instructions
+merely because similar rules appear in different agent roles.
+
+Default-template byte inventory (Go test fixture, not token or billing data):
+worker 9437 total / 9062 prefix; planner 12259 / 11937; mainagent 4051 / 3729;
+chat 470 / 211. Actual prompts vary with stored templates, tools and runtime
+configuration. These byte counts do not establish cache hits or token savings.
+Both options default off and are forwarded through Compose.
