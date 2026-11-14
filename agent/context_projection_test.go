@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/Autumn-27/artex/db"
 	"strings"
+	"sync"
 	"testing"
 	"unicode/utf8"
 )
@@ -52,6 +53,44 @@ func TestProjectionBoundsAndKeepsProvenanceAndDistinctIDs(t *testing.T) {
 	}
 }
 
+func TestPlannerPacketsAreSelfContainedAcrossUpdatesAndRestart(t *testing.T) {
+	var state overviewSnapshots
+	first := state.packet(1, map[string]any{"facts": 1, "hints": []any{"old"}})
+	second := state.packet(1, map[string]any{"facts": 2})
+	base := second["base"].(map[string]any)
+	materialized := map[string]any{}
+	for k, v := range base {
+		materialized[k] = v
+	}
+	for k, v := range second["replace"].(map[string]any) {
+		materialized[k] = v
+	}
+	for _, k := range second["remove"].([]string) {
+		delete(materialized, k)
+	}
+	if fmt.Sprint(materialized["facts"]) != "2" {
+		t.Fatal("delta did not reconstruct current state")
+	}
+	if _, ok := materialized["hints"]; ok {
+		t.Fatal("removed key stayed in state")
+	}
+	for range 8 {
+		p := state.packet(1, map[string]any{"facts": 3})
+		b, _ := json.Marshal(p)
+		if len(b) > plannerPacketBudget {
+			t.Fatal("packet budget")
+		}
+	}
+	if state.tasks[1].baseVersion <= first["base_version"].(int) {
+		t.Fatal("missing periodic resync")
+	}
+	var restarted overviewSnapshots
+	p := restarted.packet(1, map[string]any{"facts": 4})
+	if p["epoch"] == first["epoch"] || p["base_version"] != 1 || len(p["replace"].(map[string]any)) != 0 {
+		t.Fatal("restart depended on stale snapshot")
+	}
+}
+
 func TestWorkerProjectionSelectsDependenciesAndAssetFields(t *testing.T) {
 	data := map[string]any{"running_intents": []map[string]any{{"id": 7, "parents": []int64{1}}}, "recent_facts": []map[string]any{{"id": 1, "summary": "negative", "confidence": "observed"}, {"id": 2, "summary": "unrelated"}}, "scope": []any{"lab.invalid"}}
 	out := workerContext(data, &db.Node{ID: 7})
@@ -66,5 +105,23 @@ func TestWorkerProjectionSelectsDependenciesAndAssetFields(t *testing.T) {
 	}
 	if !assets["assets"].([]any)[0].(map[string]any)["requires_asset_detail"].(bool) {
 		t.Fatal("incomplete target lacked detail requirement")
+	}
+}
+
+func TestPlannerPacketsConcurrentAndEmpty(t *testing.T) {
+	var state overviewSnapshots
+	var wg sync.WaitGroup
+	for range 32 {
+		wg.Go(func() {
+			p := state.packet(1, map[string]any{})
+			b, err := json.Marshal(p)
+			if err != nil || len(b) > plannerPacketBudget {
+				t.Error("concurrent packet invalid")
+			}
+		})
+	}
+	wg.Wait()
+	if state.tasks[1].version != 32 {
+		t.Fatal("rounds lost")
 	}
 }
