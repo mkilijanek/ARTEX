@@ -25,7 +25,11 @@ web/next-env.d.ts
 *.swo
 
 # docs
-/docs/
+/docs/*
+!/docs/phase0-baseline.md
+!/docs/token-audit.md
+!/docs/upstream-port-matrix.md
+!/docs/token-benchmark.md
 
 # os
 .DS_Store
