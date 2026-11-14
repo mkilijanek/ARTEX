@@ -35,7 +35,9 @@ Go requires 1.26.10. Norma's declared v0.4.3 is replaced by
 `mvdan.cc/sh/v3 v3.14.1`. Do not bump the SDK as an incidental optimization.
 The frontend is Next 16 / React 19; CI uses Node 22. Initially the host had
 Node 18.19.1 and no Go on PATH. Go 1.26.10 was downloaded to `/tmp/go` for
-verification; module/build caches stay in `/tmp`.
+verification. Caches were initially in `/tmp`; after root disk exhaustion,
+validation used `/opt/data/artex-review-validation-20261114` for toolchain,
+module/build caches and temporary build files.
 
 Only example configuration was inventoried. No operator credentials or private
 configuration values belong in this document. Runtime configuration is mutable:

@@ -18,8 +18,9 @@ included; frontend checks require Node 22 (host initially supplies Node 18).
 Reproduce using Go 1.26.10 and an isolated PostgreSQL DSN:
 
 ```sh
-export PATH=/tmp/go/bin:$PATH
-export GOMODCACHE=/tmp/artex-gomod GOCACHE=/tmp/artex-gocache
+export PATH=/path/to/go1.26.10/bin:$PATH
+export GOMODCACHE=/large-volume/artex-gomod GOCACHE=/large-volume/artex-gocache
+export TMPDIR=/large-volume/artex-build-tmp
 export ARTEX_PG_DSN='postgres://USER:PASSWORD@127.0.0.1:PORT/isolated_baseline?sslmode=disable'
 go test -json -count=1 -p 1 -timeout 3m ./... > baseline.json
 go build ./...
@@ -69,3 +70,73 @@ Disable deployment/revert code if metering blocks model calls, changes tool
 permissions, loses evidence, double counts attempts or changes task outcomes.
 Leave additive columns in place on rollback; do not drop usage rows. Historical
 pre-fix echoed-token rows cannot be reconstructed safely without provider data.
+
+## Implementation status
+
+Phase 0 is complete in local commits. Phase A has a tested instrumentation
+foundation, echoed-input correction, cache-creation price correction and runtime
+retry attribution. Remaining Phase A dimensions and hidden-purpose exclusions
+are listed in the audit; subsequent milestones are not marked complete.
+
+Each source change has its own commit with a description and validation notes.
+No GitHub issues, milestones or remote branches were changed. This is a local
+implementation batch; it has not been pushed or deployed.
+
+New schema fields are additive under the existing advisory-lock protocol.
+Versioned upstream migrations are still pending review; any later port must
+retain these fields in its new migration rather than editing previously applied
+migration checksums. Historical usage reports can change with the corrected cost
+formula because current prices are applied at query time; original token rows
+are not rewritten.
+
+## Inspecting a measured task
+
+Run read-only on the selected cohort (bind `$1` to the task registry ID):
+
+```sql
+SELECT provider, model, worker, reason,
+       count(*) AS provider_invocations,
+       count(*) FILTER (WHERE attempt > 0) AS runtime_retries,
+       sum(input_tokens) AS input_tokens,
+       sum(output_tokens) AS output_tokens,
+       sum(cache_read) AS cache_read_tokens,
+       sum(cache_write) AS cache_write_tokens,
+       sum(request_bytes) FILTER (WHERE size_known) AS measured_request_bytes,
+       sum(tool_schema_bytes) FILTER (WHERE size_known) AS measured_schema_bytes,
+       sum(tool_result_bytes) FILTER (WHERE size_known) AS measured_result_bytes,
+       count(*) FILTER (WHERE NOT size_known) AS unmeasured_requests
+FROM llm_usage
+WHERE task_id = $1 AND reason <> ''
+GROUP BY provider, model, worker, reason
+ORDER BY provider_invocations DESC;
+```
+
+Rows with an empty reason predate this instrumentation and are excluded from
+this cohort query. `runtime_retries` includes profile failover; it does not count
+transport-internal attempts. NULL measured sums mean no known measurements in
+that bucket. Keep raw token totals for diagnostics and do not interpret zero
+provider counters as proof of zero billing.
+
+## Validation of this implementation batch
+
+Validated after source commit `9580c70` with Go 1.26.10 and separate disposable
+PostgreSQL database roots for the plain suite and focused race run.
+
+| Check | Result |
+| --- | --- |
+| `go test -json -count=1 -p 1 -timeout 3m ./...` | 950 passing test events, 5 existing skips, no failures; 14 packages pass, 2 have no tests. Baseline was 926 passing events with the same skips. |
+| `go build ./...` | Pass |
+| `go vet ./...` | Pass |
+| `go test -race -count=1 -timeout 2m ./llmrec ./db ./server -run 'TestTelemetry|TestIntentSession|TestUsageMetrics|TestCostSeparates|TestTaskLLMMetrics'` | Pass in all three packages. This is focused race coverage, not a claim that the entire repository is race-free. |
+| Baseline manifest checksums | All six still match; no SDK or frontend dependency changes. |
+
+The first final-check attempt exhausted the host root filesystem during
+compilation. Those build failures are not test results. After moving this task's
+Go toolchain, module/build caches and temporary build files to the data volume,
+all checks above were rerun successfully.
+
+Existing skips: `TestGraphOverviewExpandsAssociatedCompanyScope`,
+`TestCaptureApprovalLifecycle`, `TestSideUsageRecordedOnceOnConsumerCancellation`,
+`TestInterceptFilterHTTP`, and `TestLiveContextReview`. New deterministic
+telemetry fixtures cover cancellation separately; they do not turn those skips
+into passes. No frontend checks or live model benchmarks were run.
