@@ -25,3 +25,9 @@ files remain unchanged and production string literals contain no Chinese text.
 When updating Norma, import the new pinned source, reapply this four-file string
 patch, update SOURCE.json to that original source identity and rerun both SDK
 integration and ARTEX tests. Do not mix a feature upgrade into this translation PR.
+
+Validation for issue #38: full ARTEX suite against disposable PostgreSQL passes
+929 test events with five pre-existing skips; focused localization/evidence tests
+pass under race detection. `go build ./...` and `go vet ./...` pass. The 57 Chinese
+literals plus the remaining Chinese full stop are translated; no live model or
+external target is needed to exercise these compiled messages.
