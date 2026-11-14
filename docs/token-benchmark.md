@@ -141,3 +141,11 @@ Existing skips: `TestGraphOverviewExpandsAssociatedCompanyScope`,
 `TestInterceptFilterHTTP`, and `TestLiveContextReview`. New deterministic
 telemetry fixtures cover cancellation separately; they do not turn those skips
 into passes. No frontend checks or live model benchmarks were run.
+
+## Phase A validation (2026-11-15)
+
+Full isolated PostgreSQL suite: 952 passing test events, the same five existing
+skips and no failures (14 packages pass, three have no tests). Focused race tests
+pass in agent, llmrec, db, sidequestion and server for purpose/round attribution,
+tool privacy, upgraded persistence, retry identity and echoed answer usage.
+`go vet ./...` passes. No live-model savings measurement is available.
