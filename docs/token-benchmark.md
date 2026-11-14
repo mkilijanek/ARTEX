@@ -149,3 +149,11 @@ skips and no failures (14 packages pass, three have no tests). Focused race test
 pass in agent, llmrec, db, sidequestion and server for purpose/round attribution,
 tool privacy, upgraded persistence, retry identity and echoed answer usage.
 `go vet ./...` passes. No live-model savings measurement is available.
+
+## Phase B validation (2026-11-15)
+
+Default-mode full suite: 960 passing test events, the same five existing skips,
+no failures. Enabled-mode race tests pass for trace reconstruction, byte bounds,
+pages, source ownership/reopen, projection provenance, negative facts, planner
+resync/restart and concurrent snapshots. Vet passes. ARTEX_BOUNDED_CONTEXT stays
+zero by default; no live-model savings or quality equivalence is claimed.

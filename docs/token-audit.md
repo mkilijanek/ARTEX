@@ -83,3 +83,34 @@ Phase A acceptance includes the following explicit exclusions and limits:
 Core dimensions and hidden configured-provider paths are implemented and tested.
 Reports must retain these exclusions rather than claiming universal billing or
 per-tool token precision. Security and context changes remain later phases.
+
+## Phase B context contract
+
+`ARTEX_BOUNDED_CONTEXT=1` opts into projected launch context and trace slices.
+Default remains zero pending security/rollout validation. Mandatory system
+constraints and full intent text are unchanged. Projection never changes stored
+graphs, evidence or permissions; omitted evidence cannot establish a negative.
+
+Planner packets carry a 16 KiB projected base plus cumulative top-level replace
+and remove sets (40 KiB packet ceiling). Every request includes its base, so
+fresh planner sessions can reconstruct current state without remembering prior
+turns. Resync occurs every eight rounds or on size pressure. Restart/eviction
+starts a new epoch. Projection metadata requires full scope retrieval before
+acting; truncated scope text never authorizes targets.
+
+Worker launches select dependency/own-intent observations, preserve IDs,
+confidence and source identity, and omit unrelated frontier/digest material.
+Asset launch records contain at most eight compact targets. Oversized target
+strings are withheld with a detail requirement, never used as shortened URLs.
+`list_assets` and `node_detail` retrieve full records on demand. Exact duplicate
+records are suppressed; equal summaries with different IDs/provenance remain.
+Existing hot/cold covered-member suppression and revival behavior are retained.
+
+Trace detail is capped at five steps, 4096 encoded detail bytes per step, with
+byte offsets, next offsets, total/returned bytes and truncation flags. Metadata
+is bounded too; responses stay below 64 KiB for supported inputs. Summary/search
+pages cap at 20 entries and use next_before_step_id. UTF-8 slices reconstruct
+original evidence; database contents remain complete. Inherited paging checks
+direct-source ownership and terminal state in SQL, and excludes thinking/usage.
+Custom stored tool-schema overrides may need optional paging fields added by the
+operator; default code definitions include them without changing custom policy.
