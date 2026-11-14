@@ -18,10 +18,12 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"github.com/Autumn-27/artex/llmmeta"
 	"log"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -41,9 +43,11 @@ type Compactor struct {
 	cooldown time.Duration // min gap between compactions per task (§7 60s)
 	maxDur   time.Duration // hard cap on one background compaction
 
-	mu      sync.Mutex
-	running map[int64]bool
-	lastRun map[int64]time.Time
+	mu                            sync.Mutex
+	summaryMemo                   map[[32]byte]string
+	summaryMemoHits, summaryCalls int
+	running                       map[int64]bool
+	lastRun                       map[int64]time.Time
 }
 
 // NewCompactor builds a compactor. prov/model are used for the §4 body LLM call
@@ -515,21 +519,71 @@ func buildCompressionInput(g *coldGraph, b block, nodeByID map[int64]*db.Node) s
 // compress runs the §4 body LLM call on one block. Uses the same model the agent
 // runs on; thinking disabled (a pure summarization step).
 func (c *Compactor) compress(ctx context.Context, g *coldGraph, b block, nodeByID map[int64]*db.Node) (string, error) {
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
 	req := llm.CompletionRequest{
 		System:    []string{compressionSystemPrompt},
 		Messages:  []llm.Message{llm.UserText(buildCompressionInput(g, b, nodeByID))},
 		MaxTokens: 1500,
 		Thinking:  "disabled",
 	}
+	memo := os.Getenv("ARTEX_COMPACTION_MEMO") == "1"
+	var key [32]byte
+	if memo {
+		sources := map[int64]*db.Node{}
+		for _, id := range append(append([]int64{}, b.Members...), b.Anchors...) {
+			sources[id] = nodeByID[id]
+		}
+		serialized, e := json.Marshal(struct {
+			Model   string
+			Request llm.CompletionRequest
+			Sources map[int64]*db.Node
+		}{c.model, req, sources})
+		if e != nil {
+			memo = false
+		} else {
+			key = sha256.Sum256(serialized)
+		}
+	}
+	c.mu.Lock()
+	if memo {
+		if body, ok := c.summaryMemo[key]; ok {
+			c.summaryMemoHits++
+			c.mu.Unlock()
+			return body, nil
+		}
+	}
+	c.summaryCalls++
+	c.mu.Unlock()
 	msg, _, _, err := c.prov.Complete(llmmeta.WithCall(ctx, "graph_summary", 0), req)
 	if err != nil {
 		return "", err
+	}
+	if ctx.Err() != nil {
+		return "", ctx.Err()
 	}
 	body := strings.TrimSpace(msg.Text())
 	if body == "" {
 		return "", fmt.Errorf("empty body from model")
 	}
+	if memo {
+		c.mu.Lock()
+		if c.summaryMemo == nil || len(c.summaryMemo) >= 64 {
+			c.summaryMemo = map[[32]byte]string{}
+		}
+		c.summaryMemo[key] = body
+		c.mu.Unlock()
+	}
 	return body, nil
+}
+
+// SummaryStats separates real inference calls from successful source-identical
+// memo hits; it resets with the Compactor and is not a second token ledger.
+func (c *Compactor) SummaryStats() (calls, hits int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.summaryCalls, c.summaryMemoHits
 }
 
 // compressionSystemPrompt is the §4 body prompt.
