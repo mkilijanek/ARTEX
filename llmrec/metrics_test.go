@@ -66,8 +66,8 @@ func TestTelemetryOnceAcrossCompletionAndStreamOutcomes(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			p := telemetryProvider{events: []llm.StreamEvent{
 				{Type: llm.SEMessageStart, Usage: llm.Usage{InputTokens: 100, CacheReadTokens: 20, CacheWriteTokens: 10}},
-				// The output side arrives in a later event.
-				{Type: llm.SEMessageDelta, Usage: llm.Usage{OutputTokens: 4}},
+				// Anthropic can echo the input side on the delta.
+				{Type: llm.SEMessageDelta, Usage: llm.Usage{InputTokens: 100, OutputTokens: 4, CacheReadTokens: 20, CacheWriteTokens: 10}},
 			}}
 			if strings.Contains(mode, "error") {
 				p.err = errors.New("secret provider error")

@@ -198,7 +198,8 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 				return
 			}
 			// Always track usage (cheap); accumulate text/thinking only for bodies.
-			// Usage counters are folded across message events.
+			// Input/cache counters can be echoed on message_delta. Match the SDK
+			// accumulator: merge echoed input with max, accumulate output deltas.
 			switch ev.Type {
 			case llm.SETextDelta:
 				if recordBodies {
@@ -216,7 +217,7 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 				if ev.StopReason != "" {
 					stopReason = ev.StopReason
 				}
-				usage.Add(ev.Usage)
+				usage.MergeEcho(ev.Usage)
 			}
 			if !yield(ev, err) {
 				return
