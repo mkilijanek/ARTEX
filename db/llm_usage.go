@@ -13,6 +13,17 @@ import (
 // only the dimensions needed to slice token spend (model / profile / task / agent),
 // never any prompt or response content.
 type LLMUsage struct {
+	Provider        string `json:"provider"`
+	IntentID        int64  `json:"intent_id"`     // 0 = not an intent session
+	Attempt         int    `json:"attempt"`       // 0-based runtime attempt, includes profile failover
+	Reason          string `json:"reason"`        // completed | error | cancelled | consumer_stopped
+	RequestBytes    int    `json:"request_bytes"` // provider-neutral JSON, not wire bytes or tokens
+	SystemBytes     int    `json:"system_bytes"`  // raw UTF-8 across system segments
+	MessageBytes    int    `json:"message_bytes"` // JSON; includes tool results
+	ToolSchemaBytes int    `json:"tool_schema_bytes"`
+	ToolResultBytes int    `json:"tool_result_bytes"` // JSON subset of MessageBytes
+	SizeKnown       bool   `json:"size_known"`        // false if request serialization failed
+
 	TaskID        string `json:"task_id"`        // task registry id (matches llm_records.task_id)
 	ExplorationID int64  `json:"exploration_id"` // exploration id parsed from the session (0 = unknown/non-task)
 	Worker        string `json:"worker"`         // agent lane: worker / planner / mainagent / goals
@@ -42,6 +53,16 @@ CREATE TABLE IF NOT EXISTS llm_usage (
     cache_write    INTEGER NOT NULL DEFAULT 0,
     status         TEXT
 );
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT '';
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS intent_id BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS attempt INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS request_bytes BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS system_bytes BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS message_bytes BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS tool_schema_bytes BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS tool_result_bytes BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS size_known BOOLEAN NOT NULL DEFAULT false;
 CREATE INDEX IF NOT EXISTS idx_llm_usage_task  ON llm_usage(task_id);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_model ON llm_usage(task_id, model);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_exp   ON llm_usage(exploration_id);
@@ -71,10 +92,10 @@ func (d *DB) InsertLLMUsage(u *LLMUsage) error {
 		expID = u.ExplorationID
 	}
 	_, err := d.Exec(`
-INSERT INTO llm_usage(task_id, exploration_id, worker, model, profile_name, latency_ms, input_tokens, output_tokens, cache_read, cache_write, status)
-VALUES (NULLIF($1,''),$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),$6,$7,$8,$9,$10,$11)`,
+INSERT INTO llm_usage(task_id, exploration_id, worker, model, profile_name, latency_ms, input_tokens, output_tokens, cache_read, cache_write, status, provider, intent_id, attempt, reason, request_bytes, system_bytes, message_bytes, tool_schema_bytes, tool_result_bytes, size_known)
+VALUES (NULLIF($1,''),$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
 		u.TaskID, expID, u.Worker, u.Model, u.ProfileName,
-		u.LatencyMs, u.InputTokens, u.OutputTokens, u.CacheRead, u.CacheWrite, u.Status)
+		u.LatencyMs, u.InputTokens, u.OutputTokens, u.CacheRead, u.CacheWrite, u.Status, u.Provider, u.IntentID, u.Attempt, u.Reason, u.RequestBytes, u.SystemBytes, u.MessageBytes, u.ToolSchemaBytes, u.ToolResultBytes, u.SizeKnown)
 	return err
 }
 
