@@ -1,8 +1,10 @@
 package db
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -63,14 +65,18 @@ func TestUsageMetricsInsertRoundTrip(t *testing.T) {
 	}
 	profile := fmt.Sprintf("metrics-%d", time.Now().UnixNano())
 	defer d.Exec(`DELETE FROM llm_usage WHERE profile_name=$1`, profile)
-	u := &LLMUsage{ProfileName: profile, Provider: "ollama", IntentID: 99, Attempt: 2, Reason: "consumer_stopped", RequestBytes: 123, SystemBytes: 20, MessageBytes: 40, ToolSchemaBytes: 30, ToolResultBytes: 10, SizeKnown: true}
+	u := &LLMUsage{CallID: "fixture-call", Round: 3, Purpose: "agent", ToolBytes: map[string]ToolBytes{"opaque": {Schema: 12, Result: 5}}, ProfileName: profile, Provider: "ollama", IntentID: 99, Attempt: 2, Reason: "consumer_stopped", RequestBytes: 123, SystemBytes: 20, MessageBytes: 40, ToolSchemaBytes: 30, ToolResultBytes: 10, SizeKnown: true}
 	if err := d.InsertLLMUsage(u); err != nil {
 		t.Fatal(err)
 	}
 	var got LLMUsage
-	err = d.QueryRow(`SELECT provider,intent_id,attempt,reason,request_bytes,system_bytes,message_bytes,tool_schema_bytes,tool_result_bytes,size_known FROM llm_usage WHERE profile_name=$1`, profile).Scan(&got.Provider, &got.IntentID, &got.Attempt, &got.Reason, &got.RequestBytes, &got.SystemBytes, &got.MessageBytes, &got.ToolSchemaBytes, &got.ToolResultBytes, &got.SizeKnown)
+	var tools []byte
+	err = d.QueryRow(`SELECT provider,intent_id,attempt,reason,request_bytes,system_bytes,message_bytes,tool_schema_bytes,tool_result_bytes,size_known,call_id,round_no,purpose,tool_bytes FROM llm_usage WHERE profile_name=$1`, profile).Scan(&got.Provider, &got.IntentID, &got.Attempt, &got.Reason, &got.RequestBytes, &got.SystemBytes, &got.MessageBytes, &got.ToolSchemaBytes, &got.ToolResultBytes, &got.SizeKnown, &got.CallID, &got.Round, &got.Purpose, &tools)
+	if err == nil {
+		err = json.Unmarshal(tools, &got.ToolBytes)
+	}
 	got.ProfileName = profile
-	if err != nil || got != *u {
+	if err != nil || !reflect.DeepEqual(got, *u) {
 		t.Fatalf("roundtrip: %+v want %+v: %v", got, *u, err)
 	}
 }

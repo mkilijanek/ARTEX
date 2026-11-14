@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/Autumn-27/artex/llmmeta"
 	"log"
 	"sort"
 	"strings"
@@ -520,7 +521,7 @@ func (c *Compactor) compress(ctx context.Context, g *coldGraph, b block, nodeByI
 		MaxTokens: 1500,
 		Thinking:  "disabled",
 	}
-	msg, _, _, err := c.prov.Complete(ctx, req)
+	msg, _, _, err := c.prov.Complete(llmmeta.WithCall(ctx, "graph_summary", 0), req)
 	if err != nil {
 		return "", err
 	}

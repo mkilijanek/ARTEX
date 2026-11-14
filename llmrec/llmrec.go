@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/llmmeta"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/transcript"
 )
@@ -284,6 +285,11 @@ func thinkingText(msg llm.Message) string {
 // The optional observer also works without a database (e.g. replay fixtures).
 func (r *Recorder) recordUsage(ctx context.Context, req llm.CompletionRequest, session, taskID string, expID int64, worker string, usage llm.Usage, latencyMs int, status, reason string) {
 	u := measureRequest(req)
+	meta := llmmeta.From(ctx)
+	u.CallID, u.Round, u.Purpose = meta.ID, meta.Round, meta.Purpose
+	if u.Purpose == "" {
+		u.Purpose = "unclassified"
+	}
 	u.TaskID, u.ExplorationID, u.Worker = taskID, expID, worker
 	u.Model, u.ProfileName, u.Provider = r.model, r.prof, r.provider
 	u.IntentID = intentFromSession(session)

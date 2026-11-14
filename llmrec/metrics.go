@@ -2,7 +2,9 @@ package llmrec
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/Autumn-27/artex/db"
@@ -44,7 +46,7 @@ func intentFromSession(session string) int64 {
 // are neither provider wire sizes nor token estimates. ToolResultBytes is a
 // subset of MessageBytes; the byte columns must not be summed as disjoint costs.
 func measureRequest(req llm.CompletionRequest) db.LLMUsage {
-	u := db.LLMUsage{SizeKnown: true}
+	u := db.LLMUsage{SizeKnown: true, ToolBytes: map[string]db.ToolBytes{}}
 	size := func(v any) int {
 		b, err := json.Marshal(v)
 		if err != nil {
@@ -60,13 +62,33 @@ func measureRequest(req llm.CompletionRequest) db.LLMUsage {
 	if len(req.Messages) > 0 {
 		u.MessageBytes = size(req.Messages)
 	}
+	toolNames := map[string]string{}
+	for _, m := range req.Messages {
+		for _, b := range m.Content {
+			if b.Type == llm.BlockToolUse {
+				toolNames[b.ID] = b.Name
+			}
+		}
+	}
+	key := func(name string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(name))) }
 	if len(req.Tools) > 0 {
 		u.ToolSchemaBytes = size(req.Tools)
+		for _, tool := range req.Tools {
+			k := key(tool.Name)
+			b := u.ToolBytes[k]
+			b.Schema += size(tool)
+			u.ToolBytes[k] = b
+		}
 	}
 	for _, message := range req.Messages {
 		for _, block := range message.Content {
 			if block.Type == llm.BlockToolResult {
-				u.ToolResultBytes += size(block)
+				n := size(block)
+				u.ToolResultBytes += n
+				k := key(toolNames[block.ToolUseID])
+				b := u.ToolBytes[k]
+				b.Result += n
+				u.ToolBytes[k] = b
 			}
 		}
 	}

@@ -146,3 +146,26 @@ func TestIntentSessionParsing(t *testing.T) {
 		}
 	}
 }
+
+func TestToolMetricsUseOpaqueKeysAndCountResultBytes(t *testing.T) {
+	req := llm.CompletionRequest{
+		Tools: []llm.ToolSchema{{Name: "secret-tool", InputSchema: map[string]any{"type": "object"}}},
+		Messages: []llm.Message{
+			{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: "call1", Name: "secret-tool"}}},
+			{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.ToolResultText("call1", "secret-result", false)}},
+		},
+	}
+	u := measureRequest(req)
+	if len(u.ToolBytes) != 1 {
+		t.Fatalf("tool groups: %+v", u.ToolBytes)
+	}
+	for key, b := range u.ToolBytes {
+		if len(key) != 64 || b.Schema == 0 || b.Result != u.ToolResultBytes {
+			t.Fatalf("tool metric: %q %+v", key, b)
+		}
+	}
+	b, _ := json.Marshal(u)
+	if strings.Contains(string(b), "secret") || strings.Contains(string(b), "call1") {
+		t.Fatal("tool metadata leaked")
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/llmmeta"
 	"github.com/Autumn-27/artex/llmrec"
 	"github.com/Autumn-27/norma/llm"
 )
@@ -17,7 +18,7 @@ func TestTaskLLMMetricsAttributeEveryRetry(t *testing.T) {
 			inner := &flakyThenOKProvider{failCount: 2, failErr: errors.New("anthropic: overloaded_error"), okEvents: []llm.StreamEvent{{Type: llm.SEMessageStart}, {Type: llm.SETextDelta, Text: "ok"}}}
 			provider := llmrec.Wrap(inner, nil, "fixture", "profile", "", "", func() bool { return false })
 			var rows []db.LLMUsage
-			ctx := llmrec.WithUsageObserver(t.Context(), func(u db.LLMUsage) { rows = append(rows, u) })
+			ctx := llmrec.WithUsageObserver(llmmeta.WithCall(t.Context(), "agent", 1), func(u db.LLMUsage) { rows = append(rows, u) })
 			hooks := taskLLMStreamHooks{current: func(context.Context) (taskLLMSelection, error) {
 				return taskLLMSelection{profileID: 11, provider: provider}, nil
 			}}
@@ -38,7 +39,7 @@ func TestTaskLLMMetricsAttributeEveryRetry(t *testing.T) {
 				if i == 2 {
 					want = "completed"
 				}
-				if u.Attempt != i || u.Reason != want {
+				if u.Attempt != i || u.Reason != want || u.CallID == "" || u.CallID != rows[0].CallID || u.Round != 1 {
 					t.Fatalf("attempt %d: %+v", i, u)
 				}
 			}
@@ -52,7 +53,7 @@ func TestTaskLLMMetricsContinueAttemptsAcrossFailover(t *testing.T) {
 			failed := llmrec.Wrap(&scriptedLLMProvider{err: errors.New("quota exhausted")}, nil, "first", "one", "", "", func() bool { return false })
 			ok := llmrec.Wrap(&scriptedLLMProvider{events: []llm.StreamEvent{{Type: llm.SETextDelta, Text: "ok"}}}, nil, "second", "two", "", "", func() bool { return false })
 			var rows []db.LLMUsage
-			ctx := llmrec.WithUsageObserver(t.Context(), func(u db.LLMUsage) { rows = append(rows, u) })
+			ctx := llmrec.WithUsageObserver(llmmeta.WithCall(t.Context(), "agent", 1), func(u db.LLMUsage) { rows = append(rows, u) })
 			advanced := false
 			hooks := taskLLMStreamHooks{
 				current: func(context.Context) (taskLLMSelection, error) {

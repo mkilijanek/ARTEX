@@ -1,6 +1,7 @@
 package db
 
 import (
+	"encoding/json"
 	"sort"
 	"strconv"
 	"time"
@@ -12,7 +13,17 @@ import (
 // error, so token accounting is complete even for interrupted/failed runs. Carries
 // only the dimensions needed to slice token spend (model / profile / task / agent),
 // never any prompt or response content.
+type ToolBytes struct {
+	Schema int `json:"schema"`
+	Result int `json:"result"`
+}
+
 type LLMUsage struct {
+	CallID    string               `json:"call_id"`
+	Round     int                  `json:"round"`
+	Purpose   string               `json:"purpose"`
+	ToolBytes map[string]ToolBytes `json:"tool_bytes"` // SHA-256 tool-name keys; no content or arguments
+
 	Provider        string `json:"provider"`
 	IntentID        int64  `json:"intent_id"`     // 0 = not an intent session
 	Attempt         int    `json:"attempt"`       // 0-based runtime attempt, includes profile failover
@@ -63,6 +74,10 @@ ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS message_bytes BIGINT NOT NULL DEF
 ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS tool_schema_bytes BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS tool_result_bytes BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS size_known BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS call_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS round_no INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS purpose TEXT NOT NULL DEFAULT '';
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS tool_bytes JSONB NOT NULL DEFAULT '{}';
 CREATE INDEX IF NOT EXISTS idx_llm_usage_task  ON llm_usage(task_id);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_model ON llm_usage(task_id, model);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_exp   ON llm_usage(exploration_id);
@@ -91,11 +106,18 @@ func (d *DB) InsertLLMUsage(u *LLMUsage) error {
 	if u.ExplorationID > 0 {
 		expID = u.ExplorationID
 	}
-	_, err := d.Exec(`
-INSERT INTO llm_usage(task_id, exploration_id, worker, model, profile_name, latency_ms, input_tokens, output_tokens, cache_read, cache_write, status, provider, intent_id, attempt, reason, request_bytes, system_bytes, message_bytes, tool_schema_bytes, tool_result_bytes, size_known)
-VALUES (NULLIF($1,''),$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
+	toolBytes, err := json.Marshal(u.ToolBytes)
+	if err != nil {
+		return err
+	}
+	if u.ToolBytes == nil {
+		toolBytes = []byte("{}")
+	}
+	_, err = d.Exec(`
+INSERT INTO llm_usage(task_id, exploration_id, worker, model, profile_name, latency_ms, input_tokens, output_tokens, cache_read, cache_write, status, provider, intent_id, attempt, reason, request_bytes, system_bytes, message_bytes, tool_schema_bytes, tool_result_bytes, size_known, call_id, round_no, purpose, tool_bytes)
+VALUES (NULLIF($1,''),$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25::jsonb)`,
 		u.TaskID, expID, u.Worker, u.Model, u.ProfileName,
-		u.LatencyMs, u.InputTokens, u.OutputTokens, u.CacheRead, u.CacheWrite, u.Status, u.Provider, u.IntentID, u.Attempt, u.Reason, u.RequestBytes, u.SystemBytes, u.MessageBytes, u.ToolSchemaBytes, u.ToolResultBytes, u.SizeKnown)
+		u.LatencyMs, u.InputTokens, u.OutputTokens, u.CacheRead, u.CacheWrite, u.Status, u.Provider, u.IntentID, u.Attempt, u.Reason, u.RequestBytes, u.SystemBytes, u.MessageBytes, u.ToolSchemaBytes, u.ToolResultBytes, u.SizeKnown, u.CallID, u.Round, u.Purpose, string(toolBytes))
 	return err
 }
 
