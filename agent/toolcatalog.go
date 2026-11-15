@@ -196,6 +196,9 @@ func injectDefaults(in json.RawMessage, schema map[string]any) json.RawMessage {
 			return in // non-object input: don't touch it
 		}
 	}
+	if m == nil {
+		return in // JSON null is not an object; preserve it for repair tools.
+	}
 	changed := false
 	for k, dv := range defs {
 		if cur, ok := m[k]; !ok || isEmptyJSON(cur) {

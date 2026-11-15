@@ -46,3 +46,9 @@ func (m *meteredTool) Call(ctx context.Context, input json.RawMessage, tc *actoo
 	}
 	return m.CoreTool.Call(ctx, input, tc)
 }
+
+// AcceptsRawInput preserves the SDK repair contract through metering.
+func (m *meteredTool) AcceptsRawInput() bool {
+	t, ok := m.CoreTool.(interface{ AcceptsRawInput() bool })
+	return ok && t.AcceptsRawInput()
+}

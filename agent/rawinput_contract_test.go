@@ -32,6 +32,7 @@ func TestDecoratedRawInputUsesSDKGateAndPermissions(t *testing.T) {
 		input           string
 		want            bool
 	}{
+		{"null", true, false, false, `null`, true},
 		{"repair", true, false, false, `{"content":`, true},
 		{"strict", false, false, false, `{"content":`, false},
 		{"denied", true, true, false, `{"content":`, false},
@@ -60,7 +61,7 @@ func TestDecoratedRawInputUsesSDKGateAndPermissions(t *testing.T) {
 				wrapped = struct{ tool.CoreTool }{base}
 			}
 			schema := map[string]any{"type": "object"}
-			if tc.name == "defaults" {
+			if tc.name == "defaults" || tc.name == "null" {
 				schema["properties"] = map[string]any{"content": map[string]any{"type": "string", "default": "default"}}
 			} else {
 				schema["required"] = []any{"content"}
