@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-var volatilePrompt = regexp.MustCompile(`\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}|[/\\](tasks|sessions)[/\\]|\[The intent you claimed`)
+var volatilePrompt = regexp.MustCompile(`\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}|[/\\](tasks|sessions)[/\\]|\[The intent you claimed|(?m)^(?:Current task goal|Task goal):`)
 
 // cachePrefix splits only at an existing paragraph boundary. Joining the parts
 // recreates the exact original prompt; instructions and their order are unchanged.
@@ -26,5 +26,10 @@ func cachePrefix(system []string, boundary int) ([]string, int) {
 	}
 	out := []string{text[:i], text[i+2:]}
 	out = append(out, system[1:]...)
+	// Preserve already cached deferred/schema guidance when the caller supplied
+	// multiple segments. A single-segment system can cache just its stable prefix.
+	if boundary > 1 {
+		return out, boundary + 1
+	}
 	return out, 1
 }

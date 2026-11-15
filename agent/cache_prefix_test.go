@@ -12,7 +12,7 @@ func TestCachePrefixPreservesPromptAndStableRolePrefix(t *testing.T) {
 		two := []string{role + " rules\n\nNow: 2026-11-15 00:00:02 UTC\n\nartifact rules", "deferred"}
 		a, bound := cachePrefix(one, 2)
 		b, _ := cachePrefix(two, 2)
-		if bound != 1 || a[0] != b[0] || strings.Join(a, "\n\n") != strings.Join(one, "\n\n") {
+		if bound != 3 || a[0] != b[0] || strings.Join(a, "\n\n") != strings.Join(one, "\n\n") {
 			t.Fatalf("%s: changed prompt or unstable prefix", role)
 		}
 		t.Logf("%s: full bytes=%d stable prefix=%d", role, len(strings.Join(a, "\n\n")), len(a[0]))
@@ -37,6 +37,23 @@ func TestRenderedAgentPromptByteInventory(t *testing.T) {
 		if strings.Join(parts, "\n\n") != prompt {
 			t.Fatalf("%s changed instructions", role)
 		}
+		budgets := map[string]int{"worker": 10400, "planner": 13500, "mainagent": 4500, "chat": 600}
+		if len(prompt) > budgets[role] {
+			t.Fatalf("%s prompt grew beyond reviewed byte ceiling: %d > %d", role, len(prompt), budgets[role])
+		}
 		t.Logf("%s system bytes=%d prefix bytes=%d boundary=%d", role, len(prompt), len(parts[0]), b)
+	}
+}
+
+func TestRenderedPrefixesAcrossGoalsAndDirectories(t *testing.T) {
+	t.Setenv("ARTEX_CACHE_PREFIX", "1")
+	for _, render := range []func(string, string, string) string{plannerSystem, mainAgentSystem} {
+		one := render("goal one", "/data", "/data/tasks/1")
+		two := render("entirely changed goal", "/data", "/data/tasks/2")
+		a, _ := cachePrefix([]string{one}, 0)
+		b, _ := cachePrefix([]string{two}, 0)
+		if a[0] != b[0] || strings.Join(a, "\n\n") != one || strings.Join(b, "\n\n") != two {
+			t.Fatal("real prompt prefix depends on goal or changes instructions")
+		}
 	}
 }
