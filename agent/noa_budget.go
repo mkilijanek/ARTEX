@@ -2,12 +2,15 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"iter"
 
 	"github.com/Autumn-27/artex/sidequestion"
 	"github.com/Autumn-27/norma/llm"
 )
+
+var ErrNOAContextBudget = errors.New("local NOA context estimate exceeds configured budget")
 
 // NOA's view interface cannot return an error when protected content alone is
 // too large. Stop at the final provider boundary, including system/tool overhead,
@@ -21,7 +24,7 @@ type noaBudgetProvider struct {
 func (p *noaBudgetProvider) check(req llm.CompletionRequest) error {
 	estimate := sidequestion.EstimateInputTokens(req) + max(req.MaxTokens, 0) + 512
 	if estimate > p.window {
-		return fmt.Errorf("Norma NOA request estimate %d exceeds configured budget %d; protected context cannot fit, increase the configured window or start a new session", estimate, p.window)
+		return fmt.Errorf("%w: Norma NOA request estimate %d exceeds configured budget %d; protected context cannot fit, increase the configured window or start a new session", ErrNOAContextBudget, estimate, p.window)
 	}
 	return nil
 }
