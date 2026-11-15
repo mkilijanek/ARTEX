@@ -125,6 +125,7 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 	// stats and must be complete even for interrupted/failed runs, so it is NOT
 	// gated. Only body serialization + response accumulation are skipped when off.
 	recordBodies := r.enabled == nil || r.enabled()
+	ctx = invocationContext(ctx)
 	start := time.Now()
 	session := transcript.SessionIDFrom(ctx)
 	parsedID, worker := parseSession(session)
@@ -173,6 +174,9 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 				reason = "consumer_stopped"
 			}
 			status := "ok"
+			if !completed {
+				status = "error"
+			}
 			if err != nil {
 				reason = "error"
 				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -217,6 +221,7 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 			case llm.SEMessageDelta:
 				if ev.StopReason != "" {
 					stopReason = ev.StopReason
+					completed = true
 				}
 				usage.MergeEcho(ev.Usage)
 			}
@@ -225,8 +230,10 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 			}
 		}
 
-		// Stream completed normally.
-		completed = true
+		// EOF without a terminal event is an incomplete provider response.
+		if !completed {
+			streamErr = errors.New("provider stream ended without a stop event")
+		}
 		finish(streamErr)
 	}
 }
@@ -235,6 +242,7 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 // usage metering, normalized body recording and raw wire capture as Stream.
 func (r *Recorder) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
 	recordBodies := r.enabled == nil || r.enabled()
+	ctx = invocationContext(ctx)
 	start := time.Now()
 	session := transcript.SessionIDFrom(ctx)
 	parsedID, worker := parseSession(session)

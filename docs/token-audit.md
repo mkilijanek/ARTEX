@@ -114,3 +114,20 @@ original evidence; database contents remain complete. Inherited paging checks
 direct-source ownership and terminal state in SQL, and excludes thinking/usage.
 Custom stored tool-schema overrides may need optional paging fields added by the
 operator; default code definitions include them without changing custom policy.
+
+## Review correction: dimensions and call boundaries (#14)
+
+`GET /api/tokens/dimensions?task=ID&purpose=agent&after=0&limit=100` returns
+physical-attempt rows with call ID, purpose, round, attempt and per-tool bytes;
+follow `next_after` until rows is empty. Limit is bounded to 500. Call and purpose
+indexes support inspection. This is authenticated by the normal API middleware.
+Tool keys now retain configured catalog names (not descriptions/arguments/results);
+unknown model-invented names use `_unknown`. Historical hashed keys remain opaque.
+
+Attempt ordinals are shared across recorded providers within a logical call,
+including pool-internal failover and outer router retries. SDK-internal HTTP
+retries below the recorder remain excluded. `round` means the model invocation
+ordinal within one session instance, **not** a durable conversation turn number:
+SDK re-issues get a fresh call ID and ordinal, and restoring a session resets the
+ordinal. Group by call ID for physical retries; never group solely by round across
+resumes. Unexpected stream EOF without a stop event is an error, not completion.

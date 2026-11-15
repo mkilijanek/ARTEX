@@ -2,9 +2,8 @@ package llmrec
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
-	"fmt"
+	"github.com/Autumn-27/artex/llmmeta"
 	"strings"
 
 	"github.com/Autumn-27/artex/db"
@@ -70,7 +69,16 @@ func measureRequest(req llm.CompletionRequest) db.LLMUsage {
 			}
 		}
 	}
-	key := func(name string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(name))) }
+	known := map[string]bool{}
+	for _, tool := range req.Tools {
+		known[tool.Name] = true
+	}
+	key := func(name string) string {
+		if known[name] && len(name) <= 128 && !strings.ContainsAny(name, "\r\n\t") {
+			return name
+		}
+		return "_unknown"
+	}
 	if len(req.Tools) > 0 {
 		u.ToolSchemaBytes = size(req.Tools)
 		for _, tool := range req.Tools {
@@ -93,4 +101,11 @@ func measureRequest(req llm.CompletionRequest) db.LLMUsage {
 		}
 	}
 	return u
+}
+
+func invocationContext(ctx context.Context) context.Context {
+	if n, ok := llmmeta.From(ctx).NextAttempt(); ok {
+		return WithAttempt(ctx, n)
+	}
+	return ctx
 }
