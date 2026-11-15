@@ -1,8 +1,8 @@
 # Norma message localization
 
-This directory is the production Go-source snapshot of the previously pinned
-`github.com/BaaRai/Norma v0.4.4`, retaining its Apache-2.0 license. There is no SDK
-feature upgrade. The local module replacement is necessary because the SDK has
+This directory is the production Go-source snapshot of the audited
+`github.com/BaaRai/Norma v0.4.8`, retaining its Apache-2.0 license. The SDK upgrade is tracked separately in milestone #11;
+the translation-only PR #39 remains based on v0.4.4. The local module replacement is necessary because the SDK has
 no localization hook for these compiled message literals.
 
 The translation patch changes only string literals in:
