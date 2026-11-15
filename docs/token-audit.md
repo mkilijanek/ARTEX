@@ -107,7 +107,7 @@ Existing hot/cold covered-member suppression and revival behavior are retained.
 
 Trace detail is capped at five steps, 4096 encoded detail bytes per step, with
 byte offsets, next offsets, total/returned bytes and truncation flags. Metadata
-is bounded too; detail batches are reduced to a 16 KiB encoded budget before final notices. Summary/search
+is bounded too; detail batches are reduced to a 16 KiB encoded budget including notices. Summary/search
 pages cap at 20 entries and use next_before_step_id. UTF-8 slices reconstruct
 original evidence; database contents remain complete. Inherited paging checks
 direct-source ownership and terminal state in SQL, and excludes thinking/usage.

@@ -2073,7 +2073,6 @@ func (t *ToolSet) getWorkerTrace() actool.CoreTool {
 						}
 					}
 					result["unavailable_step_ids"] = missing
-					boundTraceResult(result, steps)
 
 				}
 				if len(omitted) > 0 {
@@ -2087,6 +2086,9 @@ func (t *ToolSet) getWorkerTrace() actool.CoreTool {
 				}
 				if intentNode.Inherited {
 					inheritedMap(result, intentNode.SourceTaskID)
+				}
+				if boundedContextEnabled() {
+					boundTraceResult(result, steps)
 				}
 				return jsonResult(result)
 			}
