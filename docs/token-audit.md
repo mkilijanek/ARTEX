@@ -55,16 +55,16 @@ and `side_summary`, and approval judgement is `judge`. Findings/review/chat and
 goal decomposition use the same instrumented harness path. Purpose never comes
 from prompt inspection. Summaries without a harness round use round zero.
 
-Per-tool byte buckets use full SHA-256 tool-name keys and contain only schema and
-result sizes. They link tool context to the owning model call; provider token
-usage and cost belong to the whole call and are not spuriously divided among
-tools. A result whose originating tool use is outside retained history goes in
-the hash-of-empty-name bucket. Byte buckets exclude JSON array framing.
+Per-tool byte buckets use configured catalog names and contain only schema and
+result sizes. Unknown originating names use `_unknown`; historical SHA-256 keys
+remain opaque. They link tool context to its owning call; provider usage/cost
+belong to the whole call and are not divided among tools. JSON array framing is
+excluded. Tool names are identifiers, not prompt or result content.
 
 Phase A acceptance includes the following explicit exclusions and limits:
 
-- Transport/pool retries beneath a decorated provider are excluded from physical
-  attempt reports; SDK summarizer retries are independently metered calls, since
+- SDK transport retries beneath a decorated provider are excluded from physical
+  attempt reports; recorded pool members share physical-attempt ordinals; SDK summarizer retries are independently metered calls, since
   the SDK owns that loop. These are not reconstructed from prompt similarity.
 - Third-party MCP services and SDK DeepSeek web-search inference bypass the
   configured provider boundary. Their external billing is excluded from ARTEX
@@ -91,12 +91,11 @@ Default remains zero pending security/rollout validation. Mandatory system
 constraints and full intent text are unchanged. Projection never changes stored
 graphs, evidence or permissions; omitted evidence cannot establish a negative.
 
-Planner packets carry a 16 KiB projected base plus cumulative top-level replace
-and remove sets (40 KiB packet ceiling). Every request includes its base, so
-fresh planner sessions can reconstruct current state without remembering prior
-turns. Resync occurs every eight rounds or on size pressure. Restart/eviction
-starts a new epoch. Projection metadata requires full scope retrieval before
-acting; truncated scope text never authorizes targets.
+Planner packets contain one current snapshot. Each request is independent of
+prior SDK sessions; restart/eviction starts a new epoch. Optional content targets
+16 KiB, with explicit omission paths; mandatory instructions/signals are retained
+even above that soft target, marked `mandatory_budget_exceeded`. A durable delta
+protocol is not implemented and remains tracked in #17.
 
 Worker launches select dependency/own-intent observations, preserve IDs,
 confidence and source identity, and omit unrelated frontier/digest material.
@@ -108,7 +107,7 @@ Existing hot/cold covered-member suppression and revival behavior are retained.
 
 Trace detail is capped at five steps, 4096 encoded detail bytes per step, with
 byte offsets, next offsets, total/returned bytes and truncation flags. Metadata
-is bounded too; responses stay below 64 KiB for supported inputs. Summary/search
+is bounded too; detail batches are reduced to a 16 KiB encoded budget before final notices. Summary/search
 pages cap at 20 entries and use next_before_step_id. UTF-8 slices reconstruct
 original evidence; database contents remain complete. Inherited paging checks
 direct-source ownership and terminal state in SQL, and excludes thinking/usage.
