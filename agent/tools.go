@@ -1968,8 +1968,8 @@ func (t *ToolSet) getWorkerTrace() actool.CoreTool {
 			"① intent_id only → returns a summary stream of the work's steps (summary≤100 chars, with step_id; just an action outline, no full output);\n"+
 			"② intent_id + q → returns only the summaries of steps matching the keyword (searches both summaries and full output; still gives only summary — use ③ for content);\n"+
 			"③ intent_id + step_ids → returns the full content (detail) of those steps; at most 5 per call — extras are dropped after the first 5 and reported in notice/omitted_step_ids.\n"+
-			"With ARTEX_BOUNDED_CONTEXT=1, detail is a bounded excerpt: use offset=next_offset for remaining bytes; summaries page with before_step_id=next_before_step_id. Stored evidence remains complete. Typical flow: locate suspicious steps' step_ids with ①/②, then fetch their output with ③. Thinking steps are excluded. Historical traces of directly related tasks are supported; their results carry source_task_id/inherited=true and are read-only.",
-		obj(map[string]any{
+			tracePagingDescription()+"Typical flow: locate suspicious steps' step_ids with ①/②, then fetch their output with ③. Thinking steps are excluded. Historical traces of directly related tasks are supported; their results carry source_task_id/inherited=true and are read-only.",
+		traceInputSchema(obj(map[string]any{
 			"intent_id":      idp("intent id (= the work handle)"),
 			"q":              str("keyword: return only steps whose summary/full output matches it (optional; mutually exclusive with step_ids)"),
 			"step_ids":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "step_ids to fetch full content for (from ①/② returns; at most 5 per call — extras beyond the first 5 are listed in omitted_step_ids)"},
@@ -1977,7 +1977,7 @@ func (t *ToolSet) getWorkerTrace() actool.CoreTool {
 			"before_step_id": intp("bounded-context mode: page older summaries before this step id"),
 			"offset":         intp("bounded-context mode: byte offset into a selected detail step"),
 			"max_bytes":      intp("bounded-context mode: detail slice bytes, maximum 4096; continue with next_offset"),
-		}, "intent_id"),
+		}, "intent_id")),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
 				IntentID json.RawMessage   `json:"intent_id"`
@@ -2062,6 +2062,19 @@ func (t *ToolSet) getWorkerTrace() actool.CoreTool {
 						actual = append(actual, step["step_id"].(int64))
 					}
 					result["returned_step_ids"] = actual
+					missing := []int64{}
+					found := map[int64]bool{}
+					for _, id := range actual {
+						found[id] = true
+					}
+					for _, id := range ids {
+						if !found[id] {
+							missing = append(missing, id)
+						}
+					}
+					result["unavailable_step_ids"] = missing
+					boundTraceResult(result, steps)
+
 				}
 				if len(omitted) > 0 {
 					// returned_step_ids/omitted_step_ids let the model decide programmatically

@@ -4,9 +4,9 @@ Captured 2026-11-14 before source changes for GitHub issues #11–13.
 
 ## Source identity
 
-- Branch: `token-opt/phase0-baseline`.
+- Branch: `token-opt/phase0-review`.
 - HEAD and origin/main: `fc35dddee8286d584f71ba751a02c48bc60835a3` (v0.5.0).
-- Fetched upstream/main: `481dd1c3f299c73eea2f33ed1ab186482effad2f`.
+- Locally available upstream/main at capture: `481dd1c3f299c73eea2f33ed1ab186482effad2f`.
 - `git rev-list --left-right --count HEAD...upstream/main`: `0 195`.
 - Tracked working tree: clean. Local `docs/token-audit.md` and
   `docs/upstream-port-matrix.md` were ignored drafts; they are inputs to this
@@ -15,7 +15,7 @@ Captured 2026-11-14 before source changes for GitHub issues #11–13.
 - origin: `git@github.com:mkilijanek/ARTEX.git`;
   upstream: `git@github.com:BaaRai/ARTEX.git`.
 
-These are fetched ref identities, not a claim that the remote remains unchanged.
+These are historical local ref identities, not a claim that the remote remains unchanged.
 No fetch, reset, upstream merge, production database access, or live model call
 was needed to establish this baseline.
 
@@ -34,10 +34,9 @@ Go requires 1.26.10. Norma's declared v0.4.3 is replaced by
 `github.com/BaaRai/Norma v0.4.4`; upstream uses v0.4.8 and additionally
 `mvdan.cc/sh/v3 v3.14.1`. Do not bump the SDK as an incidental optimization.
 The frontend is Next 16 / React 19; CI uses Node 22. Initially the host had
-Node 18.19.1 and no Go on PATH. Go 1.26.10 was downloaded to `/tmp/go` for
-verification. Caches were initially in `/tmp`; after root disk exhaustion,
-validation used `/opt/data/artex-review-validation-20261114` for toolchain,
-module/build caches and temporary build files.
+Node 18.19.1 and no Go on PATH. Go 1.26.10 and caches used for verification are under
+`/opt/data/artex-review-validation-20261114/` (`go`, `artex-gomod`,
+`artex-gocache`), on the data volume.
 
 Only example configuration was inventoried. No operator credentials or private
 configuration values belong in this document. Runtime configuration is mutable:
@@ -97,3 +96,12 @@ shellcheck, TypeScript and static frontend build. PostgreSQL-backed checks need
 an isolated DSN. Several baseline tests explicitly skip (including side usage
 cancellation, capture approval and company-scope overview); a skip is not a pass.
 See [token-benchmark.md](token-benchmark.md) for commands, results and exclusions.
+
+## Review refresh, 2026-11-15
+
+An explicit fetch now pins upstream to `d147dce3442531d44eaf06774441dbf47edc024a`: **0 / 223** against
+`origin/main` (`fc35ddd`). This supersedes the live comparison, not the historical
+195-commit baseline or its measurements. PRs #34–#37 are published against main;
+A/B/C contain earlier phase commits. PR #39 is the translation prerequisite for
+the separate SDK PR #47. None is assumed merged. See the updated port matrix and
+complete commit inventory; local Phase D work is outside these PRs.

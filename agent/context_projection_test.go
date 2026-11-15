@@ -41,7 +41,7 @@ func TestTraceSlicesReconstructEvidenceAndBoundEscaping(t *testing.T) {
 
 func TestProjectionBoundsAndKeepsProvenanceAndDistinctIDs(t *testing.T) {
 	facts := []map[string]any{{"id": 1, "summary": "port closed", "confidence": "observed", "source_task_id": 8}, {"id": 1, "summary": "port closed", "confidence": "observed", "source_task_id": 8}, {"id": 2, "summary": "port closed", "confidence": "inferred"}}
-	data := map[string]any{"task": map[string]any{"goal": strings.Repeat("秘密", 40000)}, "recent_facts": facts, "hints": []any{strings.Repeat("\x00", 100000)}}
+	data := map[string]any{"task": map[string]any{"goal": "keep the full goal"}, "recent_facts": facts, "optional_detail": strings.Repeat("\x00", 100000)}
 	out := projectOverview(data)
 	b, _ := json.Marshal(out)
 	if len(b) > overviewBudget || !utf8.Valid(b) {
@@ -92,10 +92,10 @@ func TestPlannerPacketsAreSelfContainedAcrossUpdatesAndRestart(t *testing.T) {
 }
 
 func TestWorkerProjectionSelectsDependenciesAndAssetFields(t *testing.T) {
-	data := map[string]any{"running_intents": []map[string]any{{"id": 7, "parents": []int64{1}}}, "recent_facts": []map[string]any{{"id": 1, "summary": "negative", "confidence": "observed"}, {"id": 2, "summary": "unrelated"}}, "scope": []any{"lab.invalid"}}
+	data := map[string]any{"running_intents": []map[string]any{{"id": 7, "parents": []int64{1}}}, "recent_facts": []map[string]any{{"id": 101, "from_intent": 1, "summary": "negative", "confidence": "observed"}, {"id": 2, "summary": "unrelated"}}, "scope": []any{"lab.invalid"}}
 	out := workerContext(data, &db.Node{ID: 7})
 	facts := out["recent_facts"].([]any)
-	if len(facts) != 1 || fmt.Sprint(facts[0].(map[string]any)["id"]) != "1" {
+	if len(facts) != 1 || fmt.Sprint(facts[0].(map[string]any)["id"]) != "101" {
 		t.Fatalf("dependencies: %v", facts)
 	}
 	assets := projectAssets([]*db.Asset{{ID: 1, URL: strings.Repeat("x", 5000), Domain: "lab.invalid", PageTitle: "secret headers"}})
@@ -123,5 +123,90 @@ func TestPlannerPacketsConcurrentAndEmpty(t *testing.T) {
 	wg.Wait()
 	if state.tasks[1].version != 32 {
 		t.Fatal("rounds lost")
+	}
+}
+
+func TestMandatoryOverviewKeysAreLossless(t *testing.T) {
+	hints := make([]any, 50)
+	for i := range hints {
+		hints[i] = strings.Repeat("constraint", 200)
+	}
+	data := map[string]any{"hints": hints, "goals": hints, "stagnation_warning": "stop repeating", "coverage": map[string]any{"tested": 0}, "related_tasks": []any{"source"}, "sites_without_endpoints": 8, "asset_counts": map[string]any{"site": 9}}
+	out := projectOverview(data)
+	for _, key := range []string{"hints", "goals", "stagnation_warning", "coverage", "related_tasks"} {
+		before, _ := json.Marshal(data[key])
+		after, _ := json.Marshal(out[key])
+		if string(before) != string(after) {
+			t.Fatalf("mandatory field changed: %s", key)
+		}
+	}
+	if out["mandatory_budget_exceeded"] != true {
+		t.Fatal("mandatory overflow must be explicit")
+	}
+	small := projectOverview(map[string]any{"coverage": data["coverage"], "sites_without_endpoints": 8, "asset_counts": data["asset_counts"]})
+	if small["sites_without_endpoints"] == nil || small["asset_counts"] == nil {
+		t.Fatal("overview signals dropped")
+	}
+}
+func TestChangedEvidenceAndSourceIdentityAreNotDeduplicated(t *testing.T) {
+	data := map[string]any{"recent_facts": []any{
+		map[string]any{"id": 1, "source_task_id": 1, "state": "old"},
+		map[string]any{"id": 1, "source_task_id": 1, "state": "new"},
+		map[string]any{"id": 1, "source_task_id": 2, "state": "new"},
+	}}
+	if len(projectOverview(data)["recent_facts"].([]any)) != 3 {
+		t.Fatal("state transition or provenance lost")
+	}
+}
+
+func TestTraceSchemaFlagOffAndAggregateBound(t *testing.T) {
+	t.Setenv("ARTEX_BOUNDED_CONTEXT", "0")
+	schema := traceInputSchema(obj(map[string]any{"intent_id": idp("id"), "offset": intp("offset")}, "intent_id"))
+	if schema["properties"].(map[string]any)["offset"] != nil || tracePagingDescription() != "" {
+		t.Fatal("flag-off schema changed")
+	}
+	steps := []map[string]any{}
+	for range 5 {
+		step := traceSlice(strings.Repeat("a", 9000), 0, 4096)
+		steps = append(steps, step)
+	}
+	result := map[string]any{"steps": steps}
+	boundTraceResult(result, steps)
+	raw, _ := json.Marshal(result)
+	if len(raw) > 16*1024 {
+		t.Fatalf("aggregate bytes=%d", len(raw))
+	}
+	for _, step := range steps {
+		if step["next_offset"].(int) != len(step["detail"].(string)) || step["has_more"] != true {
+			t.Fatal("lost continuation")
+		}
+	}
+}
+
+func TestProjectionOfRealGraphOverview(t *testing.T) {
+	dsn, _, err := db.DSN()
+	if err != nil {
+		t.Skip("requires isolated PostgreSQL")
+	}
+	d, err := db.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	exp, err := d.CreateExploration("fixture", "mandatory goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec(`DELETE FROM explorations WHERE id=$1`, exp)
+	ts := d.Exploration(exp)
+	tools := NewToolSet(ts, "fixture")
+	data := tools.graphOverviewData()
+	out := projectOverview(data)
+	for key := range data {
+		if _, ok := out[key]; !ok {
+			if _, marked := out["omitted"].(map[string]any)[key]; !marked {
+				t.Fatalf("real overview field silently dropped: %s", key)
+			}
+		}
 	}
 }

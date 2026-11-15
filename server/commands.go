@@ -159,3 +159,21 @@ func (s *Server) pgGetLLMRecord(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, rec)
 }
+
+// pgUsageDimensions exposes only telemetry counters and catalog identifiers.
+func (s *Server) pgUsageDimensions(w http.ResponseWriter, r *http.Request) {
+	if s.m.PG() == nil {
+		writeJSON(w, 200, map[string]any{"rows": []db.UsageDimension{}, "next_after": 0})
+		return
+	}
+	after := int64(atoiDefault(r.URL.Query().Get("after"), 0))
+	rows, err := s.m.PG().UsageDimensions(r.URL.Query().Get("task"), r.URL.Query().Get("purpose"), after, atoiDefault(r.URL.Query().Get("limit"), 100))
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if len(rows) > 0 {
+		after = rows[len(rows)-1].ID
+	}
+	writeJSON(w, 200, map[string]any{"rows": rows, "next_after": after})
+}

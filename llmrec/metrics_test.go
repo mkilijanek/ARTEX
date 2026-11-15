@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/llmmeta"
+	"github.com/Autumn-27/artex/llmpool"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/transcript"
 )
@@ -50,7 +52,7 @@ func TestTelemetryMeasuresRequestWithoutContent(t *testing.T) {
 		t.Fatalf("invalid measurements: %+v", u)
 	}
 	encoded, _ := json.Marshal(u)
-	for _, forbidden := range []string{secret, "call-secret", "private-tool"} {
+	for _, forbidden := range []string{secret, "call-secret"} {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("content leaked into telemetry: %s", encoded)
 		}
@@ -67,8 +69,11 @@ func TestTelemetryOnceAcrossCompletionAndStreamOutcomes(t *testing.T) {
 			p := telemetryProvider{events: []llm.StreamEvent{
 				{Type: llm.SEMessageStart, Usage: llm.Usage{InputTokens: 100, CacheReadTokens: 20, CacheWriteTokens: 10}},
 				// Anthropic can echo the input side on the delta.
-				{Type: llm.SEMessageDelta, Usage: llm.Usage{InputTokens: 100, OutputTokens: 4, CacheReadTokens: 20, CacheWriteTokens: 10}},
+				{Type: llm.SEMessageDelta, StopReason: "end_turn", Usage: llm.Usage{InputTokens: 100, OutputTokens: 4, CacheReadTokens: 20, CacheWriteTokens: 10}},
 			}}
+			if mode == "early" || mode == "cancel" {
+				p.events[1].StopReason = ""
+			}
 			if strings.Contains(mode, "error") {
 				p.err = errors.New("secret provider error")
 			}
@@ -117,7 +122,7 @@ func TestTelemetryOnceAcrossCompletionAndStreamOutcomes(t *testing.T) {
 }
 
 func TestTelemetryConcurrentRecorderAndUnknownUsage(t *testing.T) {
-	r := Wrap(telemetryProvider{}, nil, "", "", "", "", func() bool { return false })
+	r := Wrap(telemetryProvider{events: []llm.StreamEvent{{Type: llm.SEMessageStop}}}, nil, "", "", "", "", func() bool { return false })
 	var mu sync.Mutex
 	var rows []db.LLMUsage
 	ctx := WithUsageObserver(t.Context(), func(u db.LLMUsage) { mu.Lock(); defer mu.Unlock(); rows = append(rows, u) })
@@ -147,7 +152,7 @@ func TestIntentSessionParsing(t *testing.T) {
 	}
 }
 
-func TestToolMetricsUseOpaqueKeysAndCountResultBytes(t *testing.T) {
+func TestToolMetricsUseCatalogNamesAndCountResultBytes(t *testing.T) {
 	req := llm.CompletionRequest{
 		Tools: []llm.ToolSchema{{Name: "secret-tool", InputSchema: map[string]any{"type": "object"}}},
 		Messages: []llm.Message{
@@ -160,12 +165,45 @@ func TestToolMetricsUseOpaqueKeysAndCountResultBytes(t *testing.T) {
 		t.Fatalf("tool groups: %+v", u.ToolBytes)
 	}
 	for key, b := range u.ToolBytes {
-		if len(key) != 64 || b.Schema == 0 || b.Result != u.ToolResultBytes {
+		if key != "secret-tool" || b.Schema == 0 || b.Result != u.ToolResultBytes {
 			t.Fatalf("tool metric: %q %+v", key, b)
 		}
 	}
 	b, _ := json.Marshal(u)
-	if strings.Contains(string(b), "secret") || strings.Contains(string(b), "call1") {
+	if strings.Contains(string(b), "secret-result") || strings.Contains(string(b), "call1") {
 		t.Fatal("tool metadata leaked")
+	}
+}
+
+func TestPoolPhysicalAttemptAttribution(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		var rows []db.LLMUsage
+		ctx := WithUsageObserver(llmmeta.WithCall(t.Context(), "agent", 3), func(u db.LLMUsage) { rows = append(rows, u) })
+		wrap := func(p telemetryProvider) *Recorder {
+			return Wrap(p, nil, "fixture", "fixture", "", "", func() bool { return false })
+		}
+		pool := llmpool.New([]*llmpool.Member{
+			{ID: 1, Rank: 2, Prov: wrap(telemetryProvider{err: errors.New("HTTP 429 rate limited")})},
+			{ID: 2, Rank: 1, Prov: wrap(telemetryProvider{events: []llm.StreamEvent{{Type: llm.SEMessageStop}}})},
+		}, nil)
+		if stream {
+			for range pool.Stream(ctx, llm.CompletionRequest{}) {
+			}
+		} else {
+			_, _, _, _ = pool.Complete(ctx, llm.CompletionRequest{})
+		}
+		if len(rows) != 2 || rows[0].CallID == "" || rows[0].CallID != rows[1].CallID || rows[0].Attempt != 0 || rows[1].Attempt != 1 {
+			t.Fatalf("stream=%v rows=%+v", stream, rows)
+		}
+	}
+}
+func TestUnexpectedStreamEOFIsNotSuccess(t *testing.T) {
+	var rows []db.LLMUsage
+	ctx := WithUsageObserver(t.Context(), func(u db.LLMUsage) { rows = append(rows, u) })
+	r := Wrap(telemetryProvider{events: []llm.StreamEvent{{Type: llm.SETextDelta, Text: "partial"}}}, nil, "fixture", "", "", "", func() bool { return false })
+	for range r.Stream(ctx, llm.CompletionRequest{}) {
+	}
+	if len(rows) != 1 || rows[0].Status != "error" || rows[0].Reason != "error" {
+		t.Fatalf("rows=%+v", rows)
 	}
 }

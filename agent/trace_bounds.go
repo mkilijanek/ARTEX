@@ -31,3 +31,46 @@ func traceSlice(text string, offset, limit int) map[string]any {
 	}
 	return map[string]any{"detail": part, "offset": start, "next_offset": end, "total_bytes": len(text), "returned_bytes": len(part), "has_more": end < len(text), "truncated": start > 0 || end < len(text)}
 }
+
+func traceInputSchema(schema map[string]any) map[string]any {
+	if !boundedContextEnabled() {
+		props := schema["properties"].(map[string]any)
+		for _, key := range []string{"offset", "max_bytes", "before_step_id"} {
+			delete(props, key)
+		}
+	}
+	return schema
+}
+func tracePagingDescription() string {
+	if !boundedContextEnabled() {
+		return ""
+	}
+	return "Detail is a bounded excerpt: use offset=next_offset; summaries page with before_step_id=next_before_step_id. Stored evidence remains complete. "
+}
+
+// Bound the aggregate encoded response, retaining explicit continuation per step.
+func boundTraceResult(result map[string]any, steps []map[string]any) {
+	for {
+		encoded, _ := json.Marshal(result)
+		if len(encoded) <= 16*1024 {
+			return
+		}
+		changed := false
+		for _, step := range steps {
+			text, _ := step["detail"].(string)
+			if len(text) <= 4 {
+				continue
+			}
+			part, _, end := sliceUTF8(text, 0, max(4, len(text)/2))
+			step["detail"] = part
+			step["returned_bytes"] = end
+			step["next_offset"] = step["offset"].(int) + end
+			step["has_more"] = true
+			step["truncated"] = true
+			changed = true
+		}
+		if !changed {
+			return
+		}
+	}
+}

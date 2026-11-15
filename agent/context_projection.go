@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sort"
 	"sync"
 
@@ -27,67 +28,95 @@ func projectOverview(data map[string]any) map[string]any {
 	if d.Decode(&normalized) != nil {
 		return map[string]any{"detail_required": true}
 	}
-	var trim func(any, int) any
-	trim = func(v any, depth int) any {
-		if depth > 6 {
-			return map[string]any{"detail_required": true}
+
+	// Mandatory instructions and decision signals are never truncated. The budget
+	// applies to optional detail; a mandatory overflow is explicit, not data loss.
+	mandatory := map[string]bool{"task": true, "goals": true, "hints": true,
+		"scope": true, "stagnation_warning": true, "coverage": true,
+		"related_tasks": true, "task_credentials": true, "task_credentials_note": true}
+	out := map[string]any{"projection": true, "detail_required": true,
+		"retrieval": "graph_overview, node_detail(id), list_facts, list_assets; omitted evidence is not negative evidence"}
+	omitted := map[string]any{}
+	for k, v := range normalized {
+		if mandatory[k] {
+			out[k] = v
+		}
+	}
+	var trim func(any, string, int) any
+	trim = func(v any, path string, depth int) any {
+		if depth > 8 {
+			omitted[path] = "depth limit"
+			return nil
 		}
 		switch x := v.(type) {
 		case string:
-			part, _, _ := sliceUTF8(x, 0, 512)
+			part, _, end := sliceUTF8(x, 0, 512)
+			if end < len(x) {
+				omitted[path] = map[string]any{"omitted_bytes": len(x) - end}
+			}
 			return part
 		case []any:
-			out := []any{}
+			result := []any{}
 			seen := map[string]bool{}
-			for _, item := range x {
-				if len(out) >= 20 {
-					break
+			for i, item := range x {
+				// Identity includes provenance and state/content: equal text from different
+				// sources, or changed evidence for one ID, must remain distinct.
+				raw, _ := json.Marshal(item)
+				key := string(raw)
+				if m, ok := item.(map[string]any); ok && m["id"] != nil {
+					key = fmt.Sprint(m["source_task_id"], "/", m["id"], "/", string(raw))
 				}
-				b, _ := json.Marshal(item)
-				key := string(b)
 				if seen[key] {
 					continue
 				}
 				seen[key] = true
-				out = append(out, trim(item, depth+1))
-			}
-			return out
-		case map[string]any:
-			out := map[string]any{}
-			keys := []string{}
-			for k := range x {
-				keys = append(keys, k)
-			}
-			sort.Strings(keys)
-			for i, k := range keys {
-				if i >= 50 {
+				if len(result) >= 20 {
+					omitted[path] = map[string]any{"omitted_items": len(x) - i}
 					break
 				}
-				out[k] = trim(x[k], depth+1)
+				result = append(result, trim(item, fmt.Sprintf("%s[%d]", path, i), depth+1))
 			}
-			return out
+			return result
+		case map[string]any:
+			result := map[string]any{}
+			for k, item := range x {
+				result[k] = trim(item, path+"."+k, depth+1)
+			}
+			return result
 		default:
 			return v
 		}
 	}
-	out := map[string]any{"projection": true, "detail_required": true, "retrieval": "graph_overview, node_detail(id), list_facts, list_assets; omitted evidence is not negative evidence; obtain full scope before acting"}
-	keys := []string{"task", "goals", "hints", "scope", "frontier_open", "running_intents", "open_intents", "recent_facts", "finding_list", "recent_done_intents", "cold_digests", "facts", "findings_total", "done_intents_total"}
-	for _, k := range keys {
-		v, ok := normalized[k]
-		if !ok {
-			continue
-		}
-		out[k] = trim(v, 0)
-		b, _ := json.Marshal(out)
-		if len(b) > overviewBudget {
-			delete(out, k)
+	keys := []string{}
+	for k := range normalized {
+		if !mandatory[k] {
+			keys = append(keys, k)
 		}
 	}
+	sort.Strings(keys)
+	out["omitted"] = omitted
+	for _, k := range keys {
+		out[k] = trim(normalized[k], k, 0)
+		raw, _ := json.Marshal(out)
+		if len(raw) > overviewBudget {
+			delete(out, k)
+			omitted[k] = "optional field omitted by byte budget; retrieve detail"
+		}
+	}
+	raw, _ = json.Marshal(out)
+	if len(raw) > overviewBudget {
+		out["mandatory_budget_exceeded"] = true
+	}
+
 	return out
 }
 
 func workerContext(data map[string]any, intent *db.Node) map[string]any {
-	out := projectOverview(data)
+	raw, _ := json.Marshal(data)
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	out := map[string]any{}
+	_ = dec.Decode(&out)
 	deps := map[string]bool{fmt.Sprint(intent.ID): true}
 	for _, key := range []string{"open_intents", "running_intents", "recent_done_intents"} {
 		items, _ := out[key].([]any)
@@ -109,7 +138,7 @@ func workerContext(data map[string]any, intent *db.Node) map[string]any {
 		selected := []any{}
 		for _, v := range items {
 			m, _ := v.(map[string]any)
-			if deps[fmt.Sprint(m["id"])] || fmt.Sprint(m["from_intent"]) == fmt.Sprint(intent.ID) {
+			if deps[fmt.Sprint(m["from_intent"])] || deps[fmt.Sprint(m["id"])] {
 				selected = append(selected, v)
 			}
 		}
@@ -118,7 +147,7 @@ func workerContext(data map[string]any, intent *db.Node) map[string]any {
 	delete(out, "cold_digests")
 	out["intent_id"] = intent.ID
 	out["scope_required_before_action"] = true
-	return out
+	return projectOverview(out)
 }
 
 func projectAssets(assets []*db.Asset) map[string]any {
@@ -130,11 +159,12 @@ func projectAssets(assets []*db.Asset) map[string]any {
 				m[k] = v
 			} else {
 				m["requires_asset_detail"] = true
+				m[k+"_omitted"] = true
 			}
 		}
 		out = append(out, m)
 	}
-	return map[string]any{"assets": out, "omitted_assets": max(0, len(assets)-8), "detail_tool": "list_assets(ids); omitted fields are not absent evidence"}
+	return map[string]any{"assets": out, "omitted_assets": max(0, len(assets)-8), "omitted_fields": []string{"page_title", "headers", "body", "metadata"}, "detail_tool": "list_assets(ids); omitted fields are not absent evidence"}
 }
 
 type overviewBase struct {
@@ -162,33 +192,15 @@ func (s *overviewSnapshots) packet(task int64, data map[string]any) map[string]a
 		s.tasks[task] = b
 	}
 	b.version++
-	reset := func() { b.base = current; b.baseVersion = b.version }
-	if b.base == nil || b.version-b.baseVersion >= 8 {
-		reset()
-	}
-	replace := map[string]any{}
-	removed := []string{}
-	for k, v := range current {
-		a, _ := json.Marshal(v)
-		old, _ := json.Marshal(b.base[k])
-		if !bytes.Equal(a, old) {
-			replace[k] = v
-		}
-	}
-	for k := range b.base {
-		if _, ok := current[k]; !ok {
-			removed = append(removed, k)
-		}
-	}
-	sort.Strings(removed)
-	p := map[string]any{"epoch": b.epoch, "version": b.version, "base_version": b.baseVersion, "base": b.base, "replace": replace, "remove": removed, "self_contained": true}
-	raw, _ := json.Marshal(p)
-	if len(raw) > plannerPacketBudget {
-		reset()
-		p["base"] = current
-		p["base_version"] = b.baseVersion
-		p["replace"] = map[string]any{}
-		p["remove"] = []string{}
-	}
+
+	// Each planner call starts a new SDK session. Sending the previous base plus
+	// replacements costs more than sending current state and cannot save tokens.
+	b.base = current
+	b.baseVersion = b.version
+	p := map[string]any{"epoch": b.epoch, "version": b.version, "base_version": b.version,
+		"base": current, "replace": map[string]any{}, "remove": []string{}, "self_contained": true}
+	before, _ := json.Marshal(data)
+	after, _ := json.Marshal(p)
+	log.Printf("[context] planner task=%d round=%d source_bytes=%d packet_bytes=%d", task, b.version, len(before), len(after))
 	return p
 }

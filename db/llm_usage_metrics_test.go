@@ -118,3 +118,33 @@ func TestCostSeparatesFreshReadAndWriteBuckets(t *testing.T) {
 		})
 	}
 }
+
+func TestUsageDimensionsFilteringAndCursor(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if err := d.EnsureLLMUsageTable(); err != nil {
+		t.Fatal(err)
+	}
+	task := fmt.Sprintf("dimension-%d", time.Now().UnixNano())
+	defer d.Exec(`DELETE FROM llm_usage WHERE task_id=$1`, task)
+	for i := range 3 {
+		if err := d.InsertLLMUsage(&LLMUsage{TaskID: task, CallID: "same", Purpose: "agent", Round: 2, Attempt: i, ToolBytes: map[string]ToolBytes{"Read": {Result: 4}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, err := d.UsageDimensions(task, "agent", 0, 2)
+	if err != nil || len(first) != 2 || first[1].Attempt != 1 || first[0].ToolBytes["Read"].Result != 4 {
+		t.Fatalf("%+v %v", first, err)
+	}
+	next, err := d.UsageDimensions(task, "agent", first[1].ID, 2)
+	if err != nil || len(next) != 1 || next[0].Attempt != 2 {
+		t.Fatalf("%+v %v", next, err)
+	}
+	empty, err := d.UsageDimensions(task, "judge", 0, 2)
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("filter %+v %v", empty, err)
+	}
+}
