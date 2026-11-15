@@ -31,6 +31,14 @@ func TestChatSessionIdentityWithoutTranscript(t *testing.T) {
 	}
 }
 
+func TestCaptureRunKeepsCallerSessionIdentity(t *testing.T) {
+	var got string
+	p:=captureUsageProvider{stream:func(ctx context.Context,y func(llm.StreamEvent,error)bool){got=transcript.SessionIDFrom(ctx);if y(llm.StreamEvent{Type:llm.SETextDelta,Text:"done"},nil){y(llm.StreamEvent{Type:llm.SEMessageDelta,StopReason:"end_turn"},nil)}}
+	ctx:=transcript.WithSessionID(t.Context(),"exp123-goals")
+	_,_,err:=captureRun(ctx,agentcore.Options{Provider:p,MaxTurns:1},"fixture",nil)
+	if err!=nil || got!="exp123-goals"{t.Fatalf("identity=%q err=%v",got,err)}
+}
+
 func TestChatRefusesCorruptOrUnreadableTranscript(t *testing.T) {
 	for _, unreadable := range []bool{false, true} {
 		t.Run(map[bool]string{false: "corrupt", true: "unreadable-directory"}[unreadable], func(t *testing.T) {
