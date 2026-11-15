@@ -46,3 +46,6 @@ Issue #45 additionally patches skill/skill.go to JSON-quote caller args in
 privileged Extra, and noaadapter/project.go to frame synthetic summaries as
 JSON data. Operator-installed skill instructions and NOA control nudges remain
 host guidance. budget.go is a local adapter helper, not an upstream source file.
+
+noaadapter/materialize.go passes compression state to summary reassembly so
+host-owned archive navigation survives materialization with NOA disabled.

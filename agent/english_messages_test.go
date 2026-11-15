@@ -46,6 +46,7 @@ func TestSDKSystemMessageLiteralsAreEnglish(t *testing.T) {
 	allowed["noaadapter/project.go"] = true
 	allowed["noaadapter/session.go"] = true
 	allowed["skill/skill.go"] = true // quote caller args inside privileged skill Extra
+	allowed["noaadapter/materialize.go"] = true // retain host archive pointers with NOA off
 	for rel, want := range manifest.Original {
 		path := filepath.Join(root, rel)
 		body, err := os.ReadFile(path)
