@@ -335,6 +335,10 @@ func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionReque
 		for attempt := 0; ; attempt++ {
 			msg, sr, usage, callErr = selection.provider.Complete(ctx, req)
 			total.Add(usage)
+			total.ContextTokens = usage.ContextTokens
+			if total.ContextTokens == 0 {
+				total.ContextTokens = usage.InputTokens + usage.OutputTokens
+			}
 			if ctx.Err() != nil {
 				callErr = ctx.Err()
 			}
@@ -462,6 +466,7 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 					for _, ev := range pending {
 						acc.Add(ev)
 					}
+					acc.Usage.ContextTokens = acc.Usage.InputTokens + acc.Usage.OutputTokens
 					if acc.Usage != (llm.Usage{}) && !yield(llm.StreamEvent{Type: llm.SEMessageStart, Usage: acc.Usage}, nil) {
 						return
 					}
@@ -486,6 +491,13 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 					if !forward(buffered) {
 						return
 					}
+				}
+				footprint := delivered.ContextTokens
+				if footprint == 0 {
+					footprint = delivered.InputTokens + delivered.OutputTokens
+				}
+				if footprint > 0 {
+					yield(llm.StreamEvent{Type: llm.SEMessageStart, Usage: llm.Usage{ContextTokens: footprint}}, nil)
 				}
 				return
 			}
