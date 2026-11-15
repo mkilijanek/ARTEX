@@ -42,7 +42,7 @@ func SameEndpoint(a, b Config) bool {
 		}
 		return s
 	}
-	return a.Format == b.Format && mode(a.EndpointMode) == mode(b.EndpointMode) && a.BaseURL == b.BaseURL
+	return strings.TrimSpace(a.Proxy) == strings.TrimSpace(b.Proxy) && a.Format == b.Format && mode(a.EndpointMode) == mode(b.EndpointMode) && a.BaseURL == b.BaseURL
 }
 
 type fixedEndpointTransport struct {

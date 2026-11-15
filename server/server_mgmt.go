@@ -1876,7 +1876,16 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 	p.Streaming = body.Streaming == nil || *body.Streaming
 	var previous *db.LLMProfile
 	if p.ID > 0 {
-		previous, _ = pg.ProfileByID(p.ID)
+		var err error
+		previous, err = pg.ProfileByID(p.ID)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		if previous == nil {
+			writeErr(w, 404, "LLM profile not found")
+			return
+		}
 	}
 	if body.EndpointMode != nil {
 		p.EndpointMode = strings.TrimSpace(*body.EndpointMode)
@@ -2183,7 +2192,7 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 			transport.Proxy = http.ProxyURL(pu)
 		}
 	}
-	client := &http.Client{Transport: transport, Timeout: 30 * time.Second}
+	client := &http.Client{Transport: transport, Timeout: 30 * time.Second, CheckRedirect: agent.RefuseProviderRedirect}
 
 	// Try each candidate; return the first that yields a non-empty model list.
 	var lastErr string

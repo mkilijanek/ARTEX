@@ -546,7 +546,7 @@ func quotaAwareHTTPClient(proxy, sessionHeaderKey, userAgent string) (*http.Clie
 		}
 		transport.Proxy = http.ProxyURL(proxyURL)
 	}
-	return &http.Client{Transport: quotaAwareTransport{base: transport, sessionHeaderKey: strings.TrimSpace(sessionHeaderKey), userAgent: strings.TrimSpace(userAgent)}}, nil
+	return &http.Client{CheckRedirect: RefuseProviderRedirect, Transport: quotaAwareTransport{base: transport, sessionHeaderKey: strings.TrimSpace(sessionHeaderKey), userAgent: strings.TrimSpace(userAgent)}}, nil
 }
 
 // MaxUserAgentLen bounds a custom User-Agent value. Generous for real UA strings
@@ -662,3 +662,6 @@ func TestConnection(ctx context.Context, c Config) (time.Duration, string, error
 	}
 	return lat, reply, nil
 }
+
+// RefuseProviderRedirect prevents forwarding provider or session credentials.
+func RefuseProviderRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
