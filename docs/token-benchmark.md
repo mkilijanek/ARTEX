@@ -18,8 +18,8 @@ included; frontend checks require Node 22 (host initially supplies Node 18).
 Reproduce using Go 1.26.10 and an isolated PostgreSQL DSN:
 
 ```sh
-export PATH=/tmp/go/bin:$PATH
-export GOMODCACHE=/tmp/artex-gomod GOCACHE=/tmp/artex-gocache
+export PATH=/opt/data/artex-review-validation-20261114/go/bin:$PATH
+export GOMODCACHE=/opt/data/artex-review-validation-20261114/artex-gomod GOCACHE=/opt/data/artex-review-validation-20261114/artex-gocache
 export ARTEX_PG_DSN='postgres://USER:PASSWORD@127.0.0.1:PORT/isolated_baseline?sslmode=disable'
 go test -json -count=1 -p 1 -timeout 3m ./... > baseline.json
 go build ./...
@@ -69,3 +69,10 @@ Disable deployment/revert code if metering blocks model calls, changes tool
 permissions, loses evidence, double counts attempts or changes task outcomes.
 Leave additive columns in place on rollback; do not drop usage rows. Historical
 pre-fix echoed-token rows cannot be reconstructed safely without provider data.
+
+## Implementation status (review refresh 2026-11-15)
+
+Phase 0 is published in #34; Phase A in #35, B in #36 and C in #37. All target
+main and A/B/C include preceding phase commits. Translation #39 and SDK #47 form
+a separate dependency chain. Review fixes are in progress; published does not
+mean accepted or merged, and no live token savings have been measured.
