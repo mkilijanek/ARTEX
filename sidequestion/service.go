@@ -32,8 +32,10 @@ func (s SideQuestionService) Answer(ctx context.Context, req llm.CompletionReque
 				out.Text += ev.Text
 			case llm.SEToolUseStart:
 				out.ToolUse = true
-			case llm.SEMessageStart, llm.SEMessageDelta:
+			case llm.SEMessageStart:
 				out.Usage.Add(ev.Usage)
+			case llm.SEMessageDelta:
+				out.Usage.MergeEcho(ev.Usage)
 			case llm.SEMessageStop:
 				complete = true
 			}

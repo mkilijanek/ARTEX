@@ -372,10 +372,10 @@ func applyCostEur(d *DB, out []ProfileUsage) error {
 			continue
 		}
 		// InputTokens includes the cached subset (Anthropic and OpenAI usage
-		// semantics), so the fresh share is input minus cache reads; charging
+		// semantics), so the fresh share excludes cache reads and cache creation; charging
 		// both buckets at full input price double-counts the cache. Clamped at
 		// zero for gateways that report the buckets disjointly.
-		fresh := out[i].InputTokens - out[i].CacheReadTokens
+		fresh := out[i].InputTokens - out[i].CacheReadTokens - out[i].CacheWriteTokens
 		if fresh < 0 {
 			fresh = 0
 		}

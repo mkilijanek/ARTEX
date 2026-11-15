@@ -72,13 +72,38 @@ type meteredStreamProvider struct{ completeProvider }
 
 func (meteredStreamProvider) Stream(context.Context, llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
 	return func(yield func(llm.StreamEvent, error) bool) {
-		if !yield(llm.StreamEvent{Type: llm.SEMessageStart, Usage: llm.Usage{InputTokens: 23}}, nil) {
+		if !yield(llm.StreamEvent{Type: llm.SEMessageStart, Usage: llm.Usage{InputTokens: 23, CacheReadTokens: 5, CacheWriteTokens: 3}}, nil) {
 			return
 		}
-		if !yield(llm.StreamEvent{Type: llm.SEMessageDelta, Usage: llm.Usage{OutputTokens: 5}}, nil) {
+		if !yield(llm.StreamEvent{Type: llm.SEMessageDelta, Usage: llm.Usage{InputTokens: 23, CacheReadTokens: 5, CacheWriteTokens: 3, OutputTokens: 5}}, nil) {
 			return
 		}
 		yield(llm.StreamEvent{Type: llm.SEMessageStop}, nil)
+	}
+}
+
+func TestNormaUsageEchoLedger(t *testing.T) {
+	dsn := os.Getenv("ARTEX_PG_DSN")
+	if dsn == "" {
+		t.Skip("requires isolated ARTEX_PG_DSN")
+	}
+	pg, err := db.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pg.Close()
+	profile := "norma-echo-" + uuid.NewString()
+	defer pg.Exec(`DELETE FROM llm_usage WHERE profile_name=$1`, profile)
+	recorder := Wrap(meteredStreamProvider{}, pg, "fixture", profile, "", "", func() bool { return false })
+	for _, err := range recorder.Stream(t.Context(), llm.CompletionRequest{}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var count, input, output, read, write int
+	err = pg.QueryRow(`SELECT count(*),sum(input_tokens),sum(output_tokens),sum(cache_read),sum(cache_write) FROM llm_usage WHERE profile_name=$1`, profile).Scan(&count, &input, &output, &read, &write)
+	if err != nil || count != 1 || input != 23 || output != 5 || read != 5 || write != 3 {
+		t.Fatalf("ledger=%d %d/%d/%d/%d err=%v", count, input, output, read, write, err)
 	}
 }
 
