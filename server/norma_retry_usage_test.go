@@ -114,6 +114,13 @@ func TestNormaRetryLogicalUsage(t *testing.T) {
 				if mode == "exhausted" || mode == "cancel" {
 					want.ContextTokens = 13
 				}
+				wantCalls := 2
+				if mode == "cancel" {
+					wantCalls = 1
+				}
+				if p.calls != wantCalls {
+					t.Fatalf("physical calls=%d want=%d", p.calls, wantCalls)
+				}
 				if usage != want {
 					t.Fatalf("logical usage=%+v want %+v (calls %d)", usage, want, p.calls)
 				}
@@ -234,5 +241,52 @@ func TestNormaSDKRetainsAtomicErrorUsage(t *testing.T) {
 	}
 	if u := s.Usage(); !failed || u.InputTokens != 11 || u.OutputTokens != 2 {
 		t.Fatalf("atomic failure usage=%+v failed=%v", u, failed)
+	}
+}
+
+type committedFailureProvider struct {
+	calls int
+	kind  llm.StreamEventType
+}
+
+func (p *committedFailureProvider) Complete(context.Context, llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+	panic("unexpected atomic")
+}
+func (p *committedFailureProvider) Stream(context.Context, llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
+	return func(y func(llm.StreamEvent, error) bool) {
+		p.calls++
+		if !y(llm.StreamEvent{Type: p.kind, Text: "opaque-or-text"}, nil) {
+			return
+		}
+		y(llm.StreamEvent{}, errors.New("connection reset by peer"))
+	}
+}
+func TestCommittedStreamFailureNeverReplays(t *testing.T) {
+	for _, kind := range []llm.StreamEventType{llm.SEThinkingSignature, llm.SERedactedThinking, llm.SEToolUseSignature, llm.SETextDelta} {
+		p := &committedFailureProvider{kind: kind}
+		hooks := taskLLMStreamHooks{current: func(context.Context) (taskLLMSelection, error) {
+			return taskLLMSelection{provider: p, retry: agent.RetryConfig{StreamAttempts: 2, StreamInterval: time.Millisecond}}, nil
+		}}
+		failed := false
+		for _, err := range streamTaskLLM(t.Context(), "fixture", llm.CompletionRequest{}, hooks) {
+			if err != nil {
+				failed = true
+			}
+		}
+		if !failed || p.calls != 1 {
+			t.Fatalf("kind=%s failure=%v calls=%d", kind, failed, p.calls)
+		}
+	}
+}
+func TestConsumerStopNeverRetries(t *testing.T) {
+	p := &committedFailureProvider{kind: llm.SETextDelta}
+	hooks := taskLLMStreamHooks{current: func(context.Context) (taskLLMSelection, error) {
+		return taskLLMSelection{provider: p, retry: agent.RetryConfig{StreamAttempts: 2}}, nil
+	}}
+	for range streamTaskLLM(t.Context(), "fixture", llm.CompletionRequest{}, hooks) {
+		break
+	}
+	if p.calls != 1 {
+		t.Fatal("consumer stop replayed", p.calls)
 	}
 }
