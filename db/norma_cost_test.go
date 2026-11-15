@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func TestCostSeparatesFreshReadAndWriteBuckets(t *testing.T) {
+func TestNormaCostSeparatesFreshReadAndWriteBuckets(t *testing.T) {
 	d, err := Open(testDSN(t))
 	if err != nil {
 		t.Fatal(err)
