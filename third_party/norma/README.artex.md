@@ -31,3 +31,13 @@ Validation for issue #38: full ARTEX suite against disposable PostgreSQL passes
 pass under race detection. `go build ./...` and `go vet ./...` pass. The 57 Chinese
 literals plus the remaining Chinese full stop are translated; no live model or
 external target is needed to exercise these compiled messages.
+
+## SDK integration patches (milestone #11)
+
+The v0.4.8 original hashes stay in SOURCE.json. In addition to the four localized
+files, issue #46 changes only noaadapter/compactor.go (provider-window learning),
+noaadapter/project.go (opaque thinking replay), and noaadapter/session.go (final
+view overhead and tool-result budget). These patches preserve original history.
+Imported tests retain upstream contracts; the direct doStream fixture explicitly
+initializes its client, tier consolidation now asserts the supported behavior,
+and archive link assertions use the English labels from PR #39.

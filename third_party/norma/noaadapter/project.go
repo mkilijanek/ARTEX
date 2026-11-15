@@ -97,6 +97,10 @@ func projectBlock(role llm.Role, b llm.ContentBlock, toolNames map[string]string
 
 	case llm.BlockThinking:
 		return noa.CoreMessage{Role: noa.RoleAssistant, ContentType: noa.CTReasoning, Text: b.Thinking}, true
+	case llm.BlockRedactedThinking:
+		// Give the opaque block an identity; rebuildBlock keeps its original
+		// bytes, rather than interpreting or rewriting the encrypted payload.
+		return noa.CoreMessage{Role: noa.RoleAssistant, ContentType: noa.CTReasoning, Text: b.Data}, true
 
 	case llm.BlockToolUse:
 		return noa.CoreMessage{
@@ -230,7 +234,9 @@ func rebuildBlock(b llm.ContentBlock, c noa.CoreMessage, sc *Sidecar, opts Reass
 		b.Text = body
 
 	case llm.BlockThinking:
-		b.Thinking = c.Text
+		if b.Signature == "" {
+			b.Thinking = c.Text
+		}
 		// The signature is restored verbatim. Rewriting thinking text while
 		// keeping the old signature makes Anthropic reject the request, so the
 		// two must move together or not at all.

@@ -41,6 +41,10 @@ func TestSDKSystemMessageLiteralsAreEnglish(t *testing.T) {
 		t.Fatal(err)
 	}
 	allowed := map[string]bool{"noa/archive.go": true, "tool/task.go": true, "tool/shell_session.go": true, "tool/shell_tools.go": true}
+	// Separately reviewed integration patches, documented in README.artex.md.
+	allowed["noaadapter/compactor.go"] = true
+	allowed["noaadapter/project.go"] = true
+	allowed["noaadapter/session.go"] = true
 	for rel, want := range manifest.Original {
 		path := filepath.Join(root, rel)
 		body, err := os.ReadFile(path)
