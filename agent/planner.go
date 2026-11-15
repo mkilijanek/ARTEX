@@ -401,7 +401,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	if boundedContextEnabled() {
 		packet := p.overviewState.packet(ts.ID(), data)
 		b, _ := json.Marshal(packet)
-		overview = "\n\n[Self-contained projected situation: start from base, apply replace keys and remove keys. Full evidence and scope require on-demand tools. Omitted evidence is never a negative result.]\n" + string(b)
+		overview = "\n\n[Self-contained projected situation: read the current base snapshot. Full evidence and scope require on-demand tools. Omitted evidence is never a negative result.]\n" + string(b)
 	}
 	situational := renderTriggers(ts, triggers) + overview
 	// Task-level deadline / endgame mode (injected via ctx, see taskclock.go). On the
