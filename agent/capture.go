@@ -12,6 +12,7 @@ import (
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/harness"
 	"github.com/Autumn-27/norma/llm"
+	"github.com/Autumn-27/norma/transcript"
 )
 
 // captureRun drives one agent turn-to-completion over Session.Prompt and emits a
@@ -35,6 +36,9 @@ func captureRun(ctx context.Context, opts agentcore.Options, input string, emit 
 // multiple prompts on the SAME conversation (e.g. a settlement round that reuses
 // the worker's accumulated context after the main run hit max_turns).
 func captureRunSession(ctx context.Context, s *agentcore.Session, input string, emit func(db.Activity)) (string, harness.TerminalReason, error) {
+	// Norma attaches this context only when a transcript writer exists. Gateways
+	// and usage attribution need the same session identity without persistence.
+	ctx = transcript.WithSessionID(ctx, s.SessionID())
 	ctx, auditTrace := intercept.WithTrace(ctx, input, approvalHistory(s.Messages()))
 	defer auditTrace.Finish()
 	var reason harness.TerminalReason
