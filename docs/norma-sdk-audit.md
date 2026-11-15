@@ -149,7 +149,8 @@ Final local results on the milestone implementation:
 
 - ARTEX: `go build ./...`, `go vet ./...`, `go test -json -p 1 ./... -count=1`
   pass against fresh disposable PostgreSQL: **1001 passed test events**, five
-  existing skips. No new ARTEX test was disabled.
+  existing skips. Twelve additional role/segment/resumed-unlock test events
+  pass with PostgreSQL, including under race detection. No new ARTEX test was disabled.
 - Nested SDK: full `go test ./... -count=1 -timeout=240s` passes. The imported
   contract inventory contains 439 passed test events and three existing skips.
 - Race detection: ARTEX callback/session/tool/retry/endpoint adapters, plus SDK
