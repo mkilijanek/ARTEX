@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/llmmeta"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/transcript"
 	"github.com/google/uuid"
@@ -98,7 +99,8 @@ func TestNormaUsageEchoLedger(t *testing.T) {
 	}
 	defer pg.Exec(`DELETE FROM llm_usage WHERE profile_name=$1`, profile)
 	recorder := Wrap(meteredStreamProvider{}, pg, "fixture", profile, "", "", func() bool { return false })
-	for _, err := range recorder.Stream(t.Context(), llm.CompletionRequest{}) {
+	ctx := llmmeta.WithCall(t.Context(), "transcript_summary", 0)
+	for _, err := range recorder.Stream(ctx, llm.CompletionRequest{}) {
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -107,6 +109,43 @@ func TestNormaUsageEchoLedger(t *testing.T) {
 	err = pg.QueryRow(`SELECT count(*),sum(input_tokens),sum(output_tokens),sum(cache_read),sum(cache_write) FROM llm_usage WHERE profile_name=$1`, profile).Scan(&count, &input, &output, &read, &write)
 	if err != nil || count != 1 || input != 23 || output != 5 || read != 5 || write != 3 {
 		t.Fatalf("ledger=%d %d/%d/%d/%d err=%v", count, input, output, read, write, err)
+	}
+	var id, purpose string
+	err = pg.QueryRow(`SELECT call_id,purpose FROM llm_usage WHERE profile_name=$1`, profile).Scan(&id, &purpose)
+	if err != nil || id != llmmeta.From(ctx).ID || purpose != "transcript_summary" {
+		t.Fatalf("persisted attribution=%q/%q err=%v", id, purpose, err)
+	}
+}
+
+func TestNormaConsumerStopPersistsUsageOnce(t *testing.T) {
+	dsn := os.Getenv("ARTEX_PG_DSN")
+	if dsn == "" {
+		t.Skip("requires isolated PostgreSQL")
+	}
+	pg, err := db.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pg.Close()
+	if err := pg.EnsureLLMUsageTable(); err != nil {
+		t.Fatal(err)
+	}
+	profile := "norma-stopped-" + uuid.NewString()
+	defer pg.Exec(`DELETE FROM llm_usage WHERE profile_name=$1`, profile)
+	r := Wrap(meteredStreamProvider{}, pg, "fixture", profile, "", "", func() bool { return false })
+	for ev, err := range r.Stream(t.Context(), llm.CompletionRequest{}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ev.Type == llm.SEMessageDelta {
+			break
+		}
+	}
+	var count, input, output int
+	var status string
+	err = pg.QueryRow(`SELECT count(*),sum(input_tokens),sum(output_tokens),max(status) FROM llm_usage WHERE profile_name=$1`, profile).Scan(&count, &input, &output, &status)
+	if err != nil || count != 1 || input != 23 || output != 5 || status != "error" {
+		t.Fatalf("ledger=%d %d/%d %s err=%v", count, input, output, status, err)
 	}
 }
 

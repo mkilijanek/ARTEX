@@ -6,6 +6,7 @@ package llmrec
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"iter"
 	"log"
 	"strings"
@@ -150,6 +151,7 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 	}
 
 	return func(yield func(llm.StreamEvent, error) bool) {
+		drained := false
 		var (
 			textBuf     strings.Builder
 			thinkingBuf strings.Builder
@@ -175,7 +177,13 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 				r.record(req, session, taskID, worker, reqBody, capt, start, textBuf.String(), thinkingBuf.String(), usage, stopReason, err)
 			}
 		}
-		defer func() { finish(ctx.Err()) }()
+		defer func() {
+			err := ctx.Err()
+			if err == nil && !drained {
+				err = errors.New("model stream consumer stopped before completion")
+			}
+			finish(err)
+		}()
 
 		for ev, err := range r.inner.Stream(ctx, req) {
 			if err != nil {
@@ -212,6 +220,7 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 		}
 
 		// Stream completed normally.
+		drained = true
 		finish(streamErr)
 	}
 }
@@ -272,6 +281,13 @@ func (r *Recorder) recordUsage(ctx context.Context, taskID string, expID int64, 
 		return
 	}
 	meta := llmmeta.From(ctx)
+	if meta.ID == "" {
+		purpose := "unclassified"
+		if worker == "judge" {
+			purpose = "judge"
+		}
+		meta = llmmeta.From(llmmeta.WithCall(ctx, purpose, 0))
+	}
 	err := r.pg.InsertLLMUsage(&db.LLMUsage{
 		CallID: meta.ID, Purpose: meta.Purpose, Round: meta.Round,
 		TaskID:        taskID,
