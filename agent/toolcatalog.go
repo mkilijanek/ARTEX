@@ -245,3 +245,9 @@ func isEmptyJSON(raw json.RawMessage) bool {
 	s := string(raw)
 	return s == "null" || s == `""`
 }
+
+// AcceptsRawInput preserves Normas optional repair-tool contract through decorators.
+func (o *overriddenTool) AcceptsRawInput() bool {
+	t, ok := o.CoreTool.(interface{ AcceptsRawInput() bool })
+	return ok && t.AcceptsRawInput()
+}

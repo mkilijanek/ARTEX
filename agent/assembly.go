@@ -108,3 +108,9 @@ func (g *guardedTool) Call(ctx context.Context, in json.RawMessage, tc *actool.T
 	}()
 	return g.CoreTool.Call(ctx, in, tc)
 }
+
+// AcceptsRawInput preserves Normas optional repair-tool contract through decorators.
+func (g *guardedTool) AcceptsRawInput() bool {
+	t, ok := g.CoreTool.(interface{ AcceptsRawInput() bool })
+	return ok && t.AcceptsRawInput()
+}
