@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"fmt"
+	"github.com/Autumn-27/norma/llm"
 	"sync"
 	"testing"
 
@@ -55,11 +57,24 @@ func TestAgentHooksConcurrentSwap(t *testing.T) {
 		SetWrapupTaskTimeoutTurnsOverride(nil)
 	}
 
+	provider := captureUsageProvider{stream: func(_ context.Context, y func(llm.StreamEvent, error) bool) {
+		if y(llm.StreamEvent{Type: llm.SETextDelta, Text: "done"}, nil) {
+			y(llm.StreamEvent{Type: llm.SEMessageDelta, StopReason: "end_turn"}, nil)
+		}
+	}}
+	workdir := t.TempDir()
 	const rounds = 200
 	var wg sync.WaitGroup
-	for range 4 {
+	for reader := range 4 {
 		wg.Go(func() {
-			for range rounds {
+			for round := range rounds {
+				if round%20 == 0 {
+					chat := NewChatAgent(provider, "fixture", workdir, nil, 100000)
+					if _, err := chat.Chat(t.Context(), "assistant", fmt.Sprintf("swap-%d-%d", reader, round), "hello", 1, 0, false, nil); err != nil {
+						t.Error(err)
+						return
+					}
+				}
 				out, _, cleanup := AugmentTools(context.Background(), "worker", nil)
 				cleanup()
 				if len(out) != 0 {

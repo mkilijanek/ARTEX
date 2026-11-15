@@ -4,6 +4,36 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Changed
+
+- Norma SDK now uses upstream v0.4.8 with reviewed local patches, identified as
+  `v0.4.8+artex.1` in `third_party/norma/SOURCE.json`. CI verifies upstream hashes,
+  patched content and the complete snapshot file inventory.
+- **Go integration API migration:** `agent.ToolAugment`, `ToolResolve`,
+  `PromptOverride` and the wrap-up/finding-policy hooks are now synchronized
+  getter functions. Replace `agent.ToolAugment = fn` with
+  `agent.SetToolAugment(fn)`; replace reads with `agent.ToolAugment()`.
+  Use `SetToolResolve`, `SetPromptOverride`, `SetWrapupOverride`,
+  `SetWrapupMaxTurnsOverride`, `SetWrapupTaskTimeoutOverride`,
+  `SetWrapupTaskTimeoutTurnsOverride`, and `SetFindingTrafficBindingEnabled`
+  for their respective hooks. Passing nil clears a hook. Invoke the returned
+  callback after checking nil; callbacks execute outside the registry lock.
+
+### Fixed
+
+- Session IDs no longer depend on transcript persistence. Corrupt history stops
+  before model execution with a path-bearing `session_restore_error`, without
+  provider retries; recovery steps are in `docs/norma-sdk-audit.md`.
+- Tool decorators preserve optional raw-input repair, including metering and null
+  arguments. Concurrent session assembly and hook replacement are race-tested.
+- Retry/failover accounting preserves paid usage separately from context size;
+  canceled calls stop promptly. NOA bounds, overflow learning, signed/redacted
+  replay, and untrusted summary/tool-output boundaries have regression coverage.
+- Full endpoint URLs and custom user agents are supported with endpoint-bound
+  credentials; local Ollama does not inherit cloud keys.
+- Docker copies the local SDK before resolving modules; CI builds the application
+  stage from a clean checkout. SDK-generated system messages are in English.
+
 ## [0.5.0] - 2026-11-04
 
 Ollama support, a setup token for the first-run claim, secret scrubbing for child processes, a Docker image that builds from a fresh clone, Go 1.26.10 and Node 22, and race and shellcheck runs in CI. Entries marked "direct commit" landed on `main` without a pull request.
