@@ -205,8 +205,9 @@ not retried as network/model failures. Increase the configured window only after
 checking the model's actual limit, or start a fresh session.
 
 The later review on #15/#16 also identifies pending integration between the
-phase A–C stack and this SDK-only branch. Both edit usage/router code; they must
-be reconciled before merging both stacks. This PR does not bundle independent
+phase A–C stack and this SDK-only branch. Phase A telemetry is now integrated on this branch: numeric dimensions, pool
+attempt ordinals and cumulative logical usage are preserved together. Phase C
+compatibility still requires a final merge check. This PR does not bundle independent
 Planner/Worker projection logic. Per-call mixed-semantics pricing and explicit
 unknown cache tariff representation remain open review points in #16. Do not
 interpret green CI as acceptance of those unresolved cross-branch concerns.

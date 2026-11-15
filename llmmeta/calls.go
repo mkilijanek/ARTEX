@@ -14,6 +14,7 @@ type callKey struct{}
 type CallInfo struct {
 	ID, Purpose string
 	Round       int
+	attempts    *atomic.Int64
 }
 
 // WithCall starts a logical call. Retry decorators preserve this identity;
@@ -24,7 +25,7 @@ func WithCall(ctx context.Context, purpose string, round int) context.Context {
 	default:
 		purpose = "unclassified"
 	}
-	return context.WithValue(ctx, callKey{}, CallInfo{uuid.NewString(), purpose, max(0, round)})
+	return context.WithValue(ctx, callKey{}, CallInfo{uuid.NewString(), purpose, max(0, round), &atomic.Int64{}})
 }
 
 // MeterDeps labels only harness model turns. The provider fallback is separately
@@ -63,3 +64,11 @@ func (p *purposeProvider) Complete(ctx context.Context, req llm.CompletionReques
 }
 
 func From(ctx context.Context) CallInfo { info, _ := ctx.Value(callKey{}).(CallInfo); return info }
+
+// NextAttempt allocates a physical invocation ordinal across routers and pools.
+func (c CallInfo) NextAttempt() (int, bool) {
+	if c.attempts == nil {
+		return 0, false
+	}
+	return int(c.attempts.Add(1) - 1), true
+}

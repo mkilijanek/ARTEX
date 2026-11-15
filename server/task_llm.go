@@ -318,6 +318,7 @@ func (r *taskLLMRuntime) Complete(ctx context.Context, req llm.CompletionRequest
 
 func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest, hooks taskLLMStreamHooks) (llm.Message, string, llm.Usage, error) {
 	var total llm.Usage
+	callAttempt := 0
 	for {
 		selection, err := hooks.current(ctx)
 		if err != nil {
@@ -333,7 +334,8 @@ func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionReque
 		// fails as a whole — no partially delivered output — so any transient failure can be retried verbatim.
 		retries, backoffOf := sameProviderRetryPolicy(selection.retry)
 		for attempt := 0; ; attempt++ {
-			msg, sr, usage, callErr = selection.provider.Complete(ctx, req)
+			msg, sr, usage, callErr = selection.provider.Complete(llmrec.WithAttempt(ctx, callAttempt), req)
+			callAttempt++
 			total.Add(usage)
 			total.ContextTokens = usage.ContextTokens
 			if total.ContextTokens == 0 {
@@ -398,6 +400,7 @@ func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionReque
 
 func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest, hooks taskLLMStreamHooks) iter.Seq2[llm.StreamEvent, error] {
 	return func(yield func(llm.StreamEvent, error) bool) {
+		callAttempt := 0
 		for {
 			selection, err := hooks.current(ctx)
 			if err != nil {
@@ -435,7 +438,9 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 				pending = nil
 				streamErr = nil
 				delivered = llm.Usage{}
-				for event, err := range selection.provider.Stream(ctx, req) {
+				attemptCtx := llmrec.WithAttempt(ctx, callAttempt)
+				callAttempt++
+				for event, err := range selection.provider.Stream(attemptCtx, req) {
 					if err != nil {
 						streamErr = err
 						break

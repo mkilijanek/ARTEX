@@ -3,9 +3,9 @@ package sidequestion
 import (
 	"context"
 	"errors"
+	"github.com/Autumn-27/artex/llmmeta"
 	"strings"
 
-	"github.com/Autumn-27/artex/llmmeta"
 	"github.com/Autumn-27/norma/llm"
 )
 
@@ -21,7 +21,7 @@ type Answer struct {
 }
 
 func (s SideQuestionService) Answer(ctx context.Context, req llm.CompletionRequest, streaming bool, update func(Answer)) (out Answer, err error) {
-	ctx = llmmeta.WithCall(ctx, "side_answer", 0)
+	ctx = llmmeta.WithCall(ctx, "side_answer", 1)
 	if streaming {
 		complete := false
 		for ev, streamErr := range s.Provider.Stream(ctx, req) {
