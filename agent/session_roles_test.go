@@ -142,3 +142,95 @@ func TestResumedChatUnlocksToolsBeforeCallingModel(t *testing.T) {
 		t.Fatal("restored tool history lost", err)
 	}
 }
+
+func TestCorruptHistoryAcrossRoleEntryPoints(t *testing.T) {
+	dsn, _, err := db.DSN()
+	if err != nil {
+		t.Skip("requires isolated PostgreSQL")
+	}
+	d, err := db.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	exp, err := d.CreateExploration("only local session fixtures", "SDK identity")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec(`DELETE FROM explorations WHERE id=$1`, exp)
+	ts := d.Exploration(exp)
+	for _, persist := range []bool{true} {
+		t.Run(fmt.Sprintf("transcript=%v", persist), func(t *testing.T) {
+			dir := t.TempDir()
+			var store *transcript.Store
+			if persist {
+				store = transcript.NewStore(filepath.Join(dir, "transcripts"))
+			}
+			for _, role := range []string{"worker", "main-zero", "main-segment"} {
+				t.Run(role, func(t *testing.T) {
+					var ids []string
+					provider := captureUsageProvider{stream: func(ctx context.Context, y func(llm.StreamEvent, error) bool) {
+						ids = append(ids, transcript.SessionIDFrom(ctx))
+						if y(llm.StreamEvent{Type: llm.SETextDelta, Text: "done"}, nil) {
+							y(llm.StreamEvent{Type: llm.SEMessageDelta, StopReason: "end_turn"}, nil)
+						}
+					}}
+					want := ""
+					run := func() error { return nil }
+					switch role {
+					case "worker":
+						w := NewWorker(provider, "fixture", dir, store, 100000, 1)
+						want = WorkerSessionID(exp, 101)
+						run = func() error {
+							_, _, err := w.Execute(t.Context(), "fixture", exp, nil, ts, &db.Node{ID: 101, Payload: json.RawMessage(`{"summary":"local session fixture"}`)}, nil, nil, nil, nil)
+							return err
+						}
+					case "planner":
+						p := NewPlanner(provider, "fixture", dir, store, 100000, 1)
+						want = fmt.Sprintf("exp%d-planner", exp)
+						run = func() error {
+							_, _, err := p.Plan(t.Context(), exp, nil, ts, "local session fixture", nil, nil)
+							return err
+						}
+					default:
+						m := NewMainAgent(provider, "fixture", dir, store, 100000, 1)
+						segment := 0
+						want = fmt.Sprintf("exp%d-main", exp)
+						if role == "main-segment" {
+							segment = 2
+							want += "-s2"
+						}
+						run = func() error {
+							_, err := m.Chat(t.Context(), exp, segment, nil, ts, "local session fixture", "message", nil, nil, nil, nil, nil)
+							return err
+						}
+					}
+					const broken = "{torn transcript\n"
+					path := store.MainPath(want)
+					if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(path, []byte(broken), 0600); err != nil {
+						t.Fatal(err)
+					}
+					err := run()
+					if err == nil || !strings.Contains(err.Error(), path) || len(ids) != 0 {
+						t.Fatalf("err=%v model calls=%v", err, ids)
+					}
+					body, err := os.ReadFile(path)
+					if err != nil || string(body) != broken {
+						t.Fatalf("damaged history changed: %q %v", body, err)
+					}
+
+				})
+			}
+			files, _ := filepath.Glob(filepath.Join(dir, "transcripts", "*.jsonl"))
+			if !persist && len(files) != 0 {
+				t.Fatal("store-free runs wrote transcripts")
+			}
+			if persist && len(files) != 3 {
+				t.Fatalf("segment/role files=%v", files)
+			}
+		})
+	}
+}

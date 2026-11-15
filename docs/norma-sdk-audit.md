@@ -162,3 +162,25 @@ Issues remain open for review/merge. Implementation and acceptance-test coverage
 of this milestone is complete; opening the final PR does not close the milestone.
 The separate translation PR #39 is retained as the review/merge prerequisite.
 
+
+## Recovering a session that cannot be restored
+
+`session_restore_error` is a local persistence failure, not a provider error. ARTEX
+stops before sending a model request, preserves the transcript, reports its path,
+and does not run the model-error retry loop. Do not repeatedly redispatch it.
+
+1. Stop/pause the affected session and ensure no process is writing its transcript.
+2. Make a protected copy of the exact path in the error, plus the associated NOA
+   archive directory; preserve permissions. Never edit the only copy.
+3. Restore a known-good complete transcript backup. For a torn final JSONL record,
+   inspect a copy: removing only an incomplete final record is safe only after
+   verifying the remaining tool-use/results are paired. Otherwise use a complete
+   backup. Do not discard signed thinking or rewrite tool IDs.
+4. Retry the session once after validation; confirm it resumes the intended
+   history. Keep the original and backup until that succeeds. If no valid history
+   exists, create a new session explicitly rather than silently overwriting it.
+
+Identity mapping is deliberate: transcript/provider use the session ID; chat NOA
+archives use `chat-<sessionID>` for backward-compatible namespacing. Main/worker
+archives use their existing role IDs. This is a deterministic mapping, not literal
+identity equality across every storage namespace.

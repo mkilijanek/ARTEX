@@ -191,7 +191,7 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 	// across turns (each Chat is a fresh session; without this it can't see earlier
 	// messages). First turn: no file yet → Resume loads nothing and proceeds.
 	if m.tx != nil {
-		if err := resumeSession(s, opts.SessionID); err != nil {
+		if err := resumeSession(s, opts.SessionID, opts.Transcript); err != nil {
 			return "", err
 		}
 	}

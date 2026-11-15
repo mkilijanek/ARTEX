@@ -564,8 +564,8 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// restarting from scratch.
 	alreadyRecorded := false
 	if w.tx != nil {
-		if err := resumeSession(s, opts.SessionID); err != nil {
-			return harness.ReasonModelError, tsx.Writes(), err
+		if err := resumeSession(s, opts.SessionID, opts.Transcript); err != nil {
+			return ReasonSessionRestore, tsx.Writes(), err
 		}
 		alreadyRecorded = requestID != "" && hasWorkerChatMessage(s.Messages(), requestID)
 		if len(s.Messages()) > 0 && message == "" {
