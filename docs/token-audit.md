@@ -131,3 +131,29 @@ ordinal within one session instance, **not** a durable conversation turn number:
 SDK re-issues get a fresh call ID and ordinal, and restoring a session resets the
 ordinal. Group by call ID for physical retries; never group solely by round across
 resumes. Unexpected stream EOF without a stop event is an error, not completion.
+
+## Phase B review corrections (#1, #2, #17–20)
+
+The feature remains opt-in. Goals, hints, task identity, coverage, stagnation,
+related-task signals and credentials are preserved without truncation. Optional
+fields carry per-path omission metadata. The 16 KiB target is a **soft** budget:
+mandatory data may exceed it, explicitly marked `mandatory_budget_exceeded`;
+correctness takes precedence over savings. Do not claim a hard bound on all prompts.
+
+Planner packets now send one current snapshot, not a base plus duplicated changes.
+Fresh SDK sessions cannot safely use standalone deltas. Logs record source/packet
+bytes per round, not provider token savings. Dependency filtering precedes optional
+trimming and uses producing intent IDs; direct fact/finding parents are retained
+as well, because graph edges can point from those node kinds to an intent.
+
+Asset omissions are explicit at field level. Trace pagination parameters exist
+only with the flag enabled, unavailable step IDs are reported, and detail batches
+have an aggregate 16 KiB encoded budget with continuation offsets.
+
+#20 remains incomplete: this projection suppresses identical entries while
+preserving changed state and source identity, but does not deduplicate across
+prefetch, tool results and SDK history. That requires a unified provenance and
+history protocol; deleting evidence by matching text would be unsafe. #17's durable
+delta protocol and live per-round token comparison are also not delivered. These
+issues must not auto-close from this PR. #1/#2 remain opt-in rollout work rather
+than default-on completion claims.
