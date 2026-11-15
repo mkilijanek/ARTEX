@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/Autumn-27/artex/llmmeta"
@@ -28,7 +29,7 @@ func TestModelMetricsDistinguishActualSDKSummary(t *testing.T) {
 		}
 	}
 	c := compaction.New(compaction.Config{KeepRecent: 1}, compaction.ProviderSummarizer(opts.Provider, 1000, true))
-	_, ok := c.Reactive(t.Context(), []llm.Message{llm.UserText("first"), llm.UserText("second"), llm.UserText("tail")})
+	_, ok := c.Reactive(t.Context(), []llm.Message{llm.UserText(strings.Repeat("first ", 2000)), llm.UserText("second"), llm.UserText("tail")})
 	if !ok || len(calls) != 3 {
 		t.Fatalf("summary=%v calls=%+v", ok, calls)
 	}
