@@ -184,3 +184,29 @@ Identity mapping is deliberate: transcript/provider use the session ID; chat NOA
 archives use `chat-<sessionID>` for backward-compatible namespacing. Main/worker
 archives use their existing role IDs. This is a deterministic mapping, not literal
 identity equality across every storage namespace.
+
+## Additional review follow-up (2026-11-16)
+
+Provider and model-list clients refuse redirects in both base and fixed endpoint
+modes. Stored key binding includes proxy configuration; profile lookup failures
+abort edits. Side-question identity includes endpoint mode and proxy.
+
+Repeated conversation summaries retain the original input without nesting prior
+JSON envelopes. Side-question summaries are quoted as untrusted JSON. Activity
+presentation strips only complete, nonce-matched SDK wrappers; model history
+retains the frames. Marker neutralization performed by the SDK remains visible
+in the activity payload; the underlying original artifacts remain authoritative.
+
+NOA retains redacted-only assistant messages. The final request budget is a
+conservative local estimate, not a provider tokenizer or proof that a request
+would overflow. It can reject a request a provider would accept. Such failures
+are identified as local context-budget errors and reported as blocking_limit,
+not retried as network/model failures. Increase the configured window only after
+checking the model's actual limit, or start a fresh session.
+
+The later review on #15/#16 also identifies pending integration between the
+phase A–C stack and this SDK-only branch. Both edit usage/router code; they must
+be reconciled before merging both stacks. This PR does not bundle independent
+Planner/Worker projection logic. Per-call mixed-semantics pricing and explicit
+unknown cache tariff representation remain open review points in #16. Do not
+interpret green CI as acceptance of those unresolved cross-branch concerns.
