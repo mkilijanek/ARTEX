@@ -32,10 +32,11 @@ import (
 
 // Config describes the LLM backend resolved from the environment.
 type Config struct {
-	Format  llm.Format
-	BaseURL string
-	APIKey  string
-	Model   string
+	Format       llm.Format
+	BaseURL      string
+	EndpointMode string // empty/base = SDK suffixes; fixed = exact final URL
+	APIKey       string
+	Model        string
 	// Proxy routes all LLM requests through the given proxy URL (http/https/socks5,
 	// optionally with user:pass@ credentials). Empty means direct — it does NOT
 	// fall back to the standard *_PROXY environment variables.
@@ -345,12 +346,22 @@ func (c Config) Provider() string {
 // limiter lives on the single provider instance — so planner + all workers +
 // main agent (which share this provider) are bounded by one shared rate limit.
 func (c Config) NewProvider() (llm.Provider, error) {
+	if err := ValidateEndpoint(c.EndpointMode, c.BaseURL); err != nil {
+		return nil, err
+	}
 	client, err := quotaAwareHTTPClient(c.Proxy, c.SessionHeaderKey, c.UserAgent)
 	if err != nil {
 		return nil, err
 	}
 	wireFormat := c.Format
 	baseURL := c.BaseURL
+	if c.EndpointMode == EndpointFixed {
+		endpoint, _ := url.Parse(strings.TrimSpace(c.BaseURL))
+		client.Transport = fixedEndpointTransport{base: client.Transport, endpoint: endpoint}
+		// Exact endpoints never follow redirects with model credentials.
+		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		baseURL = endpoint.Scheme + "://" + endpoint.Host
+	}
 	apiKey := c.APIKey
 	// Ollama speaks OpenAI's Chat Completions on the wire. Bundle the keyless
 	// defaults here so an Ollama config can never leak toward the SDK's env-

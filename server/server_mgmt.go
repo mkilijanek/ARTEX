@@ -1863,8 +1863,9 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 	// would get wrong — legacy/partial clients that never send it stay streaming.
 	var body struct {
 		db.LLMProfile
-		APIKey    string `json:"api_key"`
-		Streaming *bool  `json:"streaming"`
+		APIKey       string  `json:"api_key"`
+		Streaming    *bool   `json:"streaming"`
+		EndpointMode *string `json:"endpoint_mode"`
 	}
 	if err := decode(r, &body); err != nil {
 		writeErr(w, 400, err.Error())
@@ -1873,6 +1874,27 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 	p := body.LLMProfile
 	p.APIKey = body.APIKey
 	p.Streaming = body.Streaming == nil || *body.Streaming
+	var previous *db.LLMProfile
+	if p.ID > 0 {
+		previous, _ = pg.ProfileByID(p.ID)
+	}
+	if body.EndpointMode != nil {
+		p.EndpointMode = strings.TrimSpace(*body.EndpointMode)
+	} else if previous != nil {
+		p.EndpointMode = previous.EndpointMode
+	}
+	if err := agent.ValidateEndpoint(p.EndpointMode, p.BaseURL); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	if previous != nil && previous.APIKey != "" && strings.TrimSpace(p.APIKey) == "" {
+		before := agent.ConfigFromEndpoint(previous.Format, previous.Model, previous.BaseURL, "", previous.Proxy, previous.EndpointMode)
+		after := agent.ConfigFromEndpoint(p.Format, p.Model, p.BaseURL, "", p.Proxy, p.EndpointMode)
+		if !agent.SameEndpoint(before, after) {
+			writeErr(w, 400, "enter an API key when changing the provider endpoint or endpoint mode")
+			return
+		}
+	}
 	// Output cap: negative values are meaningless, clamp to zero (= do not send the
 	// field). The field-name switch only matters for Chat Completions — anthropic and
 	// openai-responses hard-code their field names; storing it would only mislead later readers, so it is cleared for any non-openai format. Unknown values are cleared too, to avoid throwing DB CHECK errors at the user.
@@ -2051,14 +2073,19 @@ func (s *Server) pgLLMPoolReset(w http.ResponseWriter, r *http.Request) {
 // the OpenAI path, it falls back to the OpenAI endpoint at the stripped root.
 func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Provider  string `json:"provider"` // "openai" | "anthropic" | "ollama"
-		BaseURL   string `json:"base_url"`
-		APIKey    string `json:"api_key"`
-		Proxy     string `json:"proxy"`
-		ProfileID *int64 `json:"profile_id"` // fallback: use stored key from this profile
+		Provider     string `json:"provider"` // "openai" | "anthropic" | "ollama"
+		BaseURL      string `json:"base_url"`
+		EndpointMode string `json:"endpoint_mode"`
+		APIKey       string `json:"api_key"`
+		Proxy        string `json:"proxy"`
+		ProfileID    *int64 `json:"profile_id"` // fallback: use stored key from this profile
 	}
 	if err := decode(r, &req); err != nil {
 		writeErr(w, 400, err.Error())
+		return
+	}
+	if req.EndpointMode == agent.EndpointFixed {
+		writeJSON(w, 200, map[string]any{"ok": false, "error": "model listing is unavailable for a fixed completion endpoint; enter the model name manually"})
 		return
 	}
 	// Resolve API key: form input > profile stored key. The stored key is only
@@ -2067,7 +2094,7 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 	withheld := false
 	if apiKey == "" && req.ProfileID != nil {
 		if p, err := s.m.pg.ProfileByID(*req.ProfileID); err == nil && p != nil {
-			if sameLLMEndpoint(req.Provider, req.BaseURL, p.Format, p.BaseURL) {
+			if p.EndpointMode != agent.EndpointFixed && sameLLMEndpoint(req.Provider, req.BaseURL, p.Format, p.BaseURL) {
 				apiKey = p.APIKey
 			} else {
 				withheld = p.APIKey != ""

@@ -1063,6 +1063,7 @@ export interface LLMProfile {
   session_header_key?: string;
   // Custom User-Agent: when non-empty, every outbound LLM request overrides its User-Agent header with this value. "" = do not override (keep the default UA).
   user_agent?: string;
+  endpoint_mode?: "" | "base" | "fixed";
   // This profile's retry overrides (connect / empty response / same-provider safety window). Empty / all zeros = follow the global policy.
   retry?: LLMRetryOverride;
 }
