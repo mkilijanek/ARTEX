@@ -41,3 +41,8 @@ view overhead and tool-result budget). These patches preserve original history.
 Imported tests retain upstream contracts; the direct doStream fixture explicitly
 initializes its client, tier consolidation now asserts the supported behavior,
 and archive link assertions use the English labels from PR #39.
+
+Issue #45 additionally patches skill/skill.go to JSON-quote caller args in
+privileged Extra, and noaadapter/project.go to frame synthetic summaries as
+JSON data. Operator-installed skill instructions and NOA control nudges remain
+host guidance. budget.go is a local adapter helper, not an upstream source file.

@@ -45,6 +45,7 @@ func TestSDKSystemMessageLiteralsAreEnglish(t *testing.T) {
 	allowed["noaadapter/compactor.go"] = true
 	allowed["noaadapter/project.go"] = true
 	allowed["noaadapter/session.go"] = true
+	allowed["skill/skill.go"] = true // quote caller args inside privileged skill Extra
 	for rel, want := range manifest.Original {
 		path := filepath.Join(root, rel)
 		body, err := os.ReadFile(path)
