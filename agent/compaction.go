@@ -45,6 +45,8 @@ type Compactor struct {
 
 	mu                            sync.Mutex
 	summaryMemo                   map[[32]byte]string
+	summaryOrder                  [][32]byte
+	summaryFlights                map[[32]byte]*summaryFlight
 	summaryMemoHits, summaryCalls int
 	running                       map[int64]bool
 	lastRun                       map[int64]time.Time
@@ -519,9 +521,6 @@ func buildCompressionInput(g *coldGraph, b block, nodeByID map[int64]*db.Node) s
 // compress runs the §4 body LLM call on one block. Uses the same model the agent
 // runs on; thinking disabled (a pure summarization step).
 func (c *Compactor) compress(ctx context.Context, g *coldGraph, b block, nodeByID map[int64]*db.Node) (string, error) {
-	if ctx.Err() != nil {
-		return "", ctx.Err()
-	}
 	req := llm.CompletionRequest{
 		System:    []string{compressionSystemPrompt},
 		Messages:  []llm.Message{llm.UserText(buildCompressionInput(g, b, nodeByID))},
@@ -546,36 +545,97 @@ func (c *Compactor) compress(ctx context.Context, g *coldGraph, b block, nodeByI
 			key = sha256.Sum256(serialized)
 		}
 	}
-	c.mu.Lock()
-	if memo {
-		if body, ok := c.summaryMemo[key]; ok {
-			c.summaryMemoHits++
-			c.mu.Unlock()
-			return body, nil
+
+	compute := func() (string, error) {
+		c.mu.Lock()
+		c.summaryCalls++
+		c.mu.Unlock()
+		msg, stop, _, err := c.prov.Complete(llmmeta.WithCall(ctx, "graph_summary", 0), req)
+		if err != nil {
+			return "", err
 		}
+		if memo && ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		body := strings.TrimSpace(msg.Text())
+		if body == "" {
+			return "", fmt.Errorf("empty body from model")
+		}
+		if memo && stop != "stop" && stop != "end_turn" {
+			return "", fmt.Errorf("incomplete summary (stop reason %q)", stop)
+		}
+		return body, nil
 	}
-	c.summaryCalls++
-	c.mu.Unlock()
-	msg, _, _, err := c.prov.Complete(llmmeta.WithCall(ctx, "graph_summary", 0), req)
-	if err != nil {
-		return "", err
+	if !memo {
+		return compute()
 	}
+	return c.memoSummary(ctx, key, compute)
+}
+
+type summaryFlight struct {
+	done chan struct{}
+	body string
+	err  error
+}
+
+func (c *Compactor) memoSummary(ctx context.Context, key [32]byte, compute func() (string, error)) (string, error) {
 	if ctx.Err() != nil {
 		return "", ctx.Err()
 	}
-	body := strings.TrimSpace(msg.Text())
-	if body == "" {
-		return "", fmt.Errorf("empty body from model")
+	c.mu.Lock()
+	touch := func() {
+		for i, k := range c.summaryOrder {
+			if k == key {
+				c.summaryOrder = append(c.summaryOrder[:i], c.summaryOrder[i+1:]...)
+				break
+			}
+		}
+		c.summaryOrder = append(c.summaryOrder, key)
 	}
-	if memo {
-		c.mu.Lock()
-		if c.summaryMemo == nil || len(c.summaryMemo) >= 64 {
+	if body, ok := c.summaryMemo[key]; ok {
+		touch()
+		c.summaryMemoHits++
+		c.mu.Unlock()
+		return body, nil
+	}
+	if pending := c.summaryFlights[key]; pending != nil {
+		c.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-pending.done:
+			if pending.err == nil {
+				c.mu.Lock()
+				c.summaryMemoHits++
+				c.mu.Unlock()
+			}
+			return pending.body, pending.err
+		}
+	}
+	if c.summaryFlights == nil {
+		c.summaryFlights = map[[32]byte]*summaryFlight{}
+	}
+	flight := &summaryFlight{done: make(chan struct{})}
+	c.summaryFlights[key] = flight
+	c.mu.Unlock()
+	body, err := compute()
+	c.mu.Lock()
+	if err == nil {
+		if c.summaryMemo == nil {
 			c.summaryMemo = map[[32]byte]string{}
 		}
+		if len(c.summaryMemo) >= 64 {
+			delete(c.summaryMemo, c.summaryOrder[0])
+			c.summaryOrder = c.summaryOrder[1:]
+		}
 		c.summaryMemo[key] = body
-		c.mu.Unlock()
+		touch()
 	}
-	return body, nil
+	flight.body, flight.err = body, err
+	delete(c.summaryFlights, key)
+	close(flight.done)
+	c.mu.Unlock()
+	return body, err
 }
 
 // SummaryStats separates real inference calls from successful source-identical
