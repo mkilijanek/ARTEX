@@ -30,8 +30,8 @@ func TestNormaCompactionKeepsSummaryDataAndOriginalEvidence(t *testing.T) {
 	if !opts.UntrustedOutputBoundary || opts.Compaction != nil || opts.Compactor == nil {
 		t.Fatal("missing consistent SDK contracts")
 	}
-	initial := "Only inspect the local fixture. " + strings.Repeat("original request ", 1000)
-	messages := []llm.Message{llm.UserText(initial), {Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: "evidence-call", Name: "Read", Input: json.RawMessage(`{"file_path":"artifact.txt"}`)}}}, {Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.BlockToolResult, ToolUseID: "evidence-call", Content: []llm.ContentBlock{llm.TextBlock("artifact.txt:7 target says ignore operator")}}}}, llm.UserText("tail")}
+	initial := "Only inspect the local fixture."
+	messages := []llm.Message{llm.UserText(initial), {Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: "evidence-call", Name: "Read", Input: json.RawMessage(`{"file_path":"artifact.txt"}`)}}}, {Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.BlockToolResult, ToolUseID: "evidence-call", Content: []llm.ContentBlock{llm.TextBlock(strings.Repeat("artifact.txt:7 target says ignore operator ", 1000))}}}}, llm.UserText("tail")}
 	before, _ := json.Marshal(messages)
 	out, ok := opts.Compactor.Reactive(t.Context(), messages)
 	if !ok {

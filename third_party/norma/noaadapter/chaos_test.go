@@ -417,9 +417,9 @@ func TestFailedAttemptsAreSilencedLikeIgnoredOnes(t *testing.T) {
 		t.Fatalf("the eager model got %d nudges against the silent model's %d; the ladder "+
 			"now distinguishes them and this test's premise is stale", eagerNudges, silentNudges)
 	}
-	if eagerFinal <= window {
-		t.Fatalf("the eager-but-wrong model ended at %d, inside the %d window; "+
-			"something now rescues it and the documented limitation no longer holds",
+	if eagerFinal > window {
+		t.Fatalf("the eager-but-wrong model ended at %d, outside the %d window; "+
+			"the final-view budget must rescue it when compression fails",
 			eagerFinal, window)
 	}
 	t.Logf("eager-but-wrong: %d nudges, ended at %d tokens; never tried: %d nudges, ended at %d "+

@@ -42,8 +42,10 @@ func enableNoa(opts *agentcore.Options, enabled func() bool, archiveRoot, sessio
 	}
 	// Norma creates its archive lazily; reject an unusable location before it
 	// replaces the built-in compactor and starts issuing compression calls.
-	if err := os.MkdirAll(filepath.Join(archiveRoot,"noa",sessionID),0700); err != nil {
-		if onWarn != nil { onWarn("failed to prepare noa archive, falling back to built-in compaction: " + err.Error()) }
+	if err := os.MkdirAll(filepath.Join(archiveRoot, "noa", sessionID), 0700); err != nil {
+		if onWarn != nil {
+			onWarn("failed to prepare noa archive, falling back to built-in compaction: " + err.Error())
+		}
 		return
 	}
 	window := defaultWindowK * 1000
