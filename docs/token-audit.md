@@ -15,7 +15,7 @@ No live model measurements or token savings have been established.
 | `llmrec/llmrec.go:121` `Stream`; `:223` `Complete` | Existing ledger runs with debug recording off. Stream input/cache deltas were summed even when SDK adapters echo totals. | Correctness before optimization; compare SDK `Usage.MergeEcho` contract. | #14, #16 |
 | `db/llm_usage.go:346` `applyCostEur` | Fresh input subtracts cache reads but originally not cache creation, although SDK Anthropic input includes both. | Cache-write tokens charged at both fresh and cache-write prices. | #16 |
 | `server/task_llm.go:319` `completeTaskLLM`; `:389` `streamTaskLLM` | Runtime retries and profile switches invoke decorated providers repeatedly. | Count physical invocations separately from logical rounds; do not add return usage to ledger totals. | #14, #15 |
-| `server/server.go:465`, `:600` recorder wrapping | Both environment and persisted-profile provider paths share recorder. | Label actual configured adapter; do not retain endpoint/key in metrics. Pool-internal retries require separate audit. | #14, #15 |
+| `server/server.go:465`, `:600` recorder wrapping | Both environment and persisted-profile provider paths share recorder. | Label actual configured adapter; do not retain endpoint/key in metrics. Pool member attempts are recorded; SDK-internal HTTP retries remain below the recorder. | #14, #15 |
 | `server/intercept.go:51`, `:85` judge lane | Judge uses explicit worker override and decorated provider. | Retain judgement and safety context; no prompt trimming here. | #15 |
 | `sidequestion/context.go:111` summary completion; `sidequestion/service.go:25`, `:53` answers | Both invoke bound provider; summary and answer currently share lane. | Purpose-level breakdown is unavailable; zero reported tokens are not proof of zero spend. | #15 |
 | `agent/mainagent.go`, `agent/planner.go`, `agent/worker.go` prompt assembly | Shared instructions and dynamic intent tails require priority-aware review. | Stable prefix must preserve untrusted boundaries and current intent through compaction. | #22, #3 |
@@ -55,7 +55,7 @@ and `side_summary`, and approval judgement is `judge`. Findings/review/chat and
 goal decomposition use the same instrumented harness path. Purpose never comes
 from prompt inspection. Summaries without a harness round use round zero.
 
-Per-tool byte buckets use full SHA-256 tool-name keys and contain only schema and
+Per-tool byte buckets use full catalog tool-name keys and contain only schema and
 result sizes. They link tool context to the owning model call; provider token
 usage and cost belong to the whole call and are not spuriously divided among
 tools. A result whose originating tool use is outside retained history goes in
@@ -83,3 +83,20 @@ Phase A acceptance includes the following explicit exclusions and limits:
 Core dimensions and hidden configured-provider paths are implemented and tested.
 Reports must retain these exclusions rather than claiming universal billing or
 per-tool token precision. Security and context changes remain later phases.
+
+## Review correction: dimensions and call boundaries (#14)
+
+`GET /api/tokens/dimensions?task=ID&purpose=agent&after=0&limit=100` returns
+physical-attempt rows with call ID, purpose, round, attempt and per-tool bytes;
+follow `next_after` until rows is empty. Limit is bounded to 500. Call and purpose
+indexes support inspection. This is authenticated by the normal API middleware.
+Tool keys now retain configured catalog names (not descriptions/arguments/results);
+unknown model-invented names use `_unknown`. Historical hashed keys remain opaque.
+
+Attempt ordinals are shared across recorded providers within a logical call,
+including pool-internal failover and outer router retries. SDK-internal HTTP
+retries below the recorder remain excluded. `round` means the model invocation
+ordinal within one session instance, **not** a durable conversation turn number:
+SDK re-issues get a fresh call ID and ordinal, and restoring a session resets the
+ordinal. Group by call ID for physical retries; never group solely by round across
+resumes. Unexpected stream EOF without a stop event is an error, not completion.

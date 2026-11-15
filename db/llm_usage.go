@@ -22,7 +22,7 @@ type LLMUsage struct {
 	CallID    string               `json:"call_id"`
 	Round     int                  `json:"round"`
 	Purpose   string               `json:"purpose"`
-	ToolBytes map[string]ToolBytes `json:"tool_bytes"` // SHA-256 tool-name keys; no content or arguments
+	ToolBytes map[string]ToolBytes `json:"tool_bytes"` // catalog tool-name keys; no content or arguments
 
 	Provider        string `json:"provider"`
 	IntentID        int64  `json:"intent_id"`     // 0 = not an intent session
@@ -78,6 +78,8 @@ ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS call_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS round_no INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS purpose TEXT NOT NULL DEFAULT '';
 ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS tool_bytes JSONB NOT NULL DEFAULT '{}';
+CREATE INDEX IF NOT EXISTS idx_llm_usage_call ON llm_usage(call_id) WHERE call_id <> '';
+CREATE INDEX IF NOT EXISTS idx_llm_usage_purpose ON llm_usage(purpose, ts);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_task  ON llm_usage(task_id);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_model ON llm_usage(task_id, model);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_exp   ON llm_usage(exploration_id);
@@ -428,4 +430,41 @@ func applyCostEur(d *DB, out []ProfileUsage) error {
 		out[i].CostEur = &c
 	}
 	return nil
+}
+
+// UsageDimensions returns a bounded, cursor-paged physical-attempt ledger. CallID
+// groups router/pool attempts; round is a per-session-instance invocation ordinal.
+func (d *DB) UsageDimensions(task, purpose string, after int64, limit int) ([]UsageDimension, error) {
+	if limit < 1 || limit > 500 {
+		limit = 100
+	}
+	rows, err := d.Query(`SELECT id, call_id, purpose, round_no, attempt, COALESCE(task_id,''),
+ COALESCE(profile_name,''), tool_bytes, input_tokens, output_tokens, cache_read, cache_write,
+ COALESCE(status,''), reason FROM llm_usage
+ WHERE id > $1 AND ($2 = '' OR task_id = $2) AND ($3 = '' OR purpose = $3)
+ ORDER BY id LIMIT $4`, after, task, purpose, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []UsageDimension{}
+	for rows.Next() {
+		var row UsageDimension
+		var tools []byte
+		if err := rows.Scan(&row.ID, &row.CallID, &row.Purpose, &row.Round, &row.Attempt,
+			&row.TaskID, &row.ProfileName, &tools, &row.InputTokens, &row.OutputTokens,
+			&row.CacheRead, &row.CacheWrite, &row.Status, &row.Reason); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(tools, &row.ToolBytes); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+type UsageDimension struct {
+	ID int64 `json:"id"`
+	LLMUsage
 }
