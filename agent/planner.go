@@ -458,9 +458,9 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		NonStreaming: p.nonStreaming(), // when this profile selects non-streaming, use Provider.Complete
 		MaxTokens:    p.maxTokens(),    // 0 = send no cap; the server default decides
 	}
+	opts.SessionID = fmt.Sprintf("exp%d-planner", ts.ID())
 	if p.tx != nil { // persist raw LLM conversation; one accumulating file per task's planner
 		opts.Transcript = p.tx
-		opts.SessionID = fmt.Sprintf("exp%d-planner", ts.ID())
 	}
 	// Experimental: when on, noa takes over context compression (archives persist under <workDir>/noa/<SessionID>).
 	noaSession := fmt.Sprintf("exp%d-planner", ts.ID())
