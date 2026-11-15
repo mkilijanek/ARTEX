@@ -15,7 +15,7 @@ func TestTaskLLMMetricsAttributeEveryRetry(t *testing.T) {
 	defer withZeroRetryBackoff()()
 	for _, streaming := range []bool{false, true} {
 		t.Run(map[bool]string{false: "complete", true: "stream"}[streaming], func(t *testing.T) {
-			inner := &flakyThenOKProvider{failCount: 2, failErr: errors.New("anthropic: overloaded_error"), okEvents: []llm.StreamEvent{{Type: llm.SEMessageStart}, {Type: llm.SETextDelta, Text: "ok"}}}
+			inner := &flakyThenOKProvider{failCount: 2, failErr: errors.New("anthropic: overloaded_error"), okEvents: []llm.StreamEvent{{Type: llm.SEMessageStart}, {Type: llm.SETextDelta, Text: "ok"}, {Type: llm.SEMessageStop}}}
 			provider := llmrec.Wrap(inner, nil, "fixture", "profile", "", "", func() bool { return false })
 			var rows []db.LLMUsage
 			ctx := llmrec.WithUsageObserver(llmmeta.WithCall(t.Context(), "agent", 1), func(u db.LLMUsage) { rows = append(rows, u) })
@@ -51,7 +51,7 @@ func TestTaskLLMMetricsContinueAttemptsAcrossFailover(t *testing.T) {
 	for _, streaming := range []bool{false, true} {
 		t.Run(map[bool]string{false: "complete", true: "stream"}[streaming], func(t *testing.T) {
 			failed := llmrec.Wrap(&scriptedLLMProvider{err: errors.New("quota exhausted")}, nil, "first", "one", "", "", func() bool { return false })
-			ok := llmrec.Wrap(&scriptedLLMProvider{events: []llm.StreamEvent{{Type: llm.SETextDelta, Text: "ok"}}}, nil, "second", "two", "", "", func() bool { return false })
+			ok := llmrec.Wrap(&scriptedLLMProvider{events: []llm.StreamEvent{{Type: llm.SETextDelta, Text: "ok"}, {Type: llm.SEMessageStop}}}, nil, "second", "two", "", "", func() bool { return false })
 			var rows []db.LLMUsage
 			ctx := llmrec.WithUsageObserver(llmmeta.WithCall(t.Context(), "agent", 1), func(u db.LLMUsage) { rows = append(rows, u) })
 			advanced := false
