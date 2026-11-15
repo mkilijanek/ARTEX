@@ -93,6 +93,9 @@ func TestNormaUsageEchoLedger(t *testing.T) {
 	}
 	defer pg.Close()
 	profile := "norma-echo-" + uuid.NewString()
+	if err := pg.EnsureLLMUsageTable(); err != nil {
+		t.Fatal(err)
+	}
 	defer pg.Exec(`DELETE FROM llm_usage WHERE profile_name=$1`, profile)
 	recorder := Wrap(meteredStreamProvider{}, pg, "fixture", profile, "", "", func() bool { return false })
 	for _, err := range recorder.Stream(t.Context(), llm.CompletionRequest{}) {
