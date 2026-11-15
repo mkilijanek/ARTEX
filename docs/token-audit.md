@@ -55,16 +55,16 @@ and `side_summary`, and approval judgement is `judge`. Findings/review/chat and
 goal decomposition use the same instrumented harness path. Purpose never comes
 from prompt inspection. Summaries without a harness round use round zero.
 
-Per-tool byte buckets use full catalog tool-name keys and contain only schema and
-result sizes. They link tool context to the owning model call; provider token
-usage and cost belong to the whole call and are not spuriously divided among
-tools. A result whose originating tool use is outside retained history goes in
-the hash-of-empty-name bucket. Byte buckets exclude JSON array framing.
+Per-tool byte buckets use configured catalog names and contain only schema and
+result sizes. Unknown originating names use `_unknown`; historical SHA-256 keys
+remain opaque. They link tool context to its owning call; provider usage/cost
+belong to the whole call and are not divided among tools. JSON array framing is
+excluded. Tool names are identifiers, not prompt or result content.
 
 Phase A acceptance includes the following explicit exclusions and limits:
 
-- Transport/pool retries beneath a decorated provider are excluded from physical
-  attempt reports; SDK summarizer retries are independently metered calls, since
+- SDK transport retries beneath a decorated provider are excluded from physical
+  attempt reports; recorded pool members share physical-attempt ordinals; SDK summarizer retries are independently metered calls, since
   the SDK owns that loop. These are not reconstructed from prompt similarity.
 - Third-party MCP services and SDK DeepSeek web-search inference bypass the
   configured provider boundary. Their external billing is excluded from ARTEX
