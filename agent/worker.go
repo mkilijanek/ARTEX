@@ -565,6 +565,9 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	alreadyRecorded := false
 	if w.tx != nil {
 		if err := resumeSession(s, opts.SessionID, opts.Transcript); err != nil {
+			if emit != nil {
+				emit(db.Activity{Kind: "result", IsError: true, Summary: "Saved session could not be restored", Detail: err.Error()})
+			}
 			return ReasonSessionRestore, tsx.Writes(), err
 		}
 		alreadyRecorded = requestID != "" && hasWorkerChatMessage(s.Messages(), requestID)
