@@ -1,7 +1,17 @@
 name: release
 on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Fork release tag (vMAJOR.MINOR.PATCHm)
+        required: true
+        type: string
   push:
     tags: ["v*"]
+
+concurrency:
+  group: fork-release
+  cancel-in-progress: false
 
 permissions:
   contents: write # required to create the Release
@@ -53,7 +63,7 @@ jobs:
         env:
           ARTEX_TARGET_OS: ${{ matrix.goos }}
           ARTEX_TARGET_ARCH: ${{ matrix.goarch }}
-          ARTEX_BUILD_VERSION: ${{ github.ref_name }}
+          ARTEX_BUILD_VERSION: ${{ inputs.version || github.ref_name }}
           ARTEX_SKIP_FRONTEND: "1"
           ARTEX_SKIP_NPM_CI: "1"
           # UPX self-extracting ELF binaries crash on some Linux kernels, virtualization
@@ -93,13 +103,15 @@ jobs:
         run: sha256sum *.zip > SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.version || github.ref_name }}
+          target_commitish: ${{ github.sha }}
           files: |
             dist/*.zip
             dist/SHA256SUMS
           generate_release_notes: false
           body: |
-            Fork release `${{ github.ref_name }}` (the trailing `m` distinguishes this fork).
-            Docker image: `ghcr.io/mkilijanek/artex:${{ github.ref_name }}` (`linux/amd64`).
+            Fork release `${{ inputs.version || github.ref_name }}` (the trailing `m` distinguishes this fork).
+            Docker image: `ghcr.io/mkilijanek/artex:${{ inputs.version || github.ref_name }}` (`linux/amd64`).
             See CHANGELOG.md and the merged PR for changes. Image digest is recorded in this workflow summary.
 
   # ④ Multi-arch image → push to Docker Hub (reuses the Linux binaries built by the
@@ -110,7 +122,7 @@ jobs:
   # and provide DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets plus DOCKERHUB_IMAGE).
   docker:
     needs: binaries
-    if: ${{ vars.DOCKERHUB_ENABLED == 'true' }}
+    if: ${{ github.event_name == 'push' && vars.DOCKERHUB_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4 # fetch the Dockerfile and skills/
@@ -155,7 +167,7 @@ jobs:
       - name: Validate fork version and image name
         id: version
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ inputs.version || github.ref_name }}
           IMAGE_REPOSITORY: ${{ github.repository }}
         run: |
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+m$ ]] || { echo "Expected vMAJOR.MINOR.PATCHm"; exit 1; }
@@ -176,21 +188,21 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
-          build-args: ARTEX_VERSION=${{ github.ref_name }}
+          build-args: ARTEX_VERSION=${{ inputs.version || github.ref_name }}
           tags: |
-            ${{ steps.version.outputs.image }}:${{ github.ref_name }}
+            ${{ steps.version.outputs.image }}:${{ inputs.version || github.ref_name }}
             ${{ steps.version.outputs.image }}:${{ steps.version.outputs.version }}
             ${{ steps.version.outputs.image }}:latest-m
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ github.ref_name }}
+            org.opencontainers.image.version=${{ inputs.version || github.ref_name }}
           cache-from: type=gha,scope=fork-release-amd64
           cache-to: type=gha,scope=fork-release-amd64,mode=max
       - name: Verify published manifest
         env:
           IMAGE: ${{ steps.version.outputs.image }}
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ inputs.version || github.ref_name }}
           DIGEST: ${{ steps.image.outputs.digest }}
         run: |
           docker buildx imagetools inspect "$IMAGE@$DIGEST"
