@@ -206,7 +206,9 @@ func TestNormaSDKCompactionUsesPhysicalContextInsteadOfRetryBilling(t *testing.T
 				return taskLLMSelection{provider: physical, retry: agent.RetryConfig{StreamAttempts: 1, StreamInterval: time.Millisecond}}, nil
 			}}}
 			gate := &normaGateRecorder{}
+			toolCalls := 0
 			fixture := tool.Build(tool.Spec{Name: "Fixture", Schema: map[string]any{"type": "object"}, Run: func(context.Context, json.RawMessage, *tool.ToolContext) (tool.Result, error) {
+				toolCalls++
 				return tool.Text("fixture evidence"), nil
 			}})
 			s := agentcore.NewSession(agentcore.Options{Provider: provider, Compactor: gate, NonStreaming: !stream, Tools: []tool.CoreTool{fixture}, PermissionMode: "bypassPermissions", DisableBackgroundTasks: true, MaxTurns: 3})
@@ -215,6 +217,9 @@ func TestNormaSDKCompactionUsesPhysicalContextInsteadOfRetryBilling(t *testing.T
 				if err != nil {
 					t.Fatal(err)
 				}
+			}
+			if toolCalls != 1 || physical.calls != 3 {
+				t.Fatalf("duplicate tool or model calls: tool=%d model=%d", toolCalls, physical.calls)
 			}
 			if len(gate.seen) != 2 || gate.seen[1] != 22 {
 				t.Fatalf("compaction gate saw %v; physical context is 22, billed retry total is 35", gate.seen)
@@ -288,5 +293,29 @@ func TestConsumerStopNeverRetries(t *testing.T) {
 	}
 	if p.calls != 1 {
 		t.Fatal("consumer stop replayed", p.calls)
+	}
+}
+
+func TestTaskRuntimeRetainsZeroUsage(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		p := &scriptedLLMProvider{events: []llm.StreamEvent{{Type: llm.SETextDelta, Text: "ok"}, {Type: llm.SEMessageStop}}}
+		hooks := taskLLMStreamHooks{current: func(context.Context) (taskLLMSelection, error) { return taskLLMSelection{provider: p}, nil }}
+		if stream {
+			acc := llm.NewAccumulator()
+			for ev, err := range streamTaskLLM(t.Context(), "fixture", llm.CompletionRequest{}, hooks) {
+				if err != nil {
+					t.Fatal(err)
+				}
+				acc.Add(ev)
+			}
+			if acc.Usage != (llm.Usage{}) {
+				t.Fatal(acc.Usage)
+			}
+		} else {
+			_, _, usage, err := completeTaskLLM(t.Context(), "fixture", llm.CompletionRequest{}, hooks)
+			if err != nil || usage != (llm.Usage{}) {
+				t.Fatal(usage, err)
+			}
+		}
 	}
 }
