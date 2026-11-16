@@ -18,9 +18,13 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/Autumn-27/artex/llmmeta"
 	"log"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -40,9 +44,13 @@ type Compactor struct {
 	cooldown time.Duration // min gap between compactions per task (§7 60s)
 	maxDur   time.Duration // hard cap on one background compaction
 
-	mu      sync.Mutex
-	running map[int64]bool
-	lastRun map[int64]time.Time
+	mu                            sync.Mutex
+	summaryMemo                   map[[32]byte]string
+	summaryOrder                  [][32]byte
+	summaryFlights                map[[32]byte]*summaryFlight
+	summaryMemoHits, summaryCalls int
+	running                       map[int64]bool
+	lastRun                       map[int64]time.Time
 }
 
 // NewCompactor builds a compactor. prov/model are used for the §4 body LLM call
@@ -520,15 +528,136 @@ func (c *Compactor) compress(ctx context.Context, g *coldGraph, b block, nodeByI
 		MaxTokens: 1500,
 		Thinking:  "disabled",
 	}
-	msg, _, _, err := c.prov.Complete(ctx, req)
-	if err != nil {
-		return "", err
+	memo := os.Getenv("ARTEX_COMPACTION_MEMO") == "1"
+	var key [32]byte
+	if memo {
+		sources := map[int64]*db.Node{}
+		for _, id := range append(append([]int64{}, b.Members...), b.Anchors...) {
+			sources[id] = nodeByID[id]
+		}
+		serialized, e := json.Marshal(struct {
+			Model   string
+			Request llm.CompletionRequest
+			Sources map[int64]*db.Node
+		}{c.model, req, sources})
+		if e != nil {
+			memo = false
+		} else {
+			key = sha256.Sum256(serialized)
+		}
 	}
-	body := strings.TrimSpace(msg.Text())
-	if body == "" {
-		return "", fmt.Errorf("empty body from model")
+
+	compute := func() (string, error) {
+		c.mu.Lock()
+		c.summaryCalls++
+		c.mu.Unlock()
+		msg, stop, _, err := c.prov.Complete(llmmeta.WithCall(ctx, "graph_summary", 0), req)
+		if err != nil {
+			return "", err
+		}
+		if memo && ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		body := strings.TrimSpace(msg.Text())
+		if body == "" {
+			return "", fmt.Errorf("empty body from model")
+		}
+		if memo && (stop == "max_tokens" || stop == "length") {
+			return "", fmt.Errorf("incomplete summary (stop reason %q)", stop)
+		}
+		return body, nil
 	}
-	return body, nil
+	if !memo {
+		return compute()
+	}
+	return c.memoSummary(ctx, key, compute)
+}
+
+type summaryFlight struct {
+	// waiters is observed under mu by the shared-call regression test.
+	waiters int
+	done    chan struct{}
+	body    string
+	err     error
+}
+
+func (c *Compactor) memoSummary(ctx context.Context, key [32]byte, compute func() (string, error)) (string, error) {
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	c.mu.Lock()
+	touch := func() {
+		for i, k := range c.summaryOrder {
+			if k == key {
+				c.summaryOrder = append(c.summaryOrder[:i], c.summaryOrder[i+1:]...)
+				break
+			}
+		}
+		c.summaryOrder = append(c.summaryOrder, key)
+	}
+	if body, ok := c.summaryMemo[key]; ok {
+		touch()
+		c.summaryMemoHits++
+		c.mu.Unlock()
+		return body, nil
+	}
+	if pending := c.summaryFlights[key]; pending != nil {
+		pending.waiters++
+		c.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-pending.done:
+			if pending.err == nil {
+				c.mu.Lock()
+				c.summaryMemoHits++
+				c.mu.Unlock()
+			}
+			if pending.err != nil && ctx.Err() == nil && (errors.Is(pending.err, context.Canceled) || errors.Is(pending.err, context.DeadlineExceeded)) {
+				return c.memoSummary(ctx, key, compute)
+			}
+			return pending.body, pending.err
+		}
+	}
+	if c.summaryFlights == nil {
+		c.summaryFlights = map[[32]byte]*summaryFlight{}
+	}
+	flight := &summaryFlight{done: make(chan struct{})}
+	c.summaryFlights[key] = flight
+	c.mu.Unlock()
+	body, err := func() (body string, err error) {
+		defer func() {
+			if value := recover(); value != nil {
+				err = fmt.Errorf("summary inference panicked: %v", value)
+			}
+		}()
+		return compute()
+	}()
+	c.mu.Lock()
+	if err == nil {
+		if c.summaryMemo == nil {
+			c.summaryMemo = map[[32]byte]string{}
+		}
+		if len(c.summaryMemo) >= 64 {
+			delete(c.summaryMemo, c.summaryOrder[0])
+			c.summaryOrder = c.summaryOrder[1:]
+		}
+		c.summaryMemo[key] = body
+		touch()
+	}
+	flight.body, flight.err = body, err
+	delete(c.summaryFlights, key)
+	close(flight.done)
+	c.mu.Unlock()
+	return body, err
+}
+
+// SummaryStats separates real inference calls from successful source-identical
+// memo hits; it resets with the Compactor and is not a second token ledger.
+func (c *Compactor) SummaryStats() (calls, hits int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.summaryCalls, c.summaryMemoHits
 }
 
 // compressionSystemPrompt is the §4 body prompt.

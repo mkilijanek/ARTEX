@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Autumn-27/artex/llmmeta"
 	"strings"
 	"unicode/utf8"
 
@@ -108,7 +109,7 @@ func (b *contextBuilder) summarize(ctx context.Context, prior, text string) (str
 			return "", ErrContextBudget
 		}
 		b.calls++
-		msg, stop, usage, err := b.service.Provider.Complete(ctx, req)
+		msg, stop, usage, err := b.service.Provider.Complete(llmmeta.WithCall(ctx, "side_summary", 0), req)
 		b.usage.Add(usage)
 		b.progress(b.info.Phase)
 		if ctx.Err() != nil {
@@ -207,7 +208,7 @@ func messageGroups(messages []llm.Message) [][]llm.Message {
 }
 
 func snapshotSummaryMessages(summary string, tail []llm.Message) []llm.Message {
-	return append([]llm.Message{llm.UserText("[Summary of the earlier portion of the current main context; the summary may omit details, state clearly when there is not enough information to judge]\n" + summary)}, tail...)
+	return append([]llm.Message{llm.UserText("[Summary of the earlier portion of the current main context; the summary may omit details, state clearly when there is not enough information to judge]\n" + summaryData(summary))}, tail...)
 }
 
 func (b *contextBuilder) compactSnapshot(ctx context.Context, base []llm.Message, keepTokens int, key string) ([]llm.Message, error) {

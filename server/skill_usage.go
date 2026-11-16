@@ -86,3 +86,9 @@ func (m *meteredSkill) record(input json.RawMessage) {
 		log.Printf("[skillusage] insert: %v", err)
 	}
 }
+
+// AcceptsRawInput preserves the SDK repair contract through metering.
+func (m *meteredSkill) AcceptsRawInput() bool {
+	t, ok := m.CoreTool.(interface{ AcceptsRawInput() bool })
+	return ok && t.AcceptsRawInput()
+}

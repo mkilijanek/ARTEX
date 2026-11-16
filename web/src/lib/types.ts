@@ -818,7 +818,9 @@ export interface ProfileUsage {
   output_tokens: number;
   cache_read_tokens: number;
   cache_write_tokens: number;
-  // EUR cost from the profile's stored prices; absent when the profile has no price set.
+  // Cost is unavailable when tariffs or archived fresh-input data are missing.
+  cost_unknown?: boolean;
+  fresh_input_tokens?: number;
   cost_eur?: number | null;
 }
 
@@ -1061,6 +1063,9 @@ export interface LLMProfile {
   // Custom session header name: when non-empty every request carries this HTTP header, value = the current session/intent session id.
   // "" = not sent. For gateways that do prompt caching/sticky routing on a session-id header.
   session_header_key?: string;
+  // Custom User-Agent: when non-empty, every outbound LLM request overrides its User-Agent header with this value. "" = do not override (keep the default UA).
+  user_agent?: string;
+  endpoint_mode?: "" | "base" | "fixed";
   // This profile's retry overrides (connect / empty response / same-provider safety window). Empty / all zeros = follow the global policy.
   retry?: LLMRetryOverride;
 }

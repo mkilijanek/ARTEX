@@ -714,3 +714,9 @@ func TestProfileDeleteRestoresQuotaBlockedIntentWhenFallbackAvailable(t *testing
 		t.Fatalf("task did not return to fallback state: %+v", state)
 	}
 }
+
+func TestSessionRestoreIsNotModelRetry(t *testing.T) {
+	if retryableWorkerModelError(agent.ReasonSessionRestore, errors.New("corrupt transcript")) {
+		t.Fatal("local restore error must not retry the model")
+	}
+}

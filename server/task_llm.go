@@ -317,10 +317,12 @@ func (r *taskLLMRuntime) Complete(ctx context.Context, req llm.CompletionRequest
 }
 
 func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest, hooks taskLLMStreamHooks) (llm.Message, string, llm.Usage, error) {
+	var total llm.Usage
+	callAttempt := 0
 	for {
 		selection, err := hooks.current(ctx)
 		if err != nil {
-			return llm.Message{}, "", llm.Usage{}, err
+			return llm.Message{}, "", total, err
 		}
 		var (
 			msg     llm.Message
@@ -332,13 +334,23 @@ func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionReque
 		// fails as a whole — no partially delivered output — so any transient failure can be retried verbatim.
 		retries, backoffOf := sameProviderRetryPolicy(selection.retry)
 		for attempt := 0; ; attempt++ {
-			msg, sr, usage, callErr = selection.provider.Complete(ctx, req)
+			msg, sr, usage, callErr = selection.provider.Complete(llmrec.WithAttempt(ctx, callAttempt), req)
+			callAttempt++
+			total.Add(usage)
+			total.ContextTokens = usage.ContextTokens
+			if total.ContextTokens == 0 {
+				total.ContextTokens = usage.InputTokens + usage.OutputTokens
+			}
+			if ctx.Err() != nil {
+				callErr = ctx.Err()
+			}
 			if callErr != nil && ctx.Err() == nil &&
 				attempt < retries && isRetryableStreamError(callErr) {
 				backoff := backoffOf(attempt)
 				log.Printf("[task-llm] task %s non-streaming call failed, retrying on the same provider after %v (%d/%d): %v",
 					taskID, backoff, attempt+1, retries, callErr)
 				if sleepCtx(ctx, backoff) {
+					callErr = ctx.Err()
 					break // ctx cancelled during backoff → stop retrying
 				}
 				continue
@@ -347,7 +359,7 @@ func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionReque
 		}
 		if callErr == nil {
 			resetLLMFailStreak(taskID, selection.profileID)
-			return msg, sr, usage, nil
+			return msg, sr, total, nil
 		}
 		// Non-quota failures on a chain profile escalate after a consecutive
 		// streak (#99): same advance path as quota exhaust, truthful reason.
@@ -356,31 +368,31 @@ func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionReque
 				cause := fmt.Errorf("profile #%d failed %d consecutive calls (last: %w)", selection.profileID, llmFailStreakThreshold, callErr)
 				transition, markErr := hooks.exhaust(selection, cause)
 				if markErr != nil {
-					return llm.Message{}, "", llm.Usage{}, fmt.Errorf("mark profile exhausted after %v: %w", callErr, markErr)
+					return llm.Message{}, "", total, fmt.Errorf("mark profile exhausted after %v: %w", callErr, markErr)
 				}
 				if transition.Advanced && !transition.Stale && hooks.transition != nil {
 					hooks.transition(selection, transition, callErr)
 				}
 				if !transition.Stale && transition.NextProfileID == nil {
-					return llm.Message{}, "", llm.Usage{}, &taskLLMError{taskID: taskID, chainExhausted: transition.ChainExhausted, cause: callErr}
+					return llm.Message{}, "", total, &taskLLMError{taskID: taskID, chainExhausted: transition.ChainExhausted, cause: callErr}
 				}
 				continue // replay the same logical request on the next profile
 			}
-			return llm.Message{}, "", llm.Usage{}, callErr
+			return llm.Message{}, "", total, callErr
 		}
 		// profileID=0: the explicit chain was cleared; non-quota error: pass through. Neither changes the task failover state.
 		if selection.profileID == 0 || !isQuotaExhaustedError(callErr) {
-			return llm.Message{}, "", llm.Usage{}, callErr
+			return llm.Message{}, "", total, callErr
 		}
 		transition, markErr := hooks.exhaust(selection, callErr)
 		if markErr != nil {
-			return llm.Message{}, "", llm.Usage{}, fmt.Errorf("mark profile quota exhausted after %v: %w", callErr, markErr)
+			return llm.Message{}, "", total, fmt.Errorf("mark profile quota exhausted after %v: %w", callErr, markErr)
 		}
 		if transition.Advanced && !transition.Stale && hooks.transition != nil {
 			hooks.transition(selection, transition, callErr)
 		}
 		if !transition.Stale && transition.NextProfileID == nil {
-			return llm.Message{}, "", llm.Usage{}, &taskLLMError{taskID: taskID, chainExhausted: transition.ChainExhausted, cause: callErr}
+			return llm.Message{}, "", total, &taskLLMError{taskID: taskID, chainExhausted: transition.ChainExhausted, cause: callErr}
 		}
 		// No output has been delivered to the caller, so replaying the same logical request on the next profile is safe.
 	}
@@ -388,6 +400,7 @@ func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionReque
 
 func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest, hooks taskLLMStreamHooks) iter.Seq2[llm.StreamEvent, error] {
 	return func(yield func(llm.StreamEvent, error) bool) {
+		callAttempt := 0
 		for {
 			selection, err := hooks.current(ctx)
 			if err != nil {
@@ -397,6 +410,25 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 			committed := false
 			var pending []llm.StreamEvent
 			var streamErr error
+			var delivered llm.Usage
+			// Normalize each physical attempts echoes before adding its usage to the
+			// logical SDK call. The provider recorder has already billed this attempt.
+			forward := func(event llm.StreamEvent) bool {
+				if event.Type == llm.SEMessageStart {
+					delivered.Add(event.Usage)
+				}
+				if event.Type == llm.SEMessageDelta {
+					next := delivered
+					next.MergeEcho(event.Usage)
+					inc := llm.Usage{InputTokens: next.InputTokens - delivered.InputTokens, OutputTokens: next.OutputTokens - delivered.OutputTokens, CacheReadTokens: next.CacheReadTokens - delivered.CacheReadTokens, CacheWriteTokens: next.CacheWriteTokens - delivered.CacheWriteTokens}
+					delivered = next
+					if inc != (llm.Usage{}) && !yield(llm.StreamEvent{Type: llm.SEMessageStart, Usage: inc}, nil) {
+						return false
+					}
+					event.Usage = llm.Usage{}
+				}
+				return yield(event, nil)
+			}
 			retries, backoffOf := sameProviderRetryPolicy(selection.retry)
 			// Same-provider safe-window retry: a transient failure before committed
 			// (nothing delivered to the caller yet) can be replayed verbatim without
@@ -405,7 +437,10 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 				committed = false
 				pending = nil
 				streamErr = nil
-				for event, err := range selection.provider.Stream(ctx, req) {
+				delivered = llm.Usage{}
+				attemptCtx := llmrec.WithAttempt(ctx, callAttempt)
+				callAttempt++
+				for event, err := range selection.provider.Stream(attemptCtx, req) {
 					if err != nil {
 						streamErr = err
 						break
@@ -416,16 +451,31 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 					}
 					if !committed {
 						for _, buffered := range pending {
-							if !yield(buffered, nil) {
+							if !forward(buffered) {
 								return
 							}
 						}
 						pending = nil
 						committed = true
 					}
-					if !yield(event, nil) {
+					if !forward(event) {
 						return
 					}
+				}
+				if ctx.Err() != nil {
+					streamErr = ctx.Err()
+				}
+				if streamErr != nil && !committed {
+					// Failed pre-commit content is discarded; its reported usage survives.
+					acc := llm.NewAccumulator()
+					for _, ev := range pending {
+						acc.Add(ev)
+					}
+					acc.Usage.ContextTokens = acc.Usage.InputTokens + acc.Usage.OutputTokens
+					if acc.Usage != (llm.Usage{}) && !yield(llm.StreamEvent{Type: llm.SEMessageStart, Usage: acc.Usage}, nil) {
+						return
+					}
+					pending = nil
 				}
 				if streamErr != nil && !committed && ctx.Err() == nil &&
 					attempt < retries && isRetryableStreamError(streamErr) {
@@ -433,6 +483,7 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 					log.Printf("[task-llm] task %s pre-commit stream failure, retrying on the same provider after %v (%d/%d): %v",
 						taskID, backoff, attempt+1, retries, streamErr)
 					if sleepCtx(ctx, backoff) {
+						streamErr = ctx.Err()
 						break // ctx cancelled during backoff → stop retrying
 					}
 					continue
@@ -442,9 +493,16 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 			if streamErr == nil {
 				resetLLMFailStreak(taskID, selection.profileID)
 				for _, buffered := range pending {
-					if !yield(buffered, nil) {
+					if !forward(buffered) {
 						return
 					}
+				}
+				footprint := delivered.ContextTokens
+				if footprint == 0 {
+					footprint = delivered.InputTokens + delivered.OutputTokens
+				}
+				if footprint > 0 {
+					yield(llm.StreamEvent{Type: llm.SEMessageStart, Usage: llm.Usage{ContextTokens: footprint}}, nil)
 				}
 				return
 			}
@@ -475,7 +533,7 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 			// behavior and never mutate task failover state.
 			if selection.profileID == 0 || !isQuotaExhaustedError(streamErr) {
 				for _, buffered := range pending {
-					if !yield(buffered, nil) {
+					if !forward(buffered) {
 						return
 					}
 				}
@@ -510,7 +568,7 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 
 func streamEventCommitsOutput(event llm.StreamEvent) bool {
 	switch event.Type {
-	case llm.SETextDelta, llm.SEThinkingDelta, llm.SEToolInputJSON:
+	case llm.SETextDelta, llm.SEThinkingDelta, llm.SEToolInputJSON, llm.SEThinkingSignature, llm.SERedactedThinking, llm.SEToolUseSignature:
 		return event.Text != ""
 	case llm.SEToolUseStart, llm.SEMessageDelta, llm.SEMessageStop:
 		return true

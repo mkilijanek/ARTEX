@@ -398,6 +398,12 @@ export default function DashboardPage() {
     return m;
   }, [usageStats, profileIdByName, defaultProfileId]);
 
+  const displayedCostUnknown = tokenVersion === "new" && (usageStats?.by_profile ?? []).some(
+    (profile) => profile.cost_unknown && (
+      tokenTab === "all" || (profileIdByName.get(profile.profile_name) ?? defaultProfileId) === tokenTab
+    ),
+  );
+
   const tokenByProfile = tokenVersion === "new" ? tokenByProfileNew : tokenByProfileOld;
 
   const displayedTokens = React.useMemo(() => {
@@ -674,6 +680,12 @@ export default function DashboardPage() {
             })}
           </div>
         </div>
+
+        {displayedCostUnknown && (
+          <p className="mb-4 text-xs text-muted-foreground" role="status">
+            Cost unavailable: a selected profile has missing cache prices or older archived usage without a fresh-input subtotal. Token totals remain available.
+          </p>
+        )}
 
         {/* Body: metrics left + bar chart right */}
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[220px_1fr]">

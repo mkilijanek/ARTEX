@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -12,6 +13,7 @@ import (
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/harness"
 	"github.com/Autumn-27/norma/llm"
+	"github.com/Autumn-27/norma/transcript"
 )
 
 // captureRun drives one agent turn-to-completion over Session.Prompt and emits a
@@ -26,6 +28,10 @@ import (
 // contiguous run is coalesced into a single record so the trace shows whole
 // messages, not dozens of fragments.
 func captureRun(ctx context.Context, opts agentcore.Options, input string, emit func(db.Activity)) (string, harness.TerminalReason, error) {
+	if opts.SessionID == "" {
+		opts.SessionID = transcript.SessionIDFrom(ctx)
+	}
+	attachModelMetrics(&opts)
 	s := agentcore.NewSession(opts)
 	defer s.Close() // release the session's background-task manager (temp dir + processes)
 	return captureRunSession(ctx, s, input, emit)
@@ -35,6 +41,9 @@ func captureRun(ctx context.Context, opts agentcore.Options, input string, emit 
 // multiple prompts on the SAME conversation (e.g. a settlement round that reuses
 // the worker's accumulated context after the main run hit max_turns).
 func captureRunSession(ctx context.Context, s *agentcore.Session, input string, emit func(db.Activity)) (string, harness.TerminalReason, error) {
+	// Norma attaches this context only when a transcript writer exists. Gateways
+	// and usage attribution need the same session identity without persistence.
+	ctx = transcript.WithSessionID(ctx, s.SessionID())
 	ctx, auditTrace := intercept.WithTrace(ctx, input, approvalHistory(s.Messages()))
 	defer auditTrace.Finish()
 	var reason harness.TerminalReason
@@ -105,7 +114,7 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 				continue
 			}
 			flush()
-			out := blocksText(ev.ToolResult.Content)
+			out := activityBlocksText(ev.ToolResult.Content)
 			lastTool.done(ev.ToolResult.ToolUseID)
 			auditTrace.Complete(ev.ToolResult.ToolUseID, out, ev.ToolResult.IsError)
 			rec(db.Activity{Kind: "tool_result", Tool: toolNames[ev.ToolResult.ToolUseID], ToolUseID: ev.ToolResult.ToolUseID,
@@ -128,6 +137,11 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 			}
 		case harness.KindResult:
 			if ev.Terminal != nil {
+				if errors.Is(ev.Terminal.Err, ErrNOAContextBudget) {
+					terminal := *ev.Terminal
+					terminal.Reason = harness.ReasonBlockingLimit
+					ev.Terminal = &terminal
+				}
 				if ev.Terminal.Reason != harness.ReasonAbortedStreaming {
 					sidequestion.Finish(ctx, ev.Terminal.Messages)
 				}

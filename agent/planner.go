@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 
@@ -21,6 +22,7 @@ import (
 // assets, judges whether the task goal is met, and emits 0..N exploration intents
 // into the frontier. It is the sole intent generator.
 type Planner struct {
+	overviewState     overviewSnapshots
 	findingRecorder   FindingRecorder
 	prov              llm.Provider
 	model             string
@@ -353,7 +355,13 @@ Task goal: {{.Goal}}
 No duplicates, no padding; but when the goal is unmet and there are uncovered, deeper plays, dispatch them. Concise, focused, efficient.`
 
 func plannerSystem(goal, dataDir, workDir string) string {
-	body := renderSystem("planner", plannerDefaultTmpl, PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()})
+	tmpl := plannerDefaultTmpl
+	// Keep the baseline prompt order unless prefix caching is explicitly enabled.
+	// renderSystem still gives custom stored templates their original layout.
+	if os.Getenv("ARTEX_CACHE_PREFIX") == "1" {
+		tmpl = strings.Replace(tmpl, "\n\nTask goal: {{.Goal}}", "", 1) + "\n\nTask goal: {{.Goal}}"
+	}
+	body := renderSystem("planner", tmpl, PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()})
 	return body + artifactSpec(workDir)
 }
 
@@ -395,7 +403,14 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// which is better for caching; the cost is that if a single round grows long, the
 	// situation may be compressed by compaction (planner rounds are usually short — low
 	// risk). situational is spliced into input below.
-	situational := renderTriggers(ts, triggers) + renderGraphOverview(tsx.graphOverviewData())
+	data := tsx.graphOverviewData()
+	overview := renderGraphOverview(data)
+	if boundedContextEnabled() {
+		packet := p.overviewState.packet(ts.ID(), data)
+		b, _ := json.Marshal(packet)
+		overview = "\n\n[Self-contained projected situation: read the current base snapshot. Full evidence and scope require on-demand tools. Omitted evidence is never a negative result.]\n" + string(b)
+	}
+	situational := renderTriggers(ts, triggers) + overview
 	// Task-level deadline / endgame mode (injected via ctx, see taskclock.go). On the
 	// endgame round, the task-timeout planner wrap-up prompt is spliced into this
 	// round's user input (along with situational) as [this round's operating
@@ -458,9 +473,9 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		NonStreaming: p.nonStreaming(), // when this profile selects non-streaming, use Provider.Complete
 		MaxTokens:    p.maxTokens(),    // 0 = send no cap; the server default decides
 	}
+	opts.SessionID = fmt.Sprintf("exp%d-planner", ts.ID())
 	if p.tx != nil { // persist raw LLM conversation; one accumulating file per task's planner
 		opts.Transcript = p.tx
-		opts.SessionID = fmt.Sprintf("exp%d-planner", ts.ID())
 	}
 	// Experimental: when on, noa takes over context compression (archives persist under <workDir>/noa/<SessionID>).
 	noaSession := fmt.Sprintf("exp%d-planner", ts.ID())

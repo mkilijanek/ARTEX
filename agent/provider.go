@@ -32,10 +32,11 @@ import (
 
 // Config describes the LLM backend resolved from the environment.
 type Config struct {
-	Format  llm.Format
-	BaseURL string
-	APIKey  string
-	Model   string
+	Format       llm.Format
+	BaseURL      string
+	EndpointMode string // empty/base = SDK suffixes; fixed = exact final URL
+	APIKey       string
+	Model        string
 	// Proxy routes all LLM requests through the given proxy URL (http/https/socks5,
 	// optionally with user:pass@ credentials). Empty means direct — it does NOT
 	// fall back to the standard *_PROXY environment variables.
@@ -86,6 +87,10 @@ type Config struct {
 	// context via transcript.WithSessionID and read by the RoundTripper, so even a
 	// shared provider emits different header values per session.
 	SessionHeaderKey string
+	// UserAgent, when non-empty, overrides the User-Agent header on every outbound
+	// LLM request built from this config. Empty = don't set it, leaving the Go/Norma
+	// default UA untouched (the historical behavior). Validated by ValidateUserAgent.
+	UserAgent string
 	// Retry holds the retry parameters resolved for this config (profile override →
 	// global policy → built-in default, resolved server-side). See RetryConfig for
 	// the per-layer semantics; zero values = fully inherit the built-in defaults.
@@ -341,12 +346,22 @@ func (c Config) Provider() string {
 // limiter lives on the single provider instance — so planner + all workers +
 // main agent (which share this provider) are bounded by one shared rate limit.
 func (c Config) NewProvider() (llm.Provider, error) {
-	client, err := quotaAwareHTTPClient(c.Proxy, c.SessionHeaderKey)
+	if err := ValidateEndpoint(c.EndpointMode, c.BaseURL); err != nil {
+		return nil, err
+	}
+	client, err := quotaAwareHTTPClient(c.Proxy, c.SessionHeaderKey, c.UserAgent)
 	if err != nil {
 		return nil, err
 	}
 	wireFormat := c.Format
 	baseURL := c.BaseURL
+	if c.EndpointMode == EndpointFixed {
+		endpoint, _ := url.Parse(strings.TrimSpace(c.BaseURL))
+		client.Transport = fixedEndpointTransport{base: client.Transport, endpoint: endpoint}
+		// Exact endpoints never follow redirects with model credentials.
+		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		baseURL = endpoint.Scheme + "://" + endpoint.Host
+	}
 	apiKey := c.APIKey
 	// Ollama speaks OpenAI's Chat Completions on the wire. Bundle the keyless
 	// defaults here so an Ollama config can never leak toward the SDK's env-
@@ -440,6 +455,9 @@ type quotaAwareTransport struct {
 	// carries; its value is the session id read from the request context. Empty
 	// disables it. See Config.SessionHeaderKey.
 	sessionHeaderKey string
+	// userAgent, when non-empty, is set as the User-Agent header on every request.
+	// Empty leaves the default UA untouched. See Config.UserAgent.
+	userAgent string
 }
 
 func (t quotaAwareTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -451,6 +469,11 @@ func (t quotaAwareTransport) RoundTrip(req *http.Request) (*http.Response, error
 		if sid := transcript.SessionIDFrom(req.Context()); sid != "" {
 			req.Header.Set(t.sessionHeaderKey, sid)
 		}
+	}
+	// Custom User-Agent: override only when configured, so an empty value keeps the
+	// underlying transport's default UA exactly as before.
+	if t.userAgent != "" {
+		req.Header.Set("User-Agent", t.userAgent)
 	}
 	// When LLM recording is on, the Recorder puts a Capture on the context so the
 	// raw wire bodies can be persisted. This is the only layer that still sees
@@ -504,7 +527,7 @@ func requestBodySnapshot(req *http.Request) string {
 	return string(b)
 }
 
-func quotaAwareHTTPClient(proxy, sessionHeaderKey string) (*http.Client, error) {
+func quotaAwareHTTPClient(proxy, sessionHeaderKey, userAgent string) (*http.Client, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	proxy = strings.TrimSpace(proxy)
 	if proxy == "" {
@@ -523,7 +546,31 @@ func quotaAwareHTTPClient(proxy, sessionHeaderKey string) (*http.Client, error) 
 		}
 		transport.Proxy = http.ProxyURL(proxyURL)
 	}
-	return &http.Client{Transport: quotaAwareTransport{base: transport, sessionHeaderKey: strings.TrimSpace(sessionHeaderKey)}}, nil
+	return &http.Client{CheckRedirect: RefuseProviderRedirect, Transport: quotaAwareTransport{base: transport, sessionHeaderKey: strings.TrimSpace(sessionHeaderKey), userAgent: strings.TrimSpace(userAgent)}}, nil
+}
+
+// MaxUserAgentLen bounds a custom User-Agent value. Generous for real UA strings
+// while keeping a pathological value out of every outbound request.
+const MaxUserAgentLen = 256
+
+// ValidateUserAgent trims a custom User-Agent and returns the cleaned value. An
+// empty/blank input is valid and means "no override" (keep the default UA). A
+// non-empty value is rejected when it exceeds MaxUserAgentLen or contains any
+// control character (including CR/LF, which would allow header injection).
+func ValidateUserAgent(raw string) (string, error) {
+	ua := strings.TrimSpace(raw)
+	if ua == "" {
+		return "", nil
+	}
+	if len(ua) > MaxUserAgentLen {
+		return "", fmt.Errorf("user agent too long: %d bytes (max %d)", len(ua), MaxUserAgentLen)
+	}
+	for _, r := range ua {
+		if r < 0x20 || r == 0x7f {
+			return "", fmt.Errorf("user agent contains a control character")
+		}
+	}
+	return ua, nil
 }
 
 // logTestConnection prints the raw HTTP status code(s) and response body of a
@@ -615,3 +662,6 @@ func TestConnection(ctx context.Context, c Config) (time.Duration, string, error
 	}
 	return lat, reply, nil
 }
+
+// RefuseProviderRedirect prevents forwarding provider or session credentials.
+func RefuseProviderRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }

@@ -525,3 +525,5 @@ Users must comply with all laws and regulations of their country/region regardin
 ### Disclaimer
 
 This project is provided "as is", without any express or implied warranty. The authors and contributors are not liable for any direct or indirect loss, data loss, system damage, or legal disputes caused by the use of this tool (whether used properly or not). **Downloading, installing, or using this project means you have read, understood, and agreed to all of the above terms.**
+
+ARTEX_UNTRUSTED_BOUNDARY defaults to enabled. Set ARTEX_UNTRUSTED_BOUNDARY=0 to disable SDK tool-output framing; summary trust rules still apply.

@@ -184,7 +184,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	// Wire DB-stored prompt templates into the agents (new design plan §3.3 / §5a). With no
 	// override row, agents keep their built-in defaults — behavior is unchanged.
 	if m.pg != nil {
-		agent.PromptOverride = func(key string) (string, bool) {
+		agent.SetPromptOverride(func(key string) (string, bool) {
 			a, err := m.pg.GetAgentByKey(key)
 			if err != nil || a == nil {
 				return "", false
@@ -194,38 +194,38 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 				return "", false
 			}
 			return t, true
-		}
+		})
 		// Wire DB-stored wrap-up (settlement) prompts. Empty column → built-in default.
-		agent.WrapupOverride = func(key string) (string, bool) {
+		agent.SetWrapupOverride(func(key string) (string, bool) {
 			a, err := m.pg.GetAgentByKey(key)
 			if err != nil || a == nil || a.WrapupPrompt == "" {
 				return "", false
 			}
 			return a.WrapupPrompt, true
-		}
+		})
 		// Wire DB-stored wrap-up turn budgets. 0 / missing → built-in per-agent default.
-		agent.WrapupMaxTurnsOverride = func(key string) (int, bool) {
+		agent.SetWrapupMaxTurnsOverride(func(key string) (int, bool) {
 			a, err := m.pg.GetAgentByKey(key)
 			if err != nil || a == nil || a.WrapupMaxTurns <= 0 {
 				return 0, false
 			}
 			return a.WrapupMaxTurns, true
-		}
+		})
 		// Wire DB-stored TASK-TIMEOUT wrap-up prompt/turns (worker/planner). Empty/0 → default.
-		agent.WrapupTaskTimeoutOverride = func(key string) (string, bool) {
+		agent.SetWrapupTaskTimeoutOverride(func(key string) (string, bool) {
 			a, err := m.pg.GetAgentByKey(key)
 			if err != nil || a == nil || a.TaskTimeoutWrapupPrompt == "" {
 				return "", false
 			}
 			return a.TaskTimeoutWrapupPrompt, true
-		}
-		agent.WrapupTaskTimeoutTurnsOverride = func(key string) (int, bool) {
+		})
+		agent.SetWrapupTaskTimeoutTurnsOverride(func(key string) (int, bool) {
 			a, err := m.pg.GetAgentByKey(key)
 			if err != nil || a == nil || a.TaskTimeoutWrapupMaxTurns <= 0 {
 				return 0, false
 			}
 			return a.TaskTimeoutWrapupMaxTurns, true
-		}
+		})
 		wireAgentAugment(m.pg, s.skillDir, s.hostTools) // wire visible skills/MCP + traffic/orchestration host tools into the agent toolset
 		domainReg := buildDomainReg(m.Assets())
 		wireTools(m.pg, domainReg)   // built-in tools table: filter per agent + override description/schema + inject defaults
@@ -342,7 +342,7 @@ func (s *Server) loadLLMConfig() (agent.Config, bool) {
 	if err != nil || p == nil {
 		return agent.Config{}, false
 	}
-	cfg := agent.ConfigFrom(p.Format, p.Model, p.BaseURL, p.APIKey, p.Proxy)
+	cfg := agent.ConfigFromEndpoint(p.Format, p.Model, p.BaseURL, p.APIKey, p.Proxy, p.EndpointMode)
 	cfg.RatePerSecond, cfg.RatePerMinute = p.RatePerSecond, p.RatePerMinute
 	cfg.ContextWindowK = p.ContextWindowK
 	cfg.ThinkingType = p.ThinkingType
@@ -350,6 +350,7 @@ func (s *Server) loadLLMConfig() (agent.Config, bool) {
 	cfg.Stream = p.Streaming
 	cfg.MaxTokens, cfg.MaxTokensField = p.MaxTokens, p.MaxTokensField
 	cfg.SessionHeaderKey = p.SessionHeaderKey
+	cfg.UserAgent = p.UserAgent
 	s.applyProfileRetry(&cfg, p)
 	// Ollama profiles run keyless (local server); the other formats need a key.
 	if cfg.APIKey == "" && cfg.NeedsAPIKey() {
@@ -376,6 +377,7 @@ func (s *Server) saveLLMConfig(cfg agent.Config) error {
 	var maxTokens int
 	var maxTokensField string
 	var sessionHeaderKey string
+	var userAgent string
 	var retry db.RetryOverride
 	if profs, _ := s.m.pg.ListProfiles(); profs != nil {
 		for _, p := range profs {
@@ -383,6 +385,7 @@ func (s *Server) saveLLMConfig(cfg agent.Config) error {
 				id, priority, poolExclude, streaming = p.ID, p.Priority, p.PoolExclude, p.Streaming
 				maxTokens, maxTokensField = p.MaxTokens, p.MaxTokensField
 				sessionHeaderKey = p.SessionHeaderKey
+				userAgent = p.UserAgent
 				retry = p.Retry
 				break
 			}
@@ -393,7 +396,7 @@ func (s *Server) saveLLMConfig(cfg agent.Config) error {
 		APIKey: cfg.APIKey, RatePerSecond: cfg.RatePerSecond, RatePerMinute: cfg.RatePerMinute,
 		ContextWindowK: cfg.ContextWindowK, ThinkingType: cfg.ThinkingType, ReasoningEffort: cfg.ReasoningEffort, IsDefault: true,
 		Priority: priority, PoolExclude: poolExclude, Streaming: streaming,
-		MaxTokens: maxTokens, MaxTokensField: maxTokensField, SessionHeaderKey: sessionHeaderKey,
+		MaxTokens: maxTokens, MaxTokensField: maxTokensField, SessionHeaderKey: sessionHeaderKey, UserAgent: userAgent, EndpointMode: cfg.EndpointMode,
 		Retry: retry,
 	})
 	if err != nil {
@@ -462,7 +465,7 @@ func (s *Server) applyLLM(cfg agent.Config) error {
 		s.cfgMu.Lock()
 		profName := s.llmProf
 		s.cfgMu.Unlock()
-		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, profName, cfg.ThinkingType, cfg.ReasoningEffort, s.m.LLMRecordEnabled)
+		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, profName, cfg.ThinkingType, cfg.ReasoningEffort, s.m.LLMRecordEnabled).ForProvider(cfg.Provider())
 		prov = bindSideProvider(prov, cfg, 0, profName)
 	}
 	s.cfgMu.Lock()
@@ -515,7 +518,7 @@ func (s *Server) loadProfileConfig(id int64) (agent.Config, bool) {
 	if err != nil || p == nil {
 		return agent.Config{}, false
 	}
-	cfg := agent.ConfigFrom(p.Format, p.Model, p.BaseURL, p.APIKey, p.Proxy)
+	cfg := agent.ConfigFromEndpoint(p.Format, p.Model, p.BaseURL, p.APIKey, p.Proxy, p.EndpointMode)
 	cfg.RatePerSecond, cfg.RatePerMinute = p.RatePerSecond, p.RatePerMinute
 	cfg.ContextWindowK = p.ContextWindowK
 	cfg.ThinkingType = p.ThinkingType
@@ -523,6 +526,7 @@ func (s *Server) loadProfileConfig(id int64) (agent.Config, bool) {
 	cfg.Stream = p.Streaming
 	cfg.MaxTokens, cfg.MaxTokensField = p.MaxTokens, p.MaxTokensField
 	cfg.SessionHeaderKey = p.SessionHeaderKey
+	cfg.UserAgent = p.UserAgent
 	s.applyProfileRetry(&cfg, p)
 	if cfg.APIKey == "" && cfg.NeedsAPIKey() {
 		return cfg, false
@@ -597,7 +601,7 @@ func (s *Server) providerForProfile(id int64) (llm.Provider, agent.Config, bool)
 	}
 	// Wrap with recorder, tagged with this profile's name.
 	if p, _ := s.m.pg.ProfileByID(id); p != nil {
-		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, p.Name, cfg.ThinkingType, cfg.ReasoningEffort, s.m.LLMRecordEnabled)
+		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, p.Name, cfg.ThinkingType, cfg.ReasoningEffort, s.m.LLMRecordEnabled).ForProvider(cfg.Provider())
 		prov = bindSideProvider(prov, cfg, id, p.Name)
 	}
 	s.provCacheMu.Lock()
@@ -798,6 +802,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/exploration/tokens", s.tokenStats)
 	mux.HandleFunc("GET /api/tokens/daily", s.tokenDailyStats)
 	mux.HandleFunc("GET /api/tokens/conversations", s.conversationTokens)
+	mux.HandleFunc("GET /api/tokens/dimensions", s.pgUsageDimensions)
 	mux.HandleFunc("GET /api/tokens/usage", s.pgUsageStats) // global llm_usage aggregation (new dashboard view)
 
 	mux.HandleFunc("GET /api/audit", s.getAudit)
@@ -1323,6 +1328,7 @@ func (s *Server) getLLM(w http.ResponseWriter, r *http.Request) {
 		"provider":         s.llmCfg.Provider(),
 		"model":            s.llmCfg.Model,
 		"base_url":         s.llmCfg.BaseURL,
+		"endpoint_mode":    s.llmCfg.EndpointMode,
 		"proxy":            s.llmCfg.Proxy,
 		"key_set":          s.llmCfg.APIKey != "",
 		"rate_per_second":  s.llmCfg.RatePerSecond,
@@ -1339,6 +1345,7 @@ func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
 		Provider        string  `json:"provider"`
 		Model           string  `json:"model"`
 		BaseURL         string  `json:"base_url"`
+		EndpointMode    string  `json:"endpoint_mode"`
 		Proxy           string  `json:"proxy"`
 		APIKey          string  `json:"api_key"`
 		RatePerSecond   float64 `json:"rate_per_second"`
@@ -1351,7 +1358,7 @@ func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	cfg := agent.ConfigFrom(req.Provider, req.Model, req.BaseURL, req.APIKey, req.Proxy)
+	cfg := agent.ConfigFromEndpoint(req.Provider, req.Model, req.BaseURL, req.APIKey, req.Proxy, req.EndpointMode)
 	cfg.RatePerSecond, cfg.RatePerMinute = req.RatePerSecond, req.RatePerMinute
 	cfg.ThinkingType = req.ThinkingType
 	cfg.ReasoningEffort = req.ReasoningEffort
@@ -1364,7 +1371,9 @@ func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
 	// Keyless formats (Ollama) need no key; the others keep/require one.
 	if cfg.APIKey == "" && cfg.NeedsAPIKey() {
 		s.cfgMu.Lock()
-		cfg.APIKey = s.llmCfg.APIKey // keep existing key if not re-entered
+		if agent.SameEndpoint(cfg, s.llmCfg) {
+			cfg.APIKey = s.llmCfg.APIKey
+		}
 		s.cfgMu.Unlock()
 	}
 	if cfg.APIKey == "" && cfg.NeedsAPIKey() {
@@ -1396,16 +1405,18 @@ func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
 // testLLM makes a real minimal completion to verify the config works.
 func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Provider         string `json:"provider"`
-		Model            string `json:"model"`
-		BaseURL          string `json:"base_url"`
-		Proxy            string `json:"proxy"`
-		APIKey           string `json:"api_key"`
-		ThinkingType     string `json:"thinking_type"`
-		ReasoningEffort  string `json:"reasoning_effort"`
-		ProfileID        *int64 `json:"profile_id"`         // passed when testing a stored profile: if api_key is empty, its stored key is used
-		Streaming        *bool  `json:"streaming"`          // omitted = streaming, the same defaults as when saving a profile
-		SessionHeaderKey string `json:"session_header_key"` // non-empty = the test also sends this custom session header, with a one-off random session id as the value
+		Provider         string  `json:"provider"`
+		Model            string  `json:"model"`
+		BaseURL          string  `json:"base_url"`
+		EndpointMode     *string `json:"endpoint_mode"`
+		Proxy            string  `json:"proxy"`
+		APIKey           string  `json:"api_key"`
+		ThinkingType     string  `json:"thinking_type"`
+		ReasoningEffort  string  `json:"reasoning_effort"`
+		ProfileID        *int64  `json:"profile_id"`         // passed when testing a stored profile: if api_key is empty, its stored key is used
+		Streaming        *bool   `json:"streaming"`          // omitted = streaming, the same defaults as when saving a profile
+		SessionHeaderKey string  `json:"session_header_key"` // non-empty = the test also sends this custom session header, with a one-off random session id as the value
+		UserAgent        string  `json:"user_agent"`         // non-empty = the test overrides the User-Agent header with this value (mirrors production)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err.Error())
@@ -1446,7 +1457,17 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 			req.ReasoningEffort = stored.ReasoningEffort
 		}
 	}
-	cfg := agent.ConfigFrom(req.Provider, req.Model, req.BaseURL, req.APIKey, req.Proxy)
+	mode := ""
+	if req.EndpointMode != nil {
+		mode = *req.EndpointMode
+	} else if stored != nil {
+		mode = stored.EndpointMode
+	}
+	cfg := agent.ConfigFromEndpoint(req.Provider, req.Model, req.BaseURL, req.APIKey, req.Proxy, mode)
+	if err := agent.ValidateEndpoint(cfg.EndpointMode, cfg.BaseURL); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
 	// mirror production: send the SAME thinking params so a provider that rejects the
 	// reasoning_effort/thinking field fails the test too (no false "test ok, run 400").
 	cfg.ThinkingType = req.ThinkingType
@@ -1465,6 +1486,20 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 	if stored != nil && cfg.SessionHeaderKey == "" {
 		cfg.SessionHeaderKey = strings.TrimSpace(stored.SessionHeaderKey)
 	}
+	// The custom User-Agent follows the profile too, so the test request uses the
+	// exact UA a real conversation would; the form value wins, else the stored one.
+	cfg.UserAgent = strings.TrimSpace(req.UserAgent)
+	if stored != nil && cfg.UserAgent == "" {
+		cfg.UserAgent = strings.TrimSpace(stored.UserAgent)
+	}
+	// Same rule as saving a profile: a value with control characters or over the
+	// length cap never reaches the wire, not even from the test button.
+	ua, err := agent.ValidateUserAgent(cfg.UserAgent)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	cfg.UserAgent = ua
 	// Keyless formats (Ollama) skip the key resolution entirely.
 	if cfg.NeedsAPIKey() {
 		// API key resolution precedence: form input > the named profile's stored key > the global config's key.
@@ -1474,7 +1509,7 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 		// the saved key to any host typed into the form.
 		withheld := false
 		if stored != nil && cfg.APIKey == "" {
-			if sameLLMEndpoint(req.Provider, req.BaseURL, stored.Format, stored.BaseURL) {
+			if agent.SameEndpoint(cfg, agent.ConfigFromEndpoint(stored.Format, stored.Model, stored.BaseURL, "", stored.Proxy, stored.EndpointMode)) {
 				// Trim like ConfigFrom does for form values: a key stored with
 				// surrounding whitespace runs fine in conversations (the runtime
 				// path re-trims) but would be sent raw here and fail auth.
@@ -1488,7 +1523,7 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 			global := s.llmCfg
 			s.cfgMu.Unlock()
 			if global.APIKey != "" {
-				if sameLLMEndpoint(req.Provider, req.BaseURL, global.Provider(), global.BaseURL) {
+				if agent.SameEndpoint(cfg, global) {
 					cfg.APIKey = global.APIKey
 				} else {
 					withheld = true
@@ -1522,10 +1557,14 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 // endpoint after ConfigFrom's normalization (trimmed, endpoint suffix stripped;
 // an empty base URL means the provider's canonical host). A saved API key may only
 // be sent when the request's endpoint matches the one it was saved for.
-func sameLLMEndpoint(provA, baseA, provB, baseB string) bool {
-	a := agent.ConfigFrom(provA, "", baseA, "", "")
-	b := agent.ConfigFrom(provB, "", baseB, "", "")
-	return a.Format == b.Format && a.BaseURL == b.BaseURL
+func sameLLMEndpoint(provA, baseA, provB, baseB string, proxies ...string) bool {
+	proxyA, proxyB := "", ""
+	if len(proxies) == 2 {
+		proxyA, proxyB = proxies[0], proxies[1]
+	}
+	a := agent.ConfigFrom(provA, "", baseA, "", proxyA)
+	b := agent.ConfigFrom(provB, "", baseB, "", proxyB)
+	return agent.SameEndpoint(a, b)
 }
 
 // truncateReply clips a connection-test reply for display. A model told to answer
@@ -1545,12 +1584,12 @@ type createTaskReq struct {
 	CategoryID           *int64   `json:"category_id,omitempty"`
 	Description          string   `json:"description"`
 	Goal                 string   `json:"goal"`
-	LLMProfileID         *int64   `json:"llm_profile_id,omitempty"`    // the LLM profile to run this task on; omitted/null = use the active profile
-	LLMProfileIDs        []int64  `json:"llm_profile_ids,omitempty"`   // ordered task-level profile chain; the first entry takes effect initially
-	SourceTaskIDs        []string `json:"source_task_ids,omitempty"`   // direct, read-only inherited source tasks
-	CompanyIDs           []int64  `json:"company_ids,omitempty"`       // links the company scope and snapshots its current assets; does not copy assets or force intent generation
+	LLMProfileID         *int64   `json:"llm_profile_id,omitempty"`  // the LLM profile to run this task on; omitted/null = use the active profile
+	LLMProfileIDs        []int64  `json:"llm_profile_ids,omitempty"` // ordered task-level profile chain; the first entry takes effect initially
+	SourceTaskIDs        []string `json:"source_task_ids,omitempty"` // direct, read-only inherited source tasks
+	CompanyIDs           []int64  `json:"company_ids,omitempty"`     // links the company scope and snapshots its current assets; does not copy assets or force intent generation
 	TimeoutSeconds       int      `json:"timeout_seconds"`
-	LLMRotate            *bool    `json:"llm_rotate"`             // task-level timeout (seconds); 0/omitted = no limit
+	LLMRotate            *bool    `json:"llm_rotate"`                  // task-level timeout (seconds); 0/omitted = no limit
 	PlanHeartbeatSeconds int      `json:"plan_heartbeat_seconds"`      // planner heartbeat interval (seconds); 0/omitted = default 600 (10min); floor = default = 600, lower values are raised to 600
 	PlanQuietMode        *bool    `json:"plan_quiet_mode,omitempty"`   // planner quiet-mode switch (#86); omitted = default on; false = edge rounds always plan
 	SeedFirstIntent      *bool    `json:"seed_first_intent,omitempty"` // issue one seed intent at creation (content = description + goal) so a worker can start right away without waiting for the first planner round; omitted/null = default off, the standard plan-then-execute flow. Pass true explicitly to enable (for CTF tasks often solved in one work, this skips the pre-start planner round).

@@ -617,6 +617,10 @@ type LLMProfileDTO struct {
 	// Custom session header name: when non-empty, every request carries this HTTP header,
 	// its value = the current session/intent's session id. '' = do not send. For gateways that key prompt caching/sticky routing off a session-id header.
 	SessionHeaderKey string `json:"session_header_key"`
+	// Custom User-Agent: when non-empty, every outbound LLM request overrides its
+	// User-Agent header with this value. '' = do not override (keep the default UA).
+	UserAgent    string `json:"user_agent"`
+	EndpointMode string `json:"endpoint_mode"`
 	// This profile's retry overrides (connect / empty response / same-provider safe
 	// window). Per item attempts: 0=inherit the global policy | -1=disable that retry
 	// layer | >0=count; interval_ms: 0=default exponential backoff | >0=use that fixed millisecond interval. All zero = fully follow the global policy, i.e. the historical behavior.
@@ -644,6 +648,8 @@ func llmProfileDTO(p *db.LLMProfile) LLMProfileDTO {
 		MaxTokens:        p.MaxTokens,
 		MaxTokensField:   p.MaxTokensField,
 		SessionHeaderKey: p.SessionHeaderKey,
+		UserAgent:        p.UserAgent,
+		EndpointMode:     p.EndpointMode,
 		Retry:            p.Retry,
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/guard"
 	"github.com/Autumn-27/artex/intercept"
+	"github.com/Autumn-27/artex/llmmeta"
 	"github.com/Autumn-27/artex/llmrec"
 	"github.com/Autumn-27/norma/llm"
 )
@@ -62,6 +63,7 @@ func (s *Server) wireInterceptReviewer() {
 }
 
 func reviewCompletion(ctx context.Context, prov llm.Provider, prompt string, input intercept.ReviewInput) (string, error) {
+	ctx = llmmeta.WithCall(ctx, "judge", 0)
 	user, err := json.Marshal(input)
 	if err != nil {
 		return "", err

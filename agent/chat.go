@@ -164,9 +164,9 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 	if c.guard != nil {
 		opts.Hooks = c.guard.Hooks()
 	}
+	opts.SessionID = sessionID
 	if c.tx != nil { // persist raw human↔AI conversation; one accumulating file per thread
 		opts.Transcript = c.tx
-		opts.SessionID = sessionID
 	}
 	// experimental feature: when enabled, noa takes over context compression (archive centralized under <workDir>/noa/<SessionID>, persistent).
 	enableNoa(&opts, c.noaEnabledFn, c.workDir, "chat-"+sessionID, noaWarn("chat-"+sessionID))
@@ -176,7 +176,9 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 	// reload prior conversation so the agent has context across turns (each Chat is
 	// a fresh session). First turn: no file yet → Resume loads nothing and proceeds.
 	if c.tx != nil {
-		_ = s.Resume(sessionID)
+		if err := resumeSession(s, opts.SessionID, opts.Transcript); err != nil {
+			return "", err
+		}
 	}
 	// re-unlock skill-gated MCPs from prior Skill() calls in the reloaded history so
 	// revealed tools stay callable across the fresh session.
