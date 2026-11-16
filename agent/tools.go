@@ -46,9 +46,9 @@ const stagnationMinRepeats = 3
 
 func detectStagnation(done, findings []*db.Node) []map[string]any {
 	type dir struct {
-		firstID  int64
-		repeats  int
-		summary  string
+		firstID int64
+		repeats int
+		summary string
 	}
 	dirs := map[string]*dir{}
 	order := []string{}
@@ -540,7 +540,7 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	// with the data so no prompt-template change is needed on deployed installs.
 	if stale := detectStagnation(recentDone, vulnNodes); len(stale) > 0 {
 		out["stagnation_warning"] = map[string]any{
-			"directions": stale,
+			"directions":  stale,
 			"instruction": "these directions were dispatched repeatedly with zero findings produced since their first attempt — do NOT re-dispatch the same approach again; open a materially different direction, or judge the goal on the existing evidence instead of grinding",
 		}
 	}
@@ -1968,22 +1968,32 @@ func (t *ToolSet) getWorkerTrace() actool.CoreTool {
 			"① intent_id only → returns a summary stream of the work's steps (summary≤100 chars, with step_id; just an action outline, no full output);\n"+
 			"② intent_id + q → returns only the summaries of steps matching the keyword (searches both summaries and full output; still gives only summary — use ③ for content);\n"+
 			"③ intent_id + step_ids → returns the full content (detail) of those steps; at most 5 per call — extras are dropped after the first 5 and reported in notice/omitted_step_ids.\n"+
-			"Typical flow: locate suspicious steps' step_ids with ①/②, then fetch their full output with ③. Thinking steps are excluded. Historical traces of directly related tasks are supported; their results carry source_task_id/inherited=true and are read-only.",
-		obj(map[string]any{
-			"intent_id": idp("intent id (= the work handle)"),
-			"q":         str("keyword: return only steps whose summary/full output matches it (optional; mutually exclusive with step_ids)"),
-			"step_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "step_ids to fetch full content for (from ①/② returns; at most 5 per call — extras beyond the first 5 are listed in omitted_step_ids)"},
-			"limit":     intp("return cap for the summary stream/search (optional)"),
-		}, "intent_id"),
+			tracePagingDescription()+"Typical flow: locate suspicious steps' step_ids with ①/②, then fetch their full output with ③. Thinking steps are excluded. Historical traces of directly related tasks are supported; their results carry source_task_id/inherited=true and are read-only.",
+		traceInputSchema(obj(map[string]any{
+			"intent_id":      idp("intent id (= the work handle)"),
+			"q":              str("keyword: return only steps whose summary/full output matches it (optional; mutually exclusive with step_ids)"),
+			"step_ids":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "step_ids to fetch full content for (from ①/② returns; at most 5 per call — extras beyond the first 5 are listed in omitted_step_ids)"},
+			"limit":          intp("return cap for the summary stream/search (optional)"),
+			"before_step_id": intp("bounded-context mode: page older summaries before this step id"),
+			"offset":         intp("bounded-context mode: byte offset into a selected detail step"),
+			"max_bytes":      intp("bounded-context mode: detail slice bytes, maximum 4096; continue with next_offset"),
+		}, "intent_id")),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
 				IntentID json.RawMessage   `json:"intent_id"`
 				Q        string            `json:"q"`
 				StepIDs  []json.RawMessage `json:"step_ids"`
 				Limit    int               `json:"limit"`
+				Before   int64             `json:"before_step_id"`
+				Offset   int               `json:"offset"`
+				MaxBytes int               `json:"max_bytes"`
 			}
 			_ = json.Unmarshal(in, &a)
 			id := pid(a.IntentID)
+			if boundedContextEnabled() && (a.Offset < 0 || len(a.StepIDs) > 100) {
+				return actool.Errorf("offset must be nonnegative and at most 100 step IDs may be requested"), nil
+			}
+
 			if id <= 0 {
 				return actool.Errorf("intent_id is required"), nil
 			}
@@ -2032,9 +2042,39 @@ func (t *ToolSet) getWorkerTrace() actool.CoreTool {
 					if acts[i].Inherited {
 						inheritedMap(step, acts[i].SourceTaskID)
 					}
+					if boundedContextEnabled() {
+						limit := a.MaxBytes
+						if limit <= 0 {
+							limit = 4096
+						}
+						for k, v := range traceSlice(acts[i].Detail, a.Offset, limit) {
+							step[k] = v
+						}
+						step["tool"], _, _ = sliceUTF8(acts[i].Tool, 0, 256)
+						step["kind"], _, _ = sliceUTF8(acts[i].Kind, 0, 64)
+					}
 					steps = append(steps, step)
 				}
 				result := map[string]any{"intent_id": id, "steps": steps, "returned_step_ids": ids}
+				if boundedContextEnabled() {
+					actual := []int64{}
+					for _, step := range steps {
+						actual = append(actual, step["step_id"].(int64))
+					}
+					result["returned_step_ids"] = actual
+					missing := []int64{}
+					found := map[int64]bool{}
+					for _, id := range actual {
+						found[id] = true
+					}
+					for _, id := range ids {
+						if !found[id] {
+							missing = append(missing, id)
+						}
+					}
+					result["unavailable_step_ids"] = missing
+
+				}
 				if len(omitted) > 0 {
 					// returned_step_ids/omitted_step_ids let the model decide programmatically
 					// whether another call is worth it; the notice states the same in prose.
@@ -2043,6 +2083,34 @@ func (t *ToolSet) getWorkerTrace() actool.CoreTool {
 						"At most %d steps' full content per call; this call returned the first %d (%v); the %d not fetched are %v."+
 							"If these are enough to locate the issue, no need to fetch the rest; if you really need to continue, call again with those step_ids.",
 						maxStepIDs, len(ids), ids, len(omitted), omitted)
+				}
+				if intentNode.Inherited {
+					inheritedMap(result, intentNode.SourceTaskID)
+				}
+				if boundedContextEnabled() {
+					boundTraceResult(result, steps)
+				}
+				return jsonResult(result)
+			}
+			if boundedContextEnabled() {
+				limit := min(a.Limit, 20)
+				if limit <= 0 {
+					limit = 20
+				}
+				acts, more, err := t.ts.ActivityTracePageWithSources(id, a.Before, a.Q, limit)
+				if err != nil {
+					return actool.Errorf(err.Error()), nil
+				}
+				steps := traceSteps(acts)
+				for _, step := range steps {
+					tool, _, _ := sliceUTF8(fmt.Sprint(step["tool"]), 0, 256)
+					step["tool"] = tool
+					kind, _, _ := sliceUTF8(fmt.Sprint(step["kind"]), 0, 64)
+					step["kind"] = kind
+				}
+				result := map[string]any{"intent_id": id, "steps": steps, "has_more": more}
+				if len(acts) > 0 {
+					result["next_before_step_id"] = acts[len(acts)-1].ID
 				}
 				if intentNode.Inherited {
 					inheritedMap(result, intentNode.SourceTaskID)

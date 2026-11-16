@@ -15,7 +15,7 @@ No live model measurements or token savings have been established.
 | `llmrec/llmrec.go:121` `Stream`; `:223` `Complete` | Existing ledger runs with debug recording off. Stream input/cache deltas were summed even when SDK adapters echo totals. | Correctness before optimization; compare SDK `Usage.MergeEcho` contract. | #14, #16 |
 | `db/llm_usage.go:346` `applyCostEur` | Fresh input subtracts cache reads but originally not cache creation, although SDK Anthropic input includes both. | Cache-write tokens charged at both fresh and cache-write prices. | #16 |
 | `server/task_llm.go:319` `completeTaskLLM`; `:389` `streamTaskLLM` | Runtime retries and profile switches invoke decorated providers repeatedly. | Count physical invocations separately from logical rounds; do not add return usage to ledger totals. | #14, #15 |
-| `server/server.go:465`, `:600` recorder wrapping | Both environment and persisted-profile provider paths share recorder. | Label actual configured adapter; do not retain endpoint/key in metrics. Pool member attempts are recorded; SDK-internal HTTP retries remain below the recorder. | #14, #15 |
+| `server/server.go:465`, `:600` recorder wrapping | Both environment and persisted-profile provider paths share recorder. | Label actual configured adapter; do not retain endpoint/key in metrics. Pool-internal retries require separate audit. | #14, #15 |
 | `server/intercept.go:51`, `:85` judge lane | Judge uses explicit worker override and decorated provider. | Retain judgement and safety context; no prompt trimming here. | #15 |
 | `sidequestion/context.go:111` summary completion; `sidequestion/service.go:25`, `:53` answers | Both invoke bound provider; summary and answer currently share lane. | Purpose-level breakdown is unavailable; zero reported tokens are not proof of zero spend. | #15 |
 | `agent/mainagent.go`, `agent/planner.go`, `agent/worker.go` prompt assembly | Shared instructions and dynamic intent tails require priority-aware review. | Stable prefix must preserve untrusted boundaries and current intent through compaction. | #22, #3 |
@@ -84,6 +84,36 @@ Core dimensions and hidden configured-provider paths are implemented and tested.
 Reports must retain these exclusions rather than claiming universal billing or
 per-tool token precision. Security and context changes remain later phases.
 
+## Phase B context contract
+
+`ARTEX_BOUNDED_CONTEXT=1` opts into projected launch context and trace slices.
+Default remains zero pending security/rollout validation. Mandatory system
+constraints and full intent text are unchanged. Projection never changes stored
+graphs, evidence or permissions; omitted evidence cannot establish a negative.
+
+Planner packets contain one current snapshot. Each request is independent of
+prior SDK sessions; restart/eviction starts a new epoch. Optional content targets
+16 KiB, with explicit omission paths; mandatory instructions/signals are retained
+even above that soft target, marked `mandatory_budget_exceeded`. A durable delta
+protocol is not implemented and remains tracked in #17.
+
+Worker launches select dependency/own-intent observations, preserve IDs,
+confidence and source identity, and omit unrelated frontier/digest material.
+Asset launch records contain at most eight compact targets. Oversized target
+strings are withheld with a detail requirement, never used as shortened URLs.
+`list_assets` and `node_detail` retrieve full records on demand. Exact duplicate
+records are suppressed; equal summaries with different IDs/provenance remain.
+Existing hot/cold covered-member suppression and revival behavior are retained.
+
+Trace detail is capped at five steps, 4096 encoded detail bytes per step, with
+byte offsets, next offsets, total/returned bytes and truncation flags. Metadata
+is bounded too; detail batches are reduced to a 16 KiB encoded budget including notices. Summary/search
+pages cap at 20 entries and use next_before_step_id. UTF-8 slices reconstruct
+original evidence; database contents remain complete. Inherited paging checks
+direct-source ownership and terminal state in SQL, and excludes thinking/usage.
+Custom stored tool-schema overrides may need optional paging fields added by the
+operator; default code definitions include them without changing custom policy.
+
 ## Review correction: dimensions and call boundaries (#14)
 
 `GET /api/tokens/dimensions?task=ID&purpose=agent&after=0&limit=100` returns
@@ -101,6 +131,32 @@ SDK re-issues get a fresh call ID and ordinal, and restoring a session resets th
 ordinal. Group by call ID for physical retries; never group solely by round across
 resumes. Unexpected stream EOF without a stop event is an error, not completion.
 
+## Phase B review corrections (#1, #2, #17–20)
+
+The feature remains opt-in. Goals, hints, task identity, coverage, stagnation,
+credentials and worker identity/dependency evidence are preserved without truncation. Optional
+fields carry per-path omission metadata. The 16 KiB target is a **soft** budget:
+mandatory data may exceed it, explicitly marked `mandatory_budget_exceeded`;
+correctness takes precedence over savings. Do not claim a hard bound on all prompts.
+
+Planner packets now send one current snapshot, not a base plus duplicated changes.
+Fresh SDK sessions cannot safely use standalone deltas. Logs record source/packet
+bytes per round, not provider token savings. Dependency filtering precedes optional
+trimming and uses producing intent IDs; direct fact/finding parents are retained
+as well, because graph edges can point from those node kinds to an intent.
+
+Asset omissions are explicit at field level. Trace pagination parameters exist
+only with the flag enabled, unavailable step IDs are reported, and detail batches
+have an aggregate 16 KiB encoded budget with continuation offsets.
+
+#20 remains incomplete: this projection suppresses identical entries while
+preserving changed state and source identity, but does not deduplicate across
+prefetch, tool results and SDK history. That requires a unified provenance and
+history protocol; deleting evidence by matching text would be unsafe. #17's durable
+delta protocol and live per-round token comparison are also not delivered. These
+issues must not auto-close from this PR. #1/#2 remain opt-in rollout work rather
+than default-on completion claims.
+
 ## Review corrections, 2026-11-16
 
 Connection/model-listing probes are administrative validation traffic outside the
@@ -115,3 +171,10 @@ without it have unknown cost rather than a reconstructed estimate. A zero/missin
 cache tariff with nonzero usage also leaves cost unknown (`cost_unknown=true`):
 the legacy tariff schema cannot distinguish an intentional free tariff from an
 unset one. Token totals remain available.
+
+Related-task detail is optional and lowest priority; current evidence, running and
+open intents precede it. Worker coverage is removed before budgeting, matching its
+rendered view. Selection reports unrelated counts. Dependencies outside the source
+overview windows (including cold digests and transitive ancestors not represented
+there) still require explicit node/detail retrieval; this is not a claim of a full
+transitive graph closure. Worker mandatory data may exceed the soft size target.
