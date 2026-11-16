@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"github.com/Autumn-27/artex/llmmeta"
 	"iter"
 	"strings"
 	"testing"
@@ -12,10 +13,14 @@ import (
 	"github.com/Autumn-27/norma/llm"
 )
 
-type reviewCaptureProvider struct{ request llm.CompletionRequest }
+type reviewCaptureProvider struct {
+	request llm.CompletionRequest
+	meta    llmmeta.CallInfo
+}
 
-func (p *reviewCaptureProvider) Stream(_ context.Context, request llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
+func (p *reviewCaptureProvider) Stream(ctx context.Context, request llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
 	p.request = request
+	p.meta = llmmeta.From(ctx)
 	return func(yield func(llm.StreamEvent, error) bool) {
 		yield(llm.StreamEvent{Type: llm.SETextDelta, Text: `{"decision":"ask","comment":"Actual action: delete a file; Consequence if successful: the file would be lost and ownership is unconfirmed; Matched rule: ASK (unclear ownership)"}`}, nil)
 	}
@@ -43,6 +48,9 @@ func TestReviewCompletionSendsCurrentCallWithoutHistory(t *testing.T) {
 	reply, err := reviewCompletion(ctx, p, prompt, input)
 	if err != nil || intercept.ParseVerdict(reply).Action != "ask" {
 		t.Fatalf("%s %v", reply, err)
+	}
+	if p.meta.Purpose != "judge" || p.meta.Round != 0 || p.meta.ID == "" {
+		t.Fatalf("judge metadata: %+v", p.meta)
 	}
 	if len(p.request.System) != 1 || p.request.System[0] != prompt || len(p.request.Messages) != 1 {
 		t.Fatal("wrong review request roles")

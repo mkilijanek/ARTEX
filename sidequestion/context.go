@@ -109,7 +109,7 @@ func (b *contextBuilder) summarize(ctx context.Context, prior, text string) (str
 			return "", ErrContextBudget
 		}
 		b.calls++
-		msg, stop, usage, err := b.service.Provider.Complete(llmmeta.WithCall(ctx, "side_summary", b.calls), req)
+		msg, stop, usage, err := b.service.Provider.Complete(llmmeta.WithCall(ctx, "side_summary", 0), req)
 		b.usage.Add(usage)
 		b.progress(b.info.Phase)
 		if ctx.Err() != nil {
