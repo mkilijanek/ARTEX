@@ -1557,10 +1557,14 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 // endpoint after ConfigFrom's normalization (trimmed, endpoint suffix stripped;
 // an empty base URL means the provider's canonical host). A saved API key may only
 // be sent when the request's endpoint matches the one it was saved for.
-func sameLLMEndpoint(provA, baseA, provB, baseB string) bool {
-	a := agent.ConfigFrom(provA, "", baseA, "", "")
-	b := agent.ConfigFrom(provB, "", baseB, "", "")
-	return a.Format == b.Format && a.BaseURL == b.BaseURL
+func sameLLMEndpoint(provA, baseA, provB, baseB string, proxies ...string) bool {
+	proxyA, proxyB := "", ""
+	if len(proxies) == 2 {
+		proxyA, proxyB = proxies[0], proxies[1]
+	}
+	a := agent.ConfigFrom(provA, "", baseA, "", proxyA)
+	b := agent.ConfigFrom(provB, "", baseB, "", proxyB)
+	return agent.SameEndpoint(a, b)
 }
 
 // truncateReply clips a connection-test reply for display. A model told to answer

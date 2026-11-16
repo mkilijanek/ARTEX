@@ -2103,7 +2103,7 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 	withheld := false
 	if apiKey == "" && req.ProfileID != nil {
 		if p, err := s.m.pg.ProfileByID(*req.ProfileID); err == nil && p != nil {
-			if p.EndpointMode != agent.EndpointFixed && sameLLMEndpoint(req.Provider, req.BaseURL, p.Format, p.BaseURL) {
+			if p.EndpointMode != agent.EndpointFixed && sameLLMEndpoint(req.Provider, req.BaseURL, p.Format, p.BaseURL, req.Proxy, p.Proxy) {
 				apiKey = p.APIKey
 			} else {
 				withheld = p.APIKey != ""
