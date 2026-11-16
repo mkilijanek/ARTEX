@@ -1,5 +1,3 @@
-> Delivery note: Phase B/C runtime sections below describe the independent PRs #36/#37. Their context/cache flags remain inactive on the SDK-only branch until those PRs merge.
-
 # Token and cost audit
 
 Baseline: `fc35dddee8286d584f71ba751a02c48bc60835a3`, reviewed 2026-11-14.

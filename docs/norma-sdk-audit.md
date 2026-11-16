@@ -204,10 +204,10 @@ are identified as local context-budget errors and reported as blocking_limit,
 not retried as network/model failures. Increase the configured window only after
 checking the model's actual limit, or start a fresh session.
 
-The later review on #15/#16 also identifies pending integration between the
-phase A–C stack and this SDK-only branch. Phase A telemetry is now integrated on this branch: numeric dimensions, pool
+The later review on #15/#16 identified integration work between the
+phase A–C stack and this SDK branch; that integration is now complete. Phase A telemetry is now integrated on this branch: numeric dimensions, pool
 attempt ordinals and cumulative logical usage are preserved together. Phase C
-compatibility still requires a final merge check. This PR does not bundle independent
+compatibility has been checked after merging the current main. This PR does not bundle independent
 Planner/Worker projection logic. Per-call fresh-input subtotals and unknown cache tariffs are now represented
 explicitly; old archives without the new subtotal retain unknown cost. Do not
 interpret green CI as acceptance of those unresolved cross-branch concerns.
@@ -223,5 +223,5 @@ HTTP client policy is outside this SDK-only change.
 The snapshot verifier checks the full upstream production file inventory and
 original test hashes separately from reviewed local test hashes. Two actual SDK
 compactions and actual tool-result activity capture cover summary/data framing.
-The context/cache flags shown in .env.example are inactive on this SDK branch
-until the independent Phase B/C PRs merge; all remain disabled by default.
+Phase B/C are now merged into main and included by integration ancestry.
+Their context/cache flags remain disabled by default pending rollout measurements.
