@@ -4,12 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"log"
 	"sort"
-	"sync"
 
 	"github.com/Autumn-27/artex/db"
-	"github.com/google/uuid"
 )
 
 const overviewBudget = 16 * 1024
@@ -201,42 +198,4 @@ func projectAssets(assets []*db.Asset) map[string]any {
 		out = append(out, m)
 	}
 	return map[string]any{"assets": out, "omitted_assets": max(0, len(assets)-8), "omitted_fields": []string{"page_title", "headers", "body", "metadata"}, "detail_tool": "list_assets(ids); omitted fields are not absent evidence"}
-}
-
-type overviewBase struct {
-	epoch                string
-	version, baseVersion int
-	base                 map[string]any
-}
-type overviewSnapshots struct {
-	mu    sync.Mutex
-	tasks map[int64]*overviewBase
-}
-
-// Every packet contains its base and cumulative replacements, so a new planner
-// session never relies on remembered deltas. Restart/eviction starts a new epoch.
-func (s *overviewSnapshots) packet(task int64, data map[string]any) map[string]any {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	current := projectOverview(data)
-	if s.tasks == nil || len(s.tasks) > 64 {
-		s.tasks = map[int64]*overviewBase{}
-	}
-	b := s.tasks[task]
-	if b == nil {
-		b = &overviewBase{epoch: uuid.NewString()}
-		s.tasks[task] = b
-	}
-	b.version++
-
-	// Each planner call starts a new SDK session. Sending the previous base plus
-	// replacements costs more than sending current state and cannot save tokens.
-	b.base = current
-	b.baseVersion = b.version
-	p := map[string]any{"epoch": b.epoch, "version": b.version, "base_version": b.version,
-		"base": current, "replace": map[string]any{}, "remove": []string{}, "self_contained": true}
-	before, _ := json.Marshal(data)
-	after, _ := json.Marshal(p)
-	log.Printf("[context] planner task=%d round=%d source_bytes=%d packet_bytes=%d", task, b.version, len(before), len(after))
-	return p
 }
