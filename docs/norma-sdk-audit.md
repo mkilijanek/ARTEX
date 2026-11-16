@@ -209,8 +209,8 @@ phase A–C stack and this SDK branch; that integration is now complete. Phase A
 attempt ordinals and cumulative logical usage are preserved together. Phase C
 compatibility has been checked after merging the current main. This PR does not bundle independent
 Planner/Worker projection logic. Per-call fresh-input subtotals and unknown cache tariffs are now represented
-explicitly; old archives without the new subtotal retain unknown cost. Do not
-interpret green CI as acceptance of those unresolved cross-branch concerns.
+explicitly; old archives without the new subtotal retain unknown cost. Passing CI does not replace the separate live rollout measurements for the
+optional context/cache features.
 
 Review follow-up 2026-11-16: trigger context JSON-quotes all tool event fields;
 NOA budget errors are mapped on the actual harness terminal path and tested in
