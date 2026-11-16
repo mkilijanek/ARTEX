@@ -1,10 +1,21 @@
 name: release
 on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Fork release tag (vMAJOR.MINOR.PATCHm)
+        required: true
+        type: string
   push:
     tags: ["v*"]
 
+concurrency:
+  group: fork-release
+  cancel-in-progress: false
+
 permissions:
   contents: write # required to create the Release
+  packages: write # publish fork release images to GHCR
 
 jobs:
   # ① Frontend static export (once), reused by the cross-compiled platform builds
@@ -52,7 +63,7 @@ jobs:
         env:
           ARTEX_TARGET_OS: ${{ matrix.goos }}
           ARTEX_TARGET_ARCH: ${{ matrix.goarch }}
-          ARTEX_BUILD_VERSION: ${{ github.ref_name }}
+          ARTEX_BUILD_VERSION: ${{ inputs.version || github.ref_name }}
           ARTEX_SKIP_FRONTEND: "1"
           ARTEX_SKIP_NPM_CI: "1"
           # UPX self-extracting ELF binaries crash on some Linux kernels, virtualization
@@ -79,7 +90,7 @@ jobs:
 
   # ③ Collect all zips → create the GitHub Release
   release:
-    needs: binaries
+    needs: [binaries, ghcr]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -89,14 +100,19 @@ jobs:
           path: dist
       - name: Generate checksums
         working-directory: dist
-        run: sha256sum *.zip > SHA256SUMS
+        run: sha256sum -- ./*.zip > SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.version || github.ref_name }}
+          target_commitish: ${{ github.sha }}
           files: |
             dist/*.zip
             dist/SHA256SUMS
           generate_release_notes: false
-          body: "See CHANGELOG.md for the list of changes in this release."
+          body: |
+            Fork release `${{ inputs.version || github.ref_name }}` (the trailing `m` distinguishes this fork).
+            Docker image: `ghcr.io/mkilijanek/artex:${{ inputs.version || github.ref_name }}` (`linux/amd64`).
+            See CHANGELOG.md and the merged PR for changes. Image digest is recorded in this workflow summary.
 
   # ④ Multi-arch image → push to Docker Hub (reuses the Linux binaries built by the
   #    binaries job; the image only installs tools + ships the binary; arm64 only needs
@@ -106,7 +122,7 @@ jobs:
   # and provide DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets plus DOCKERHUB_IMAGE).
   docker:
     needs: binaries
-    if: ${{ vars.DOCKERHUB_ENABLED == 'true' }}
+    if: ${{ github.event_name == 'push' && vars.DOCKERHUB_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4 # fetch the Dockerfile and skills/
@@ -140,3 +156,58 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # Fork releases are identifiable by the trailing m. Publish the exact tagged
+  # source, including its versioned binary, before creating the GitHub Release.
+  ghcr:
+    needs: binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate fork version and image name
+        id: version
+        env:
+          RELEASE_TAG: ${{ inputs.version || github.ref_name }}
+          IMAGE_REPOSITORY: ${{ github.repository }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+m$ ]] || { echo "Expected vMAJOR.MINOR.PATCHm"; exit 1; }
+          echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${IMAGE_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - name: Free space on the disposable build runner
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish release image
+        id: image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          build-args: ARTEX_VERSION=${{ inputs.version || github.ref_name }}
+          tags: |
+            ${{ steps.version.outputs.image }}:${{ inputs.version || github.ref_name }}
+            ${{ steps.version.outputs.image }}:${{ steps.version.outputs.version }}
+            ${{ steps.version.outputs.image }}:latest-m
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ inputs.version || github.ref_name }}
+          cache-from: type=gha,scope=fork-release-amd64
+          cache-to: type=gha,scope=fork-release-amd64,mode=max
+      - name: Verify published manifest
+        env:
+          IMAGE: ${{ steps.version.outputs.image }}
+          VERSION: ${{ inputs.version || github.ref_name }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          docker buildx imagetools inspect "$IMAGE@$DIGEST"
+          {
+            echo "### $VERSION"
+            echo "Image: $IMAGE:$VERSION"
+            echo "Digest: $DIGEST"
+          } >> "$GITHUB_STEP_SUMMARY"
