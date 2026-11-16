@@ -100,7 +100,7 @@ jobs:
           path: dist
       - name: Generate checksums
         working-directory: dist
-        run: sha256sum *.zip > SHA256SUMS
+        run: sha256sum -- ./*.zip > SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.version || github.ref_name }}
@@ -206,6 +206,8 @@ jobs:
           DIGEST: ${{ steps.image.outputs.digest }}
         run: |
           docker buildx imagetools inspect "$IMAGE@$DIGEST"
-          echo "### $VERSION" >> "$GITHUB_STEP_SUMMARY"
-          echo "Image: $IMAGE:$VERSION" >> "$GITHUB_STEP_SUMMARY"
-          echo "Digest: $DIGEST" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### $VERSION"
+            echo "Image: $IMAGE:$VERSION"
+            echo "Digest: $DIGEST"
+          } >> "$GITHUB_STEP_SUMMARY"
