@@ -34,6 +34,9 @@ func TestRenderedAgentPromptByteInventory(t *testing.T) {
 	}
 	for role, prompt := range prompts {
 		parts, b := cachePrefix([]string{prompt}, 0)
+		if role == "planner" && len(parts[0]) < 8000 {
+			t.Fatalf("planner stable prefix too short: %d", len(parts[0]))
+		}
 		if strings.Join(parts, "\n\n") != prompt {
 			t.Fatalf("%s changed instructions", role)
 		}
@@ -54,6 +57,18 @@ func TestRenderedPrefixesAcrossGoalsAndDirectories(t *testing.T) {
 		b, _ := cachePrefix([]string{two}, 0)
 		if a[0] != b[0] || strings.Join(a, "\n\n") != one || strings.Join(b, "\n\n") != two {
 			t.Fatal("real prompt prefix depends on goal or changes instructions")
+		}
+	}
+}
+
+func TestRenderedWorkerAndChatPrefixesAcrossDirectories(t *testing.T) {
+	t.Setenv("ARTEX_CACHE_PREFIX", "1")
+	pairs := [][2]string{{workerSystem("", "", "/data", "/data/tasks/1/i1"), workerSystem("", "", "/data", "/data/tasks/2/i2")}, {chatSystem("assistant", "/data", "/data/sessions/one"), chatSystem("assistant", "/data", "/data/sessions/two")}}
+	for _, pair := range pairs {
+		a, _ := cachePrefix([]string{pair[0]}, 0)
+		b, _ := cachePrefix([]string{pair[1]}, 0)
+		if a[0] != b[0] || strings.Join(a, "\n\n") != pair[0] {
+			t.Fatal("real role prefix changed with directory")
 		}
 	}
 }
