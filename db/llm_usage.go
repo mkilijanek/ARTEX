@@ -464,7 +464,21 @@ func (d *DB) UsageDimensions(task, purpose string, after int64, limit int) ([]Us
 	return out, rows.Err()
 }
 
+// UsageDimension contains only columns actually selected by UsageDimensions.
+// Unselected counters must never appear as measured zeros in the response.
 type UsageDimension struct {
-	ID int64 `json:"id"`
-	LLMUsage
+ ID int64 `json:"id"`
+ CallID string `json:"call_id"`
+ Purpose string `json:"purpose"`
+ Round int `json:"round"`
+ Attempt int `json:"attempt"`
+ TaskID string `json:"task_id"`
+ ProfileName string `json:"profile_name"`
+ ToolBytes map[string]ToolBytes `json:"tool_bytes"`
+ InputTokens int `json:"input_tokens"`
+ OutputTokens int `json:"output_tokens"`
+ CacheRead int `json:"cache_read"`
+ CacheWrite int `json:"cache_write"`
+ Status string `json:"status"`
+ Reason string `json:"reason"`
 }
