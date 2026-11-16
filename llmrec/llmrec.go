@@ -6,12 +6,14 @@ package llmrec
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"iter"
 	"log"
 	"strings"
 	"time"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/llmmeta"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/transcript"
 )
@@ -62,10 +64,11 @@ func workerFrom(ctx context.Context) string {
 
 // Recorder wraps an llm.Provider and records every completion call.
 type Recorder struct {
-	inner llm.Provider
-	pg    *db.DB
-	model string // model name (from config, not in CompletionRequest)
-	prof  string // LLM profile name (from llm_profiles)
+	inner    llm.Provider
+	pg       *db.DB
+	model    string // model name (from config, not in CompletionRequest)
+	provider string // configured wire adapter; never endpoint or credentials
+	prof     string // LLM profile name (from llm_profiles)
 	// thinkingType / reasoningEffort are the config-level thinking params (thinking
 	// toggle / thinking effort). norma's buildBody() injects them from the provider
 	// config into the actual HTTP body; they never appear on CompletionRequest, so
@@ -122,6 +125,7 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 	// stats and must be complete even for interrupted/failed runs, so it is NOT
 	// gated. Only body serialization + response accumulation are skipped when off.
 	recordBodies := r.enabled == nil || r.enabled()
+	ctx = invocationContext(ctx)
 	start := time.Now()
 	session := transcript.SessionIDFrom(ctx)
 	parsedID, worker := parseSession(session)
@@ -136,7 +140,8 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 		taskID = parsedID
 	}
 
-	// Serialize the request only when storing bodies (this is the expensive part).
+	// Retain request content only when storing debug bodies. Usage metrics below
+	// serialize transiently for byte counts without retaining request content.
 	// Alongside it, attach a Capture so the HTTP transport can hand back the
 	// untouched wire bodies — the normalized view below cannot reconstruct them
 	// (tool schemas are dropped, tool_use blocks never reach this layer, and the
@@ -158,17 +163,29 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 		)
 
 		finished := false
+		completed := false
 		finish := func(err error) {
 			if finished {
 				return
 			}
 			finished = true
+			reason := "completed"
+			if !completed {
+				reason = "consumer_stopped"
+			}
 			status := "ok"
+			if !completed {
+				status = "error"
+			}
 			if err != nil {
+				reason = "error"
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					reason = "cancelled"
+				}
 				status = "error"
 			}
 			// Lightweight metering row — always written.
-			r.recordUsage(taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status)
+			r.recordUsage(ctx, req, session, taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status, reason)
 			// Heavy trace row — only when body recording is on.
 			if recordBodies {
 				r.record(req, session, taskID, worker, reqBody, capt, start, textBuf.String(), thinkingBuf.String(), usage, stopReason, err)
@@ -186,11 +203,8 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 				return
 			}
 			// Always track usage (cheap); accumulate text/thinking only for bodies.
-			// Anthropic (and the other providers) split token usage across events:
-			// message_start carries ONLY the input side (input + cache), message_delta
-			// ONLY the output. They must be FOLDED with Add — overwriting on delta
-			// would zero out the input already counted at start (mirrors the SDK's own
-			// llm.Accumulator; see norma/llm/accumulate.go).
+			// Input/cache counters can be echoed on message_delta. Match the SDK
+			// accumulator: merge echoed input with max, accumulate output deltas.
 			switch ev.Type {
 			case llm.SETextDelta:
 				if recordBodies {
@@ -200,20 +214,26 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 				if recordBodies {
 					thinkingBuf.WriteString(ev.Text)
 				}
+			case llm.SEMessageStop:
+				completed = true
 			case llm.SEMessageStart:
 				usage.Add(ev.Usage)
 			case llm.SEMessageDelta:
 				if ev.StopReason != "" {
 					stopReason = ev.StopReason
+					completed = true
 				}
-				usage.Add(ev.Usage)
+				usage.MergeEcho(ev.Usage)
 			}
 			if !yield(ev, err) {
 				return
 			}
 		}
 
-		// Stream completed normally.
+		// EOF without a terminal event is an incomplete provider response.
+		if !completed {
+			streamErr = errors.New("provider stream ended without a stop event")
+		}
 		finish(streamErr)
 	}
 }
@@ -222,6 +242,7 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 // usage metering, normalized body recording and raw wire capture as Stream.
 func (r *Recorder) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
 	recordBodies := r.enabled == nil || r.enabled()
+	ctx = invocationContext(ctx)
 	start := time.Now()
 	session := transcript.SessionIDFrom(ctx)
 	parsedID, worker := parseSession(session)
@@ -242,11 +263,16 @@ func (r *Recorder) Complete(ctx context.Context, req llm.CompletionRequest) (llm
 	}
 
 	msg, stopReason, usage, err := r.inner.Complete(ctx, req)
+	reason := "completed"
 	status := "ok"
 	if err != nil {
+		reason = "error"
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			reason = "cancelled"
+		}
 		status = "error"
 	}
-	r.recordUsage(taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status)
+	r.recordUsage(ctx, req, session, taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status, reason)
 	if recordBodies {
 		r.record(req, session, taskID, worker, reqBody, capt, start, msg.Text(), thinkingText(msg), usage, stopReason, err)
 	}
@@ -263,31 +289,36 @@ func thinkingText(msg llm.Message) string {
 	return b.String()
 }
 
-// recordUsage appends one lightweight metering row to llm_usage (no bodies). Skips
-// zero-token calls with no model, which carry nothing worth metering.
-func (r *Recorder) recordUsage(taskID string, expID int64, worker string, usage llm.Usage, latencyMs int, status string) {
-	if r.pg == nil {
-		return
+// recordUsage writes content-free telemetry even when debug body recording is off.
+// The optional observer also works without a database (e.g. replay fixtures).
+func (r *Recorder) recordUsage(ctx context.Context, req llm.CompletionRequest, session, taskID string, expID int64, worker string, usage llm.Usage, latencyMs int, status, reason string) {
+	u := measureRequest(req)
+	meta := llmmeta.From(ctx)
+	if meta.ID == "" {
+		purpose := "unclassified"
+		if worker == "judge" {
+			purpose = "judge"
+		}
+		meta = llmmeta.From(llmmeta.WithCall(ctx, purpose, 0))
 	}
-	if r.model == "" && usage.InputTokens == 0 && usage.OutputTokens == 0 &&
-		usage.CacheReadTokens == 0 && usage.CacheWriteTokens == 0 {
-		return
+	u.CallID, u.Round, u.Purpose = meta.ID, meta.Round, meta.Purpose
+	if u.Purpose == "" {
+		u.Purpose = "unclassified"
 	}
-	err := r.pg.InsertLLMUsage(&db.LLMUsage{
-		TaskID:        taskID,
-		ExplorationID: expID,
-		Worker:        worker,
-		Model:         r.model,
-		ProfileName:   r.prof,
-		LatencyMs:     latencyMs,
-		InputTokens:   usage.InputTokens,
-		OutputTokens:  usage.OutputTokens,
-		CacheRead:     usage.CacheReadTokens,
-		CacheWrite:    usage.CacheWriteTokens,
-		Status:        status,
-	})
-	if err != nil {
-		log.Printf("[llmusage] insert: %v", err)
+	u.TaskID, u.ExplorationID, u.Worker = taskID, expID, worker
+	u.Model, u.ProfileName, u.Provider = r.model, r.prof, r.provider
+	u.IntentID = intentFromSession(session)
+	u.Attempt, _ = ctx.Value(attemptKey{}).(int)
+	u.LatencyMs, u.Status, u.Reason = latencyMs, status, reason
+	u.InputTokens, u.OutputTokens = usage.InputTokens, usage.OutputTokens
+	u.CacheRead, u.CacheWrite = usage.CacheReadTokens, usage.CacheWriteTokens
+	if observe, _ := ctx.Value(observerKey{}).(func(db.LLMUsage)); observe != nil {
+		observe(u)
+	}
+	if r.pg != nil {
+		if err := r.pg.InsertLLMUsage(&u); err != nil {
+			log.Printf("[llmusage] insert: %v", err)
+		}
 	}
 }
 
