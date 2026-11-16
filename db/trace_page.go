@@ -1,5 +1,7 @@
 package db
 
+import "fmt"
+
 // ActivityTracePageWithSources pages only an owned or directly inherited intent.
 // The terminal-state condition stays in SQL so a reopened source cannot leak a
 // live trace between ownership resolution and row retrieval.
@@ -22,7 +24,7 @@ func (s *ExplorationStore) ActivityTracePageWithSources(nodeID, before int64, q 
 			}
 		}
 		if owner == nil {
-			return []Activity{}, false, nil
+			return nil, false, fmt.Errorf("source task %d is unavailable for trace retrieval", n.SourceTaskID)
 		}
 	}
 	limit = max(1, min(limit, 50))

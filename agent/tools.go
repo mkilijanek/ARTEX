@@ -1968,7 +1968,7 @@ func (t *ToolSet) getWorkerTrace() actool.CoreTool {
 			"① intent_id only → returns a summary stream of the work's steps (summary≤100 chars, with step_id; just an action outline, no full output);\n"+
 			"② intent_id + q → returns only the summaries of steps matching the keyword (searches both summaries and full output; still gives only summary — use ③ for content);\n"+
 			"③ intent_id + step_ids → returns the full content (detail) of those steps; at most 5 per call — extras are dropped after the first 5 and reported in notice/omitted_step_ids.\n"+
-			tracePagingDescription()+"Typical flow: locate suspicious steps' step_ids with ①/②, then fetch their output with ③. Thinking steps are excluded. Historical traces of directly related tasks are supported; their results carry source_task_id/inherited=true and are read-only.",
+			tracePagingDescription()+"Typical flow: locate suspicious steps' step_ids with ①/②, then fetch their full output with ③. Thinking steps are excluded. Historical traces of directly related tasks are supported; their results carry source_task_id/inherited=true and are read-only.",
 		traceInputSchema(obj(map[string]any{
 			"intent_id":      idp("intent id (= the work handle)"),
 			"q":              str("keyword: return only steps whose summary/full output matches it (optional; mutually exclusive with step_ids)"),

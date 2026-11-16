@@ -133,7 +133,7 @@ func TestMandatoryOverviewKeysAreLossless(t *testing.T) {
 	}
 	data := map[string]any{"hints": hints, "goals": hints, "stagnation_warning": "stop repeating", "coverage": map[string]any{"tested": 0}, "related_tasks": []any{"source"}, "sites_without_endpoints": 8, "asset_counts": map[string]any{"site": 9}}
 	out := projectOverview(data)
-	for _, key := range []string{"hints", "goals", "stagnation_warning", "coverage", "related_tasks"} {
+	for _, key := range []string{"hints", "goals", "stagnation_warning", "coverage"} {
 		before, _ := json.Marshal(data[key])
 		after, _ := json.Marshal(out[key])
 		if string(before) != string(after) {
@@ -199,8 +199,30 @@ func TestProjectionOfRealGraphOverview(t *testing.T) {
 	}
 	defer d.Exec(`DELETE FROM explorations WHERE id=$1`, exp)
 	ts := d.Exploration(exp)
+	factID, err := ts.AddNode(db.KindFact, map[string]any{"summary": "observed negative fixture", "confidence": "observed"}, 0, "confirmed", "fixture", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intentID, err := ts.AddIntent(map[string]any{"summary": "dependent intent"}, 1, nil, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.AddNode(db.KindHint, map[string]any{"text": "mandatory fixture hint"}, 0, "active", "fixture", nil); err != nil {
+		t.Fatal(err)
+	}
 	tools := NewToolSet(ts, "fixture")
 	data := tools.graphOverviewData()
+	if len(data["recent_facts"].([]map[string]any)) == 0 {
+		t.Fatal("fixture overview lacks facts")
+	}
+	worker := workerContext(data, &db.Node{ID: intentID})
+	if worker["intent_id"] == nil || worker["intent_context"] == nil {
+		t.Fatal("real intent lost")
+	}
+	direct := workerContext(map[string]any{"running_intents": []map[string]any{{"id": intentID, "parents": []int64{factID}}}, "recent_facts": data["recent_facts"]}, &db.Node{ID: intentID})
+	if len(direct["recent_facts"].([]any)) == 0 {
+		t.Fatal("direct fact parent lost")
+	}
 	out := projectOverview(data)
 	for key := range data {
 		if _, ok := out[key]; !ok {
@@ -208,5 +230,21 @@ func TestProjectionOfRealGraphOverview(t *testing.T) {
 				t.Fatalf("real overview field silently dropped: %s", key)
 			}
 		}
+	}
+}
+
+func TestWorkerPrioritySurvivesRelatedTaskPressure(t *testing.T) {
+	data := map[string]any{"hints": []any{"keep instructions"}, "related_tasks": []any{map[string]any{"body": strings.Repeat("x", 40000)}}, "running_intents": []map[string]any{{"id": 7, "parents": []int64{1}}}, "recent_facts": []map[string]any{{"id": 101, "from_intent": 1, "summary": "negative"}}}
+	out := workerContext(data, &db.Node{ID: 7})
+	for _, k := range []string{"intent_context", "intent_id", "scope_required_before_action", "recent_facts"} {
+		if out[k] == nil {
+			t.Fatalf("worker mandatory field dropped: %s", k)
+		}
+	}
+	if len(out["recent_facts"].([]any)) != 1 {
+		t.Fatal("dependency evidence dropped")
+	}
+	if out["mandatory_budget_exceeded"] == true {
+		t.Fatal("optional related-task content mislabeled mandatory")
 	}
 }
