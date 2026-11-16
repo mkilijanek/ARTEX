@@ -148,3 +148,52 @@ func TestUsageDimensionsFilteringAndCursor(t *testing.T) {
 		t.Fatalf("filter %+v %v", empty, err)
 	}
 }
+
+func TestProfilePricingClampsPerCallAndKeepsUnknownCachePrices(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	name := fmt.Sprintf("pricing-call-%d", time.Now().UnixNano())
+	id, err := d.SaveProfile(&LLMProfile{Name: name, Format: "anthropic", Model: "fixture", PriceInputPerM: 1, PriceCacheReadPerM: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec(`DELETE FROM llm_profiles WHERE id=$1`, id)
+	defer d.Exec(`DELETE FROM llm_usage WHERE profile_name=$1`, name)
+	for _, u := range []*LLMUsage{{ProfileName: name, InputTokens: 100}, {ProfileName: name, InputTokens: 10, CacheRead: 50}} {
+		if err := d.InsertLLMUsage(u); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := d.UsageByProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, r := range rows {
+		if r.ProfileName == name {
+			found = true
+			if r.FreshInputTokens == nil || *r.FreshInputTokens != 100 || r.CostEur == nil || math.Abs(*r.CostEur-0.00015) > 1e-12 {
+				t.Fatalf("per-call price %+v", r)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("profile missing")
+	}
+	_, err = d.Exec(`UPDATE llm_profiles SET price_cache_read_per_m=NULL WHERE id=$1`, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err = d.UsageByProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if r.ProfileName == name && (r.CostEur != nil || !r.CostUnknown) {
+			t.Fatalf("unpriced cache reported as free: %+v", r)
+		}
+	}
+}
