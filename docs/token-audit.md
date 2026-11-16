@@ -172,7 +172,7 @@ Real planner/main prompts are tested across changed goals/directories. Existing
 cache boundaries covering deferred guidance are preserved; a single-segment system
 can use the stable prefix. No live cache-hit improvement is claimed.
 
-Memoization rejects max_tokens/other incomplete stops, retains flag-off behavior,
+Memoization rejects only explicit max_tokens/length truncation, retains flag-off behavior,
 uses a 64-entry LRU, and coalesces identical concurrent calls with cancellable
 waiters. Deterministic fixture: two unchanged requests cause one inference and one
 memo hit; changed source forces another inference; failed/truncated summaries are
@@ -201,3 +201,9 @@ rendered view. Selection reports unrelated counts. Dependencies outside the sour
 overview windows (including cold digests and transitive ancestors not represented
 there) still require explicit node/detail retrieval; this is not a claim of a full
 transitive graph closure. Worker mandatory data may exceed the soft size target.
+
+The built-in planner goal moves behind static rules only with
+`ARTEX_CACHE_PREFIX=1`; the disabled path retains its original goal-first layout.
+Stored custom planner templates keep their own layout in either mode. If a custom
+template places the goal near the top, its stable prefix can remain short; no
+cache improvement is promised for that template without measurement.

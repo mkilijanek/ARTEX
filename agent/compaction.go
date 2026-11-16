@@ -574,6 +574,7 @@ func (c *Compactor) compress(ctx context.Context, g *coldGraph, b block, nodeByI
 }
 
 type summaryFlight struct {
+	// waiters is observed under mu by the shared-call regression test.
 	waiters int
 	done    chan struct{}
 	body    string
