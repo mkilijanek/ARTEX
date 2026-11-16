@@ -69,7 +69,7 @@ Phase A acceptance includes the following explicit exclusions and limits:
 - Third-party MCP services and SDK DeepSeek web-search inference bypass the
   configured provider boundary. Their external billing is excluded from ARTEX
   token/cost reports. Bash subprocess model clients are likewise external.
-- Uninstrumented/direct provider callers have purpose `unclassified`, empty call
+- Uninstrumented/direct provider callers have purpose `unclassified`, a fresh fallback call
   identity and round zero; purpose/round reports must exclude that bucket and
   report its count. They still contribute to total provider usage.
 - All-zero SDK usage is ambiguous, not proof of free inference. Provider metadata
@@ -134,7 +134,7 @@ resumes. Unexpected stream EOF without a stop event is an error, not completion.
 ## Phase B review corrections (#1, #2, #17–20)
 
 The feature remains opt-in. Goals, hints, task identity, coverage, stagnation,
-related-task signals and credentials are preserved without truncation. Optional
+credentials and worker identity/dependency evidence are preserved without truncation. Optional
 fields carry per-path omission metadata. The 16 KiB target is a **soft** budget:
 mandatory data may exceed it, explicitly marked `mandatory_budget_exceeded`;
 correctness takes precedence over savings. Do not claim a hard bound on all prompts.
@@ -156,3 +156,25 @@ history protocol; deleting evidence by matching text would be unsafe. #17's dura
 delta protocol and live per-round token comparison are also not delivered. These
 issues must not auto-close from this PR. #1/#2 remain opt-in rollout work rather
 than default-on completion claims.
+
+## Review corrections, 2026-11-16
+
+Connection/model-listing probes are administrative validation traffic outside the
+recorded agent provider path and are excluded from task spend, as are dedicated
+search-provider calls. All non-harness inference has round zero; each recorded
+unclassified invocation receives a fallback UUID. Purpose fixtures assert the
+actual judge, graph-summary, side-answer and side-summary call sites.
+
+Profile fresh-input pricing sums `max(0,input-cache_read-cache_write)` **per call**,
+then applies current rates. New archives retain this subtotal. Older archives
+without it have unknown cost rather than a reconstructed estimate. A zero/missing
+cache tariff with nonzero usage also leaves cost unknown (`cost_unknown=true`):
+the legacy tariff schema cannot distinguish an intentional free tariff from an
+unset one. Token totals remain available.
+
+Related-task detail is optional and lowest priority; current evidence, running and
+open intents precede it. Worker coverage is removed before budgeting, matching its
+rendered view. Selection reports unrelated counts. Dependencies outside the source
+overview windows (including cold digests and transitive ancestors not represented
+there) still require explicit node/detail retrieval; this is not a claim of a full
+transitive graph closure. Worker mandatory data may exceed the soft size target.
