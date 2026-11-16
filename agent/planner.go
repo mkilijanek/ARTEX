@@ -21,6 +21,7 @@ import (
 // assets, judges whether the task goal is met, and emits 0..N exploration intents
 // into the frontier. It is the sole intent generator.
 type Planner struct {
+	overviewState     overviewSnapshots
 	findingRecorder   FindingRecorder
 	prov              llm.Provider
 	model             string
@@ -395,7 +396,14 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// which is better for caching; the cost is that if a single round grows long, the
 	// situation may be compressed by compaction (planner rounds are usually short — low
 	// risk). situational is spliced into input below.
-	situational := renderTriggers(ts, triggers) + renderGraphOverview(tsx.graphOverviewData())
+	data := tsx.graphOverviewData()
+	overview := renderGraphOverview(data)
+	if boundedContextEnabled() {
+		packet := p.overviewState.packet(ts.ID(), data)
+		b, _ := json.Marshal(packet)
+		overview = "\n\n[Self-contained projected situation: read the current base snapshot. Full evidence and scope require on-demand tools. Omitted evidence is never a negative result.]\n" + string(b)
+	}
+	situational := renderTriggers(ts, triggers) + overview
 	// Task-level deadline / endgame mode (injected via ctx, see taskclock.go). On the
 	// endgame round, the task-timeout planner wrap-up prompt is spliced into this
 	// round's user input (along with situational) as [this round's operating

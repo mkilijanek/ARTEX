@@ -440,7 +440,11 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// The run-wide intent is not the current tool action. Do not forward it or
 	// inherit a parent run's background into the action reviewer.
 	ctx = intercept.WithReviewContext(ctx, runDir, intercept.ReviewBackground{})
-	overview := renderWorkerGraphOverview(tsx.graphOverviewData())
+	data := tsx.graphOverviewData()
+	if boundedContextEnabled() {
+		data = workerContext(data, intent)
+	}
+	overview := renderWorkerGraphOverview(data)
 	sysBody := workerSystem(w.proxyAddr, w.proxyCACert, w.workDir, runDir) + w.lessonsBlock
 	if w.wantConstraints() {
 		sysBody += constraintBlock(ts) // inject the operation constraints (if any) into the system prompt; the worker strictly obeys them during execution
@@ -451,7 +455,11 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	if as != nil {
 		if ids := intentAssetIDs(intent); len(ids) > 0 {
 			if assets, err := as.GetByIDs(ids); err == nil && len(assets) > 0 {
-				if b, err := json.Marshal(assets); err == nil {
+				assetView := any(assets)
+				if boundedContextEnabled() {
+					assetView = projectAssets(assets)
+				}
+				if b, err := json.Marshal(assetView); err == nil {
 					sysBody += "\n\nThe target assets corresponding to this intent's asset_ids:\n" + string(b)
 				}
 				// The assets this intent explicitly targets → automatically join the task's
