@@ -238,7 +238,7 @@ func TestProjectionOfRealGraphOverview(t *testing.T) {
 func TestWorkerPrioritySurvivesRelatedTaskPressure(t *testing.T) {
 	data := map[string]any{"hints": []any{"keep instructions"}, "related_tasks": []any{map[string]any{"body": strings.Repeat("x", 40000)}}, "running_intents": []map[string]any{{"id": 7, "parents": []int64{1}}}, "recent_facts": []map[string]any{{"id": 101, "from_intent": 1, "summary": "negative"}}}
 	out := workerContext(data, &db.Node{ID: 7})
-	for _, k := range []string{"intent_context", "intent_id", "scope_required_before_action", "recent_facts"} {
+	for _, k := range []string{"intent_context", "intent_id", "scope_required_before_action", "recent_facts", "recent_facts_filtered_unrelated", "finding_list_filtered_unrelated"} {
 		if out[k] == nil {
 			t.Fatalf("worker mandatory field dropped: %s", k)
 		}

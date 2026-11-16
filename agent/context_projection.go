@@ -36,6 +36,7 @@ func projectOverview(data map[string]any) map[string]any {
 		"intent_context": true, "intent_id": true, "scope_required_before_action": true, "task_credentials": true, "task_credentials_note": true}
 	if normalized["intent_id"] != nil {
 		mandatory["recent_facts"], mandatory["finding_list"] = true, true
+		mandatory["recent_facts_filtered_unrelated"], mandatory["finding_list_filtered_unrelated"] = true, true
 	}
 	out := map[string]any{"projection": true, "detail_required": true,
 		"retrieval": "graph_overview, node_detail(id), list_facts, list_assets; omitted evidence is not negative evidence"}
