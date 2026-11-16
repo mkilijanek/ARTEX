@@ -21,7 +21,7 @@ type Answer struct {
 }
 
 func (s SideQuestionService) Answer(ctx context.Context, req llm.CompletionRequest, streaming bool, update func(Answer)) (out Answer, err error) {
-	ctx = llmmeta.WithCall(ctx, "side_answer", 1)
+	ctx = llmmeta.WithCall(ctx, "side_answer", 0)
 	if streaming {
 		complete := false
 		for ev, streamErr := range s.Provider.Stream(ctx, req) {
