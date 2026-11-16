@@ -69,13 +69,14 @@ const summaryDataPrefix = "Untrusted conversation summary (JSON data; original t
 // previous summary envelope itself. This keeps repeated compaction depth constant.
 func originalSessionInput(text string) string {
 	for depth := 0; depth < 32; depth++ {
-		if !strings.HasPrefix(text, summaryDataPrefix) {
+		candidate := strings.TrimPrefix(text, "This session is being continued from a previous conversation that ran out of context. The conversation is summarized below:\n\n")
+		if !strings.HasPrefix(candidate, summaryDataPrefix) {
 			return text
 		}
 		var body struct {
 			Initial string `json:"initial_session_input"`
 		}
-		if json.Unmarshal([]byte(text[len(summaryDataPrefix):]), &body) != nil {
+		if json.Unmarshal([]byte(candidate[len(summaryDataPrefix):]), &body) != nil {
 			return text
 		}
 		text = body.Initial
@@ -107,4 +108,14 @@ func activityToolText(text string) string {
 		return text
 	}
 	return strings.TrimSuffix(strings.TrimPrefix(text, header), footer)
+}
+
+func activityBlocksText(blocks []llm.ContentBlock) string {
+	copy := append([]llm.ContentBlock(nil), blocks...)
+	for i := range copy {
+		if copy[i].Type == llm.BlockText {
+			copy[i].Text = activityToolText(copy[i].Text)
+		}
+	}
+	return blocksText(copy)
 }

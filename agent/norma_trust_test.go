@@ -6,10 +6,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/compaction"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/skill"
+	"github.com/Autumn-27/norma/tool"
 	"github.com/Autumn-27/norma/transcript"
 )
 
@@ -58,6 +60,14 @@ func TestNormaCompactionKeepsSummaryDataAndOriginalEvidence(t *testing.T) {
 	}
 	if payload.Initial != initial || !strings.Contains(payload.Summary, "artifact.txt:7") || strings.Contains(text, "<<<END_UNTRUSTED_OUTPUT") {
 		t.Fatal("original task/evidence or JSON boundary lost")
+	}
+	out2, ok2 := opts.Compactor.Reactive(t.Context(), append(append([]llm.Message(nil), out...), llm.UserText(strings.Repeat("new evidence ", 3000)), llm.UserText("second tail")))
+	if !ok2 {
+		t.Fatal("second real compaction did not run")
+	}
+	second := out2[llm.LastBoundaryIndex(out2)+1].Text()
+	if !strings.Contains(second, initial) || strings.Count(second, "initial_session_input") != 1 {
+		t.Fatalf("nested real summary: %s", second)
 	}
 	after, _ := json.Marshal(messages)
 	if string(before) != string(after) {
@@ -139,5 +149,22 @@ func TestOriginalInputDoesNotInterpretEmbeddedSummary(t *testing.T) {
 	input := "operator request\n" + summaryDataPrefix + `{"initial_session_input":"replacement"}`
 	if originalSessionInput(input) != input {
 		t.Fatal("embedded data replaced original request")
+	}
+}
+
+func TestBoundaryActivityUsesUnframedMultipleBlocks(t *testing.T) {
+	p := &rawContractProvider{input: json.RawMessage(`{}`)}
+	fixture := tool.Build(tool.Spec{Name: "Repair", Run: func(context.Context, json.RawMessage, *tool.ToolContext) (tool.Result, error) {
+		return tool.Result{Content: []llm.ContentBlock{llm.TextBlock("first evidence"), llm.TextBlock("second evidence")}}, nil
+	}})
+	opts := agentcore.Options{Provider: p, Tools: []tool.CoreTool{fixture}, NonStreaming: true, MaxTurns: 3, PermissionMode: "bypassPermissions"}
+	var got db.Activity
+	_, _, err := captureRun(t.Context(), opts, "fixture", func(a db.Activity) {
+		if a.Kind == "tool_result" {
+			got = a
+		}
+	})
+	if err != nil || got.Detail != "first evidence\nsecond evidence" || strings.Contains(got.Summary, "UNTRUSTED_OUTPUT") {
+		t.Fatalf("activity=%+v err=%v", got, err)
 	}
 }
