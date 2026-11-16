@@ -1,6 +1,7 @@
 package db
 
 import (
+	"encoding/json"
 	"sort"
 	"strconv"
 	"time"
@@ -12,7 +13,28 @@ import (
 // error, so token accounting is complete even for interrupted/failed runs. Carries
 // only the dimensions needed to slice token spend (model / profile / task / agent),
 // never any prompt or response content.
+type ToolBytes struct {
+	Schema int `json:"schema"`
+	Result int `json:"result"`
+}
+
 type LLMUsage struct {
+	CallID    string               `json:"call_id"`
+	Round     int                  `json:"round"`
+	Purpose   string               `json:"purpose"`
+	ToolBytes map[string]ToolBytes `json:"tool_bytes"` // catalog tool-name keys; no content or arguments
+
+	Provider        string `json:"provider"`
+	IntentID        int64  `json:"intent_id"`     // 0 = not an intent session
+	Attempt         int    `json:"attempt"`       // 0-based runtime attempt, includes profile failover
+	Reason          string `json:"reason"`        // completed | error | cancelled | consumer_stopped
+	RequestBytes    int    `json:"request_bytes"` // provider-neutral JSON, not wire bytes or tokens
+	SystemBytes     int    `json:"system_bytes"`  // raw UTF-8 across system segments
+	MessageBytes    int    `json:"message_bytes"` // JSON; includes tool results
+	ToolSchemaBytes int    `json:"tool_schema_bytes"`
+	ToolResultBytes int    `json:"tool_result_bytes"` // JSON subset of MessageBytes
+	SizeKnown       bool   `json:"size_known"`        // false if request serialization failed
+
 	TaskID        string `json:"task_id"`        // task registry id (matches llm_records.task_id)
 	ExplorationID int64  `json:"exploration_id"` // exploration id parsed from the session (0 = unknown/non-task)
 	Worker        string `json:"worker"`         // agent lane: worker / planner / mainagent / goals
@@ -42,6 +64,22 @@ CREATE TABLE IF NOT EXISTS llm_usage (
     cache_write    INTEGER NOT NULL DEFAULT 0,
     status         TEXT
 );
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT '';
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS intent_id BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS attempt INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS request_bytes BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS system_bytes BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS message_bytes BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS tool_schema_bytes BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS tool_result_bytes BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS size_known BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS call_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS round_no INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS purpose TEXT NOT NULL DEFAULT '';
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS tool_bytes JSONB NOT NULL DEFAULT '{}';
+CREATE INDEX IF NOT EXISTS idx_llm_usage_call ON llm_usage(call_id) WHERE call_id <> '';
+CREATE INDEX IF NOT EXISTS idx_llm_usage_purpose ON llm_usage(purpose, ts);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_task  ON llm_usage(task_id);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_model ON llm_usage(task_id, model);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_exp   ON llm_usage(exploration_id);
@@ -70,11 +108,18 @@ func (d *DB) InsertLLMUsage(u *LLMUsage) error {
 	if u.ExplorationID > 0 {
 		expID = u.ExplorationID
 	}
-	_, err := d.Exec(`
-INSERT INTO llm_usage(task_id, exploration_id, worker, model, profile_name, latency_ms, input_tokens, output_tokens, cache_read, cache_write, status)
-VALUES (NULLIF($1,''),$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),$6,$7,$8,$9,$10,$11)`,
+	toolBytes, err := json.Marshal(u.ToolBytes)
+	if err != nil {
+		return err
+	}
+	if u.ToolBytes == nil {
+		toolBytes = []byte("{}")
+	}
+	_, err = d.Exec(`
+INSERT INTO llm_usage(task_id, exploration_id, worker, model, profile_name, latency_ms, input_tokens, output_tokens, cache_read, cache_write, status, provider, intent_id, attempt, reason, request_bytes, system_bytes, message_bytes, tool_schema_bytes, tool_result_bytes, size_known, call_id, round_no, purpose, tool_bytes)
+VALUES (NULLIF($1,''),$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25::jsonb)`,
 		u.TaskID, expID, u.Worker, u.Model, u.ProfileName,
-		u.LatencyMs, u.InputTokens, u.OutputTokens, u.CacheRead, u.CacheWrite, u.Status)
+		u.LatencyMs, u.InputTokens, u.OutputTokens, u.CacheRead, u.CacheWrite, u.Status, u.Provider, u.IntentID, u.Attempt, u.Reason, u.RequestBytes, u.SystemBytes, u.MessageBytes, u.ToolSchemaBytes, u.ToolResultBytes, u.SizeKnown, u.CallID, u.Round, u.Purpose, string(toolBytes))
 	return err
 }
 
@@ -110,6 +155,8 @@ ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC, model`, taskID)
 // ProfileUsage aggregates the whole ledger's token spend for one LLM profile
 // (global, all tasks). Powers the dashboard's per-profile token card (new source).
 type ProfileUsage struct {
+	FreshInputTokens *int   `json:"fresh_input_tokens,omitempty"`
+	CostUnknown      bool   `json:"cost_unknown,omitempty"`
 	ProfileName      string `json:"profile_name"`
 	Calls            int    `json:"calls"`
 	Tasks            int    `json:"tasks"`
@@ -128,7 +175,8 @@ func (d *DB) UsageByProfile() ([]ProfileUsage, error) {
 SELECT COALESCE(profile_name,'') AS profile_name, COUNT(*) AS calls,
        COUNT(DISTINCT task_id) AS tasks,
        COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
-       COALESCE(SUM(cache_read),0), COALESCE(SUM(cache_write),0)
+       COALESCE(SUM(cache_read),0), COALESCE(SUM(cache_write),0),
+ COALESCE(SUM(GREATEST(0,input_tokens-cache_read-cache_write)),0)
 FROM llm_usage
 GROUP BY profile_name
 ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC`)
@@ -140,7 +188,7 @@ ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC`)
 	for rows.Next() {
 		var p ProfileUsage
 		if err := rows.Scan(&p.ProfileName, &p.Calls, &p.Tasks,
-			&p.InputTokens, &p.OutputTokens, &p.CacheReadTokens, &p.CacheWriteTokens); err != nil {
+			&p.InputTokens, &p.OutputTokens, &p.CacheReadTokens, &p.CacheWriteTokens, &p.FreshInputTokens); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -160,6 +208,16 @@ ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC`)
 		for _, cold := range aggregate.TokenProfiles {
 			current := byName[cold.ProfileName]
 			current.ProfileName = cold.ProfileName
+			if current.Calls == 0 && current.FreshInputTokens == nil {
+				zero := 0
+				current.FreshInputTokens = &zero
+			}
+			if cold.FreshInputTokens == nil {
+				current.CostUnknown = true
+			} else if current.FreshInputTokens != nil {
+				total := *current.FreshInputTokens + *cold.FreshInputTokens
+				current.FreshInputTokens = &total
+			}
 			current.Calls += cold.Calls
 			current.Tasks += cold.Tasks
 			current.InputTokens += cold.InputTokens
@@ -368,16 +426,26 @@ func applyCostEur(d *DB, out []ProfileUsage) error {
 	}
 	for i := range out {
 		pr, ok := byName[out[i].ProfileName]
-		if !ok || (pr.in == 0 && pr.outp == 0 && pr.cr == 0 && pr.cw == 0) {
+		if out[i].CostUnknown || !ok || (pr.in == 0 && pr.outp == 0 && pr.cr == 0 && pr.cw == 0) {
 			continue
 		}
-		// InputTokens includes the cached subset (Anthropic and OpenAI usage
-		// semantics), so the fresh share is input minus cache reads; charging
+		// InputTokens includes both cached subsets (Anthropic and OpenAI usage
+		// semantics), so the fresh share is input minus cache reads and writes; charging
 		// both buckets at full input price double-counts the cache. Clamped at
 		// zero for gateways that report the buckets disjointly.
-		fresh := out[i].InputTokens - out[i].CacheReadTokens
+		fresh := out[i].InputTokens - out[i].CacheReadTokens - out[i].CacheWriteTokens
 		if fresh < 0 {
 			fresh = 0
+		}
+		if out[i].FreshInputTokens != nil {
+			fresh = *out[i].FreshInputTokens
+		}
+		// Legacy profile storage represents absent and zero cache tariffs alike.
+		// Until an explicit free/unknown tariff exists, zero is unknown when used.
+		if (out[i].CacheReadTokens > 0 && pr.cr == 0) || (out[i].CacheWriteTokens > 0 && pr.cw == 0) {
+			out[i].CostUnknown = true
+			out[i].CostEur = nil
+			continue
 		}
 		cost := float64(fresh)/1e6*pr.in + float64(out[i].OutputTokens)/1e6*pr.outp +
 			float64(out[i].CacheReadTokens)/1e6*pr.cr + float64(out[i].CacheWriteTokens)/1e6*pr.cw
@@ -385,4 +453,55 @@ func applyCostEur(d *DB, out []ProfileUsage) error {
 		out[i].CostEur = &c
 	}
 	return nil
+}
+
+// UsageDimensions returns a bounded, cursor-paged physical-attempt ledger. CallID
+// groups router/pool attempts; round is a per-session-instance invocation ordinal.
+func (d *DB) UsageDimensions(task, purpose string, after int64, limit int) ([]UsageDimension, error) {
+	if limit < 1 || limit > 500 {
+		limit = 100
+	}
+	rows, err := d.Query(`SELECT id, call_id, purpose, round_no, attempt, COALESCE(task_id,''),
+ COALESCE(profile_name,''), tool_bytes, input_tokens, output_tokens, cache_read, cache_write,
+ COALESCE(status,''), reason FROM llm_usage
+ WHERE id > $1 AND ($2 = '' OR task_id = $2) AND ($3 = '' OR purpose = $3)
+ ORDER BY id LIMIT $4`, after, task, purpose, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []UsageDimension{}
+	for rows.Next() {
+		var row UsageDimension
+		var tools []byte
+		if err := rows.Scan(&row.ID, &row.CallID, &row.Purpose, &row.Round, &row.Attempt,
+			&row.TaskID, &row.ProfileName, &tools, &row.InputTokens, &row.OutputTokens,
+			&row.CacheRead, &row.CacheWrite, &row.Status, &row.Reason); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(tools, &row.ToolBytes); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+// UsageDimension contains only columns actually selected by UsageDimensions.
+// Unselected counters must never appear as measured zeros in the response.
+type UsageDimension struct {
+	ID           int64                `json:"id"`
+	CallID       string               `json:"call_id"`
+	Purpose      string               `json:"purpose"`
+	Round        int                  `json:"round"`
+	Attempt      int                  `json:"attempt"`
+	TaskID       string               `json:"task_id"`
+	ProfileName  string               `json:"profile_name"`
+	ToolBytes    map[string]ToolBytes `json:"tool_bytes"`
+	InputTokens  int                  `json:"input_tokens"`
+	OutputTokens int                  `json:"output_tokens"`
+	CacheRead    int                  `json:"cache_read"`
+	CacheWrite   int                  `json:"cache_write"`
+	Status       string               `json:"status"`
+	Reason       string               `json:"reason"`
 }
