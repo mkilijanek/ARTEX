@@ -26,7 +26,7 @@ func TestAtomicPoolRetainsFailedMemberUsage(t *testing.T) {
 		}
 		pool := New([]*Member{member(1, "first", 2, first), member(2, "second", 1, second)}, nil)
 		_, _, usage, err := pool.Complete(t.Context(), llm.CompletionRequest{})
-		if usage.InputTokens != 28 || first.calls != 1 || second.calls != 1 || (err != nil) != exhausted {
+		if usage.InputTokens != 28 || usage.ContextTokens != 17 || first.calls != 1 || second.calls != 1 || (err != nil) != exhausted {
 			t.Fatalf("usage=%+v calls=%d/%d err=%v", usage, first.calls, second.calls, err)
 		}
 	}
