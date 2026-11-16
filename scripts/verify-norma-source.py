@@ -19,3 +19,16 @@ for rel, expected in manifest["original_sha256"].items():
     if actual != expected:
         raise SystemExit("upstream source mismatch: " + rel)
 print("Verified upstream module sum and all original file hashes")
+
+upstream = Path(result["Dir"])
+# The snapshot intentionally omits some upstream tests, but never production Go.
+production = {str(p.relative_to(upstream)) for p in upstream.rglob("*.go")
+              if not p.name.endswith("_test.go")}
+listed = {p for p in manifest["original_sha256"] if p.endswith(".go")}
+if production != listed:
+    raise SystemExit("upstream production inventory mismatch: " + repr(production ^ listed))
+for rel, expected in manifest["extra_sha256"].items():
+    source = upstream / rel
+    if source.is_file() and hashlib.sha256(source.read_bytes()).hexdigest() != expected:
+        raise SystemExit("copied upstream test differs: " + rel)
+print("Verified complete production inventory and copied upstream tests")
