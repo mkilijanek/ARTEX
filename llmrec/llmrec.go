@@ -294,6 +294,13 @@ func thinkingText(msg llm.Message) string {
 func (r *Recorder) recordUsage(ctx context.Context, req llm.CompletionRequest, session, taskID string, expID int64, worker string, usage llm.Usage, latencyMs int, status, reason string) {
 	u := measureRequest(req)
 	meta := llmmeta.From(ctx)
+	if meta.ID == "" {
+		purpose := "unclassified"
+		if worker == "judge" {
+			purpose = "judge"
+		}
+		meta = llmmeta.From(llmmeta.WithCall(ctx, purpose, 0))
+	}
 	u.CallID, u.Round, u.Purpose = meta.ID, meta.Round, meta.Purpose
 	if u.Purpose == "" {
 		u.Purpose = "unclassified"
