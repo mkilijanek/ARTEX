@@ -818,7 +818,9 @@ export interface ProfileUsage {
   output_tokens: number;
   cache_read_tokens: number;
   cache_write_tokens: number;
-  // EUR cost from the profile's stored prices; absent when the profile has no price set.
+  // Cost is unavailable when tariffs or archived fresh-input data are missing.
+  cost_unknown?: boolean;
+  fresh_input_tokens?: number;
   cost_eur?: number | null;
 }
 
