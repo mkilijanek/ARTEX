@@ -69,7 +69,7 @@ Phase A acceptance includes the following explicit exclusions and limits:
 - Third-party MCP services and SDK DeepSeek web-search inference bypass the
   configured provider boundary. Their external billing is excluded from ARTEX
   token/cost reports. Bash subprocess model clients are likewise external.
-- Uninstrumented/direct provider callers have purpose `unclassified`, empty call
+- Uninstrumented/direct provider callers have purpose `unclassified`, a fresh fallback call
   identity and round zero; purpose/round reports must exclude that bucket and
   report its count. They still contribute to total provider usage.
 - All-zero SDK usage is ambiguous, not proof of free inference. Provider metadata
@@ -100,3 +100,18 @@ ordinal within one session instance, **not** a durable conversation turn number:
 SDK re-issues get a fresh call ID and ordinal, and restoring a session resets the
 ordinal. Group by call ID for physical retries; never group solely by round across
 resumes. Unexpected stream EOF without a stop event is an error, not completion.
+
+## Review corrections, 2026-11-16
+
+Connection/model-listing probes are administrative validation traffic outside the
+recorded agent provider path and are excluded from task spend, as are dedicated
+search-provider calls. All non-harness inference has round zero; each recorded
+unclassified invocation receives a fallback UUID. Purpose fixtures assert the
+actual judge, graph-summary, side-answer and side-summary call sites.
+
+Profile fresh-input pricing sums `max(0,input-cache_read-cache_write)` **per call**,
+then applies current rates. New archives retain this subtotal. Older archives
+without it have unknown cost rather than a reconstructed estimate. A zero/missing
+cache tariff with nonzero usage also leaves cost unknown (`cost_unknown=true`):
+the legacy tariff schema cannot distinguish an intentional free tariff from an
+unset one. Token totals remain available.

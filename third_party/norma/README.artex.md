@@ -52,3 +52,9 @@ Snapshot identity: `v0.4.8+artex.1` (upstream base remains `v0.4.8` in go.mod).
 The local contract test rejects unlisted files; `scripts/verify-norma-source.py`
 checks original hashes against the Go checksum database verified module download in CI.
 Changing a local patch requires reviewing and updating its content hash.
+
+- `tool/websearch.go`: refuse redirects for all search backends so stored keys,
+  custom authentication headers and POST request bodies remain at their destination.
+`upstream_test_sha256` records original copied tests separately from locally
+adapted/pinned fixtures. The verifier compares the complete upstream production
+Go inventory and these original test hashes with the checksum-verified download.
