@@ -33,7 +33,10 @@ func projectOverview(data map[string]any) map[string]any {
 	// applies to optional detail; a mandatory overflow is explicit, not data loss.
 	mandatory := map[string]bool{"task": true, "goals": true, "hints": true,
 		"scope": true, "stagnation_warning": true, "coverage": true,
-		"related_tasks": true, "task_credentials": true, "task_credentials_note": true}
+		"intent_context": true, "intent_id": true, "scope_required_before_action": true, "task_credentials": true, "task_credentials_note": true}
+	if normalized["intent_id"] != nil {
+		mandatory["recent_facts"], mandatory["finding_list"] = true, true
+	}
 	out := map[string]any{"projection": true, "detail_required": true,
 		"retrieval": "graph_overview, node_detail(id), list_facts, list_assets; omitted evidence is not negative evidence"}
 	omitted := map[string]any{}
@@ -93,8 +96,26 @@ func projectOverview(data map[string]any) map[string]any {
 			keys = append(keys, k)
 		}
 	}
-	sort.Strings(keys)
+	priority := map[string]int{"recent_facts": 0, "finding_list": 1, "running_intents": 2, "open_intents": 3, "recent_done_intents": 4, "related_tasks": 90}
+	sort.Slice(keys, func(i, j int) bool {
+		a, ok := priority[keys[i]]
+		if !ok {
+			a = 50
+		}
+		b, ok := priority[keys[j]]
+		if !ok {
+			b = 50
+		}
+		if a != b {
+			return a < b
+		}
+		return keys[i] < keys[j]
+	})
 	out["omitted"] = omitted
+	mandatoryBytes, _ := json.Marshal(out)
+	if len(mandatoryBytes) > overviewBudget {
+		out["mandatory_budget_exceeded"] = true
+	}
 	for _, k := range keys {
 		out[k] = trim(normalized[k], k, 0)
 		raw, _ := json.Marshal(out)
@@ -103,9 +124,18 @@ func projectOverview(data map[string]any) map[string]any {
 			omitted[k] = "optional field omitted by byte budget; retrieve detail"
 		}
 	}
-	raw, _ = json.Marshal(out)
-	if len(raw) > overviewBudget {
-		out["mandatory_budget_exceeded"] = true
+	// Omission metadata counts toward the soft projection budget too. Evict
+	// the lowest-priority admitted optional key until metadata also fits.
+	for i := len(keys) - 1; i >= 0; i-- {
+		encoded, _ := json.Marshal(out)
+		if len(encoded) <= overviewBudget {
+			break
+		}
+		k := keys[i]
+		if _, ok := out[k]; ok {
+			delete(out, k)
+			omitted[k] = "optional field omitted by byte budget; retrieve detail"
+		}
 	}
 
 	return out
@@ -117,6 +147,7 @@ func workerContext(data map[string]any, intent *db.Node) map[string]any {
 	dec.UseNumber()
 	out := map[string]any{}
 	_ = dec.Decode(&out)
+	delete(out, "coverage") // worker render omits coverage; do not spend its budget
 	deps := map[string]bool{fmt.Sprint(intent.ID): true}
 	for _, key := range []string{"open_intents", "running_intents", "recent_done_intents"} {
 		items, _ := out[key].([]any)
@@ -136,13 +167,17 @@ func workerContext(data map[string]any, intent *db.Node) map[string]any {
 	for _, key := range []string{"recent_facts", "finding_list"} {
 		items, _ := out[key].([]any)
 		selected := []any{}
+		filtered := 0
 		for _, v := range items {
 			m, _ := v.(map[string]any)
 			if deps[fmt.Sprint(m["from_intent"])] || deps[fmt.Sprint(m["id"])] {
 				selected = append(selected, v)
+			} else {
+				filtered++
 			}
 		}
 		out[key] = selected
+		out[key+"_filtered_unrelated"] = filtered
 	}
 	delete(out, "cold_digests")
 	out["intent_id"] = intent.ID

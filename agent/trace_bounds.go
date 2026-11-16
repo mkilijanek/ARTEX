@@ -51,6 +51,16 @@ func tracePagingDescription() string {
 // Bound the aggregate encoded response, retaining explicit continuation per step.
 func boundTraceResult(result map[string]any, steps []map[string]any) {
 	for {
+		total, returned := 0, 0
+		for _, step := range steps {
+			if n, ok := step["total_bytes"].(int); ok {
+				total += n
+			}
+			if text, ok := step["detail"].(string); ok {
+				returned += len(text)
+			}
+		}
+		result["total_detail_bytes"], result["returned_detail_bytes"] = total, returned
 		encoded, _ := json.Marshal(result)
 		if len(encoded) <= 16*1024 {
 			return
