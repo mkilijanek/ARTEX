@@ -27,6 +27,9 @@ production = {str(p.relative_to(upstream)) for p in upstream.rglob("*.go")
 listed = {p for p in manifest["original_sha256"] if p.endswith(".go")}
 if production != listed:
     raise SystemExit("upstream production inventory mismatch: " + repr(production ^ listed))
+copied_tests = {rel for rel in manifest["extra_sha256"] if (upstream / rel).is_file()}
+if copied_tests != set(manifest["upstream_test_sha256"]):
+    raise SystemExit("copied upstream test inventory mismatch")
 for rel, expected in manifest["upstream_test_sha256"].items():
     source = upstream / rel
     if source.is_file() and hashlib.sha256(source.read_bytes()).hexdigest() != expected:
