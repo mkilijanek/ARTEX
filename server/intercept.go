@@ -49,7 +49,7 @@ func (s *Server) wireInterceptReviewer() {
 		}
 		// Tag this call's usage as the "judge" lane so the config page can report
 		// how much the fallback approval has spent, separate from model profiles.
-		ctx = llmmeta.WithCall(llmrec.WithWorker(ctx, judgeWorkerLane), "judge", 1)
+		ctx = llmrec.WithWorker(ctx, judgeWorkerLane)
 		text, err := reviewCompletion(ctx, prov, prompt, input)
 		if err != nil {
 			return intercept.Decision{ProfileID: profileID}, err
@@ -63,6 +63,7 @@ func (s *Server) wireInterceptReviewer() {
 }
 
 func reviewCompletion(ctx context.Context, prov llm.Provider, prompt string, input intercept.ReviewInput) (string, error) {
+	ctx = llmmeta.WithCall(ctx, "judge", 0)
 	user, err := json.Marshal(input)
 	if err != nil {
 		return "", err
