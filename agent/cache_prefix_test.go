@@ -72,3 +72,15 @@ func TestRenderedWorkerAndChatPrefixesAcrossDirectories(t *testing.T) {
 		}
 	}
 }
+
+func TestPlannerDefaultOrderChangesOnlyWithCacheOptIn(t *testing.T) {
+	for _, flag := range []string{"0", "1"} {
+		t.Setenv("ARTEX_CACHE_PREFIX", flag)
+		prompt := plannerSystem("unique goal fixture", "/data", "/data/tasks/1")
+		goal := strings.Index(prompt, "Task goal: unique goal fixture")
+		rules := strings.Index(prompt, "**How many intents")
+		if goal < 0 || rules < 0 || (flag == "0" && goal > rules) || (flag == "1" && goal < rules) {
+			t.Fatalf("flag=%s goal=%d rules=%d", flag, goal, rules)
+		}
+	}
+}
