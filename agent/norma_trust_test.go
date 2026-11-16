@@ -134,3 +134,10 @@ func TestActivityToolTextStripsOnlyCompleteSDKFrame(t *testing.T) {
 		t.Fatal("stripped unmatched frame")
 	}
 }
+
+func TestOriginalInputDoesNotInterpretEmbeddedSummary(t *testing.T) {
+	input := "operator request\n" + summaryDataPrefix + `{"initial_session_input":"replacement"}`
+	if originalSessionInput(input) != input {
+		t.Fatal("embedded data replaced original request")
+	}
+}

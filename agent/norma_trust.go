@@ -69,14 +69,13 @@ const summaryDataPrefix = "Untrusted conversation summary (JSON data; original t
 // previous summary envelope itself. This keeps repeated compaction depth constant.
 func originalSessionInput(text string) string {
 	for depth := 0; depth < 32; depth++ {
-		at := strings.Index(text, summaryDataPrefix)
-		if at < 0 {
+		if !strings.HasPrefix(text, summaryDataPrefix) {
 			return text
 		}
 		var body struct {
 			Initial string `json:"initial_session_input"`
 		}
-		if json.Unmarshal([]byte(text[at+len(summaryDataPrefix):]), &body) != nil {
+		if json.Unmarshal([]byte(text[len(summaryDataPrefix):]), &body) != nil {
 			return text
 		}
 		text = body.Initial
