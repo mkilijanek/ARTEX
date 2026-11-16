@@ -1,11 +1,11 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
- "bytes"
- "log"
 	"fmt"
 	"github.com/Autumn-27/artex/db"
+	"log"
 	"strings"
 	"sync"
 	"testing"
@@ -238,7 +238,7 @@ func TestProjectionOfRealGraphOverview(t *testing.T) {
 func TestWorkerPrioritySurvivesRelatedTaskPressure(t *testing.T) {
 	data := map[string]any{"hints": []any{"keep instructions"}, "related_tasks": []any{map[string]any{"body": strings.Repeat("x", 40000)}}, "running_intents": []map[string]any{{"id": 7, "parents": []int64{1}}}, "recent_facts": []map[string]any{{"id": 101, "from_intent": 1, "summary": "negative"}}}
 	out := workerContext(data, &db.Node{ID: 7})
-	for _, k := range []string{"intent_context", "intent_id", "scope_required_before_action", "recent_facts"} {
+	for _, k := range []string{"intent_context", "intent_id", "scope_required_before_action", "recent_facts", "recent_facts_filtered_unrelated", "finding_list_filtered_unrelated"} {
 		if out[k] == nil {
 			t.Fatalf("worker mandatory field dropped: %s", k)
 		}
@@ -251,9 +251,16 @@ func TestWorkerPrioritySurvivesRelatedTaskPressure(t *testing.T) {
 	}
 }
 
-func TestPlannerPacketReportsRoundByteMeasurement(t *testing.T){
- var output bytes.Buffer;previous:=log.Writer();log.SetOutput(&output);defer log.SetOutput(previous)
- var state overviewSnapshots;data:=map[string]any{"task":"fixture"}
- p:=state.packet(77,data);raw,_:=json.Marshal(p)
- if len(raw)==0||!strings.Contains(output.String(),"task=77 round=1 source_bytes=")||!strings.Contains(output.String(),fmt.Sprintf("packet_bytes=%d",len(raw))){t.Fatal(output.String())}
+func TestPlannerPacketReportsRoundByteMeasurement(t *testing.T) {
+	var output bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&output)
+	defer log.SetOutput(previous)
+	var state overviewSnapshots
+	data := map[string]any{"task": "fixture"}
+	p := state.packet(77, data)
+	raw, _ := json.Marshal(p)
+	if len(raw) == 0 || !strings.Contains(output.String(), "task=77 round=1 source_bytes=") || !strings.Contains(output.String(), fmt.Sprintf("packet_bytes=%d", len(raw))) {
+		t.Fatal(output.String())
+	}
 }
