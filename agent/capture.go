@@ -88,9 +88,6 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 	var rerr error
 	for ev, err := range s.Prompt(ctx, input) {
 		if err != nil {
-			if errors.Is(err, ErrNOAContextBudget) {
-				reason = harness.ReasonBlockingLimit
-			}
 			flush()
 			if ctx.Err() != nil { // engine/user cancellation, not a provider failure
 				sum, detail := terminalText(ctx, &harness.Terminal{Reason: reason, Err: ctx.Err()}, lastTool)
