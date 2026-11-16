@@ -155,6 +155,8 @@ ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC, model`, taskID)
 // ProfileUsage aggregates the whole ledger's token spend for one LLM profile
 // (global, all tasks). Powers the dashboard's per-profile token card (new source).
 type ProfileUsage struct {
+	FreshInputTokens *int   `json:"fresh_input_tokens,omitempty"`
+	CostUnknown      bool   `json:"cost_unknown,omitempty"`
 	ProfileName      string `json:"profile_name"`
 	Calls            int    `json:"calls"`
 	Tasks            int    `json:"tasks"`
@@ -173,7 +175,8 @@ func (d *DB) UsageByProfile() ([]ProfileUsage, error) {
 SELECT COALESCE(profile_name,'') AS profile_name, COUNT(*) AS calls,
        COUNT(DISTINCT task_id) AS tasks,
        COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
-       COALESCE(SUM(cache_read),0), COALESCE(SUM(cache_write),0)
+       COALESCE(SUM(cache_read),0), COALESCE(SUM(cache_write),0),
+ COALESCE(SUM(GREATEST(0,input_tokens-cache_read-cache_write)),0)
 FROM llm_usage
 GROUP BY profile_name
 ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC`)
@@ -185,7 +188,7 @@ ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC`)
 	for rows.Next() {
 		var p ProfileUsage
 		if err := rows.Scan(&p.ProfileName, &p.Calls, &p.Tasks,
-			&p.InputTokens, &p.OutputTokens, &p.CacheReadTokens, &p.CacheWriteTokens); err != nil {
+			&p.InputTokens, &p.OutputTokens, &p.CacheReadTokens, &p.CacheWriteTokens, &p.FreshInputTokens); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -205,6 +208,16 @@ ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC`)
 		for _, cold := range aggregate.TokenProfiles {
 			current := byName[cold.ProfileName]
 			current.ProfileName = cold.ProfileName
+			if current.Calls == 0 && current.FreshInputTokens == nil {
+				zero := 0
+				current.FreshInputTokens = &zero
+			}
+			if cold.FreshInputTokens == nil {
+				current.CostUnknown = true
+			} else if current.FreshInputTokens != nil {
+				total := *current.FreshInputTokens + *cold.FreshInputTokens
+				current.FreshInputTokens = &total
+			}
 			current.Calls += cold.Calls
 			current.Tasks += cold.Tasks
 			current.InputTokens += cold.InputTokens
@@ -413,7 +426,7 @@ func applyCostEur(d *DB, out []ProfileUsage) error {
 	}
 	for i := range out {
 		pr, ok := byName[out[i].ProfileName]
-		if !ok || (pr.in == 0 && pr.outp == 0 && pr.cr == 0 && pr.cw == 0) {
+		if out[i].CostUnknown || !ok || (pr.in == 0 && pr.outp == 0 && pr.cr == 0 && pr.cw == 0) {
 			continue
 		}
 		// InputTokens includes both cached subsets (Anthropic and OpenAI usage
@@ -423,6 +436,16 @@ func applyCostEur(d *DB, out []ProfileUsage) error {
 		fresh := out[i].InputTokens - out[i].CacheReadTokens - out[i].CacheWriteTokens
 		if fresh < 0 {
 			fresh = 0
+		}
+		if out[i].FreshInputTokens != nil {
+			fresh = *out[i].FreshInputTokens
+		}
+		// Legacy profile storage represents absent and zero cache tariffs alike.
+		// Until an explicit free/unknown tariff exists, zero is unknown when used.
+		if (out[i].CacheReadTokens > 0 && pr.cr == 0) || (out[i].CacheWriteTokens > 0 && pr.cw == 0) {
+			out[i].CostUnknown = true
+			out[i].CostEur = nil
+			continue
 		}
 		cost := float64(fresh)/1e6*pr.in + float64(out[i].OutputTokens)/1e6*pr.outp +
 			float64(out[i].CacheReadTokens)/1e6*pr.cr + float64(out[i].CacheWriteTokens)/1e6*pr.cw
@@ -467,18 +490,18 @@ func (d *DB) UsageDimensions(task, purpose string, after int64, limit int) ([]Us
 // UsageDimension contains only columns actually selected by UsageDimensions.
 // Unselected counters must never appear as measured zeros in the response.
 type UsageDimension struct {
- ID int64 `json:"id"`
- CallID string `json:"call_id"`
- Purpose string `json:"purpose"`
- Round int `json:"round"`
- Attempt int `json:"attempt"`
- TaskID string `json:"task_id"`
- ProfileName string `json:"profile_name"`
- ToolBytes map[string]ToolBytes `json:"tool_bytes"`
- InputTokens int `json:"input_tokens"`
- OutputTokens int `json:"output_tokens"`
- CacheRead int `json:"cache_read"`
- CacheWrite int `json:"cache_write"`
- Status string `json:"status"`
- Reason string `json:"reason"`
+	ID           int64                `json:"id"`
+	CallID       string               `json:"call_id"`
+	Purpose      string               `json:"purpose"`
+	Round        int                  `json:"round"`
+	Attempt      int                  `json:"attempt"`
+	TaskID       string               `json:"task_id"`
+	ProfileName  string               `json:"profile_name"`
+	ToolBytes    map[string]ToolBytes `json:"tool_bytes"`
+	InputTokens  int                  `json:"input_tokens"`
+	OutputTokens int                  `json:"output_tokens"`
+	CacheRead    int                  `json:"cache_read"`
+	CacheWrite   int                  `json:"cache_write"`
+	Status       string               `json:"status"`
+	Reason       string               `json:"reason"`
 }
