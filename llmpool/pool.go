@@ -134,8 +134,10 @@ func (p *Pool) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Mes
 	for i, m := range order {
 		msg, sr, usage, err := m.Prov.Complete(ctx, req)
 		total.Add(usage)
- total.ContextTokens = usage.ContextTokens
- if total.ContextTokens == 0 { total.ContextTokens = usage.InputTokens+usage.OutputTokens }
+		total.ContextTokens = usage.ContextTokens
+		if total.ContextTokens == 0 {
+			total.ContextTokens = usage.InputTokens + usage.OutputTokens
+		}
 		if err == nil {
 			p.health.Pass(m.ID)
 			return msg, sr, total, nil
