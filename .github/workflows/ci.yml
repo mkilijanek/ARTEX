@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   go:
     runs-on: ubuntu-latest
@@ -80,3 +83,11 @@ jobs:
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npm run build:static
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build application from a clean checkout
+        run: docker build --target build --build-arg TARGETOS=linux --build-arg TARGETARCH=amd64 .
