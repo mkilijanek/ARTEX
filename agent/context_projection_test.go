@@ -2,6 +2,8 @@ package agent
 
 import (
 	"encoding/json"
+ "bytes"
+ "log"
 	"fmt"
 	"github.com/Autumn-27/artex/db"
 	"strings"
@@ -247,4 +249,11 @@ func TestWorkerPrioritySurvivesRelatedTaskPressure(t *testing.T) {
 	if out["mandatory_budget_exceeded"] == true {
 		t.Fatal("optional related-task content mislabeled mandatory")
 	}
+}
+
+func TestPlannerPacketReportsRoundByteMeasurement(t *testing.T){
+ var output bytes.Buffer;previous:=log.Writer();log.SetOutput(&output);defer log.SetOutput(previous)
+ var state overviewSnapshots;data:=map[string]any{"task":"fixture"}
+ p:=state.packet(77,data);raw,_:=json.Marshal(p)
+ if len(raw)==0||!strings.Contains(output.String(),"task=77 round=1 source_bytes=")||!strings.Contains(output.String(),fmt.Sprintf("packet_bytes=%d",len(raw))){t.Fatal(output.String())}
 }
