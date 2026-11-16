@@ -140,6 +140,11 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 			}
 		case harness.KindResult:
 			if ev.Terminal != nil {
+				if errors.Is(ev.Terminal.Err, ErrNOAContextBudget) {
+					terminal := *ev.Terminal
+					terminal.Reason = harness.ReasonBlockingLimit
+					ev.Terminal = &terminal
+				}
 				if ev.Terminal.Reason != harness.ReasonAbortedStreaming {
 					sidequestion.Finish(ctx, ev.Terminal.Messages)
 				}
