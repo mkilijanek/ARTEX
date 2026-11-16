@@ -6,9 +6,11 @@ import (
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/norma/llm"
 	"iter"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 type summaryFixture struct {
@@ -23,7 +25,9 @@ func (p *summaryFixture) Stream(context.Context, llm.CompletionRequest) iter.Seq
 func (p *summaryFixture) Complete(context.Context, llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
 	p.calls++
 	stop := p.stop
-	if stop == "" {
+	if stop == "empty" {
+		stop = ""
+	} else if stop == "" {
 		stop = "stop"
 	}
 	return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock("summary with source references")}}, stop, llm.Usage{}, p.err
@@ -120,5 +124,68 @@ func TestCompactionFlagOffKeepsReturnedCompletion(t *testing.T) {
 	// Provider deliberately returns a paid result despite cancellation, as before memoization.
 	if _, err := c.compress(ctx, newColdGraph(nil, nil), block{}, nil); err != nil || p.calls != 1 {
 		t.Fatalf("flag-off behavior changed: %v", err)
+	}
+}
+
+func TestSummaryFlightReleasesOnPanic(t *testing.T) {
+	c := NewCompactor(&summaryFixture{}, "fixture")
+	if _, err := c.memoSummary(t.Context(), [32]byte{1}, func() (string, error) { panic("fixture") }); err == nil {
+		t.Fatal("panic lost")
+	}
+	if len(c.summaryFlights) != 0 {
+		t.Fatal("flight leaked")
+	}
+	if body, err := c.memoSummary(t.Context(), [32]byte{1}, func() (string, error) { return "retry", nil }); err != nil || body != "retry" {
+		t.Fatal(body, err)
+	}
+}
+func TestMemoAcceptsEmptyCompletionReason(t *testing.T) {
+	t.Setenv("ARTEX_COMPACTION_MEMO", "1")
+	p := &summaryFixture{stop: "empty"}
+	c := NewCompactor(p, "fixture")
+	for range 2 {
+		if _, err := c.compress(t.Context(), newColdGraph(nil, nil), block{}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if p.calls != 1 {
+		t.Fatal("complete response not reused")
+	}
+}
+
+func TestSummaryFlightWaiterJoinsInProgressCall(t *testing.T) {
+	c := NewCompactor(&summaryFixture{}, "fixture")
+	started := make(chan struct{})
+	release := make(chan struct{})
+	owner := make(chan error, 1)
+	waiter := make(chan error, 1)
+	compute := func() (string, error) { close(started); <-release; return "shared", nil }
+	go func() { _, err := c.memoSummary(t.Context(), [32]byte{9}, compute); owner <- err }()
+	<-started
+	go func() {
+		_, err := c.memoSummary(t.Context(), [32]byte{9}, func() (string, error) { t.Error("second inference started"); return "bad", nil })
+		waiter <- err
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	joined := false
+	for time.Now().Before(deadline) {
+		c.mu.Lock()
+		f := c.summaryFlights[[32]byte{9}]
+		joined = f != nil && f.waiters == 1
+		c.mu.Unlock()
+		if joined {
+			break
+		}
+		runtime.Gosched()
+	}
+	close(release)
+	if err := <-owner; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-waiter; err != nil {
+		t.Fatal(err)
+	}
+	if !joined {
+		t.Fatal("waiter did not join in-flight inference")
 	}
 }

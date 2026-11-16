@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/Autumn-27/artex/llmmeta"
 	"log"
@@ -561,7 +562,7 @@ func (c *Compactor) compress(ctx context.Context, g *coldGraph, b block, nodeByI
 		if body == "" {
 			return "", fmt.Errorf("empty body from model")
 		}
-		if memo && stop != "stop" && stop != "end_turn" {
+		if memo && (stop == "max_tokens" || stop == "length") {
 			return "", fmt.Errorf("incomplete summary (stop reason %q)", stop)
 		}
 		return body, nil
@@ -573,9 +574,10 @@ func (c *Compactor) compress(ctx context.Context, g *coldGraph, b block, nodeByI
 }
 
 type summaryFlight struct {
-	done chan struct{}
-	body string
-	err  error
+	waiters int
+	done    chan struct{}
+	body    string
+	err     error
 }
 
 func (c *Compactor) memoSummary(ctx context.Context, key [32]byte, compute func() (string, error)) (string, error) {
@@ -599,6 +601,7 @@ func (c *Compactor) memoSummary(ctx context.Context, key [32]byte, compute func(
 		return body, nil
 	}
 	if pending := c.summaryFlights[key]; pending != nil {
+		pending.waiters++
 		c.mu.Unlock()
 		select {
 		case <-ctx.Done():
@@ -609,6 +612,9 @@ func (c *Compactor) memoSummary(ctx context.Context, key [32]byte, compute func(
 				c.summaryMemoHits++
 				c.mu.Unlock()
 			}
+			if pending.err != nil && ctx.Err() == nil && (errors.Is(pending.err, context.Canceled) || errors.Is(pending.err, context.DeadlineExceeded)) {
+				return c.memoSummary(ctx, key, compute)
+			}
 			return pending.body, pending.err
 		}
 	}
@@ -618,7 +624,14 @@ func (c *Compactor) memoSummary(ctx context.Context, key [32]byte, compute func(
 	flight := &summaryFlight{done: make(chan struct{})}
 	c.summaryFlights[key] = flight
 	c.mu.Unlock()
-	body, err := compute()
+	body, err := func() (body string, err error) {
+		defer func() {
+			if value := recover(); value != nil {
+				err = fmt.Errorf("summary inference panicked: %v", value)
+			}
+		}()
+		return compute()
+	}()
 	c.mu.Lock()
 	if err == nil {
 		if c.summaryMemo == nil {
