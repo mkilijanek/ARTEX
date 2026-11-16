@@ -130,17 +130,23 @@ func (p *Pool) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[
 func (p *Pool) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
 	order := p.order(req)
 	var lastErr error
+	var total llm.Usage
 	for i, m := range order {
 		msg, sr, usage, err := m.Prov.Complete(ctx, req)
+		total.Add(usage)
+		total.ContextTokens = usage.ContextTokens
+		if total.ContextTokens == 0 {
+			total.ContextTokens = usage.InputTokens + usage.OutputTokens
+		}
 		if err == nil {
 			p.health.Pass(m.ID)
-			return msg, sr, usage, nil
+			return msg, sr, total, nil
 		}
 		if !shouldFailover(ctx, err) {
 			// Non-failover error (e.g. ctx cancel, deterministic 4xx): surface as-is
 			// without tripping health, matching Stream's non-failover path.
 			p.health.Pass(m.ID)
-			return llm.Message{}, "", llm.Usage{}, err
+			return llm.Message{}, "", total, err
 		}
 		lastErr = err
 		hard := isHardFailure(err)
@@ -157,7 +163,7 @@ func (p *Pool) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Mes
 		lastErr = ErrExhausted
 	}
 	log.Printf("[llmpool] failover chain exhausted (all %d profiles failed), last error: %s", len(order), trimErr(lastErr))
-	return llm.Message{}, "", llm.Usage{}, fmt.Errorf("%w: %v", ErrExhausted, lastErr)
+	return llm.Message{}, "", total, fmt.Errorf("%w: %v", ErrExhausted, lastErr)
 }
 
 // order picks the members to try, in order: skip those in a cooling-off window

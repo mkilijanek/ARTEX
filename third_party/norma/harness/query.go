@@ -50,6 +50,13 @@ type QueryInput struct {
 	// per-tool output budget (head size; 0 = default 30000). See tool.Capture.
 	ToolOutputDir      string
 	MaxToolOutputChars int
+	// UntrustedOutputBoundary, when set, frames every text tool result as
+	// untrusted data between nonce-tagged markers, holds back a fixed reserve
+	// from the output cap for the framing, and appends one fixed note to System
+	// (once: skipped if System already carries it) telling the model that framed
+	// blocks are data, never instructions, and end only at the END marker with
+	// the same nonce. Off by default. Compaction summaries are not framed.
+	UntrustedOutputBoundary bool
 
 	// Tasks, when non-nil, is the background-task manager shared with the tools.
 	// The loop drains its completion notifications into the conversation between
@@ -202,6 +209,9 @@ func (d *QueryDeps) withDefaults(in QueryInput) {
 // always KindResult carrying a Terminal (unless the consumer stops early).
 func Query(ctx context.Context, in QueryInput, deps QueryDeps) iter.Seq2[Event, error] {
 	deps.withDefaults(in)
+	if in.UntrustedOutputBoundary {
+		in.System = withUntrustedNote(in.System)
+	}
 	conc := in.MaxConcurrency
 	if conc <= 0 {
 		conc = 10
@@ -233,12 +243,13 @@ type loop struct {
 	yield   func(Event, error) bool
 	sem     chan struct{} // bounds concurrent tool execution
 
-	messages        []llm.Message
-	usage           llm.Usage
-	lastInputTokens int // total token size the previous model response reported (compaction gate)
-	turnCount       int
-	boundaryCount   int       // boundary markers already seen, so Recorder fires once each
-	startTime       time.Time // loop start, for MaxDuration (wall-clock budget)
+	messages              []llm.Message
+	usage                 llm.Usage
+	lastInputTokens       int // total token size the previous model response reported (compaction gate)
+	lastCallContextTokens int // optional physical footprint, separate from retry billing
+	turnCount             int
+	boundaryCount         int       // boundary markers already seen, so Recorder fires once each
+	startTime             time.Time // loop start, for MaxDuration (wall-clock budget)
 
 	// settlement (wrap-up) phase state, entered when a budget is hit
 	settling     bool
@@ -440,6 +451,9 @@ func (l *loop) run() {
 		// The size the model just reported for its input, preferred by the
 		// compactor over local estimation on the next turn's gate check.
 		l.lastInputTokens = turnUsage.InputTokens + turnUsage.OutputTokens
+		if l.lastCallContextTokens > 0 {
+			l.lastInputTokens = l.lastCallContextTokens
+		}
 		l.record(asst, turnUsage)
 		// surface cumulative usage after each model turn so hosts can show live token
 		// counts during a run (not just at the terminal event).
@@ -860,6 +874,7 @@ func (l *loop) streamAndExecute(schemas []llm.ToolSchema) (asst llm.Message, exe
 		return asst, exec, "", nil, true, false
 	}
 	l.usage.Add(acc.Usage)
+	l.lastCallContextTokens = acc.Usage.ContextTokens
 	asst = acc.Message()
 	stopReason = acc.StopReason
 	if err != nil {
@@ -883,10 +898,13 @@ func (l *loop) streamAndExecute(schemas []llm.ToolSchema) (asst llm.Message, exe
 func (l *loop) completeAndExecute(req llm.CompletionRequest) (asst llm.Message, exec *streamExec, stopReason string, err error, consumerStopped, aborted bool) {
 	exec = newStreamExec(l)
 	msg, sr, usage, cerr := l.deps.CallModelSync(l.ctx, req)
+	// Failed atomic calls may still report billed usage. Retain it before
+	// surfacing the error, just like the streaming accumulator does.
+	l.usage.Add(usage)
+	l.lastCallContextTokens = usage.ContextTokens
 	if cerr != nil {
 		return asst, exec, "", cerr, false, false
 	}
-	l.usage.Add(usage)
 	asst = msg
 	stopReason = sr
 	for _, b := range msg.Content {

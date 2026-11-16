@@ -36,22 +36,60 @@ func TestSDKSystemMessageLiteralsAreEnglish(t *testing.T) {
 	}
 	var manifest struct {
 		Original map[string]string `json:"original_sha256"`
+		Patched  map[string]string `json:"patched_sha256"`
+		Extra    map[string]string `json:"extra_sha256"`
 	}
 	if err := json.Unmarshal(raw, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	allowed := map[string]bool{"noa/archive.go": true, "tool/task.go": true, "tool/shell_session.go": true, "tool/shell_tools.go": true}
-	for rel, want := range manifest.Original {
+	expected := map[string]string{}
+	for rel, hash := range manifest.Original {
+		expected[rel] = hash
+	}
+	for rel, hash := range manifest.Patched {
+		if _, ok := manifest.Original[rel]; !ok {
+			t.Fatalf("patch lacks upstream file: %s", rel)
+		}
+		expected[rel] = hash
+	}
+	for rel, hash := range manifest.Extra {
+		if _, ok := expected[rel]; ok {
+			t.Fatalf("extra overlaps upstream: %s", rel)
+		}
+		expected[rel] = hash
+	}
+	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if rel != "SOURCE.json" && rel != "README.artex.md" {
+			if _, ok := expected[rel]; !ok {
+				t.Errorf("unmanifested SDK file: %s", rel)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rel, want := range expected {
 		path := filepath.Join(root, rel)
 		body, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
 		}
 		sum := sha256.Sum256(body)
-		if hex.EncodeToString(sum[:]) != want && !allowed[rel] {
+		if hex.EncodeToString(sum[:]) != want {
 			t.Errorf("unrelated SDK source changed: %s", rel)
 		}
-		if !strings.HasSuffix(rel, ".go") {
+		if !strings.HasSuffix(rel, ".go") || strings.HasSuffix(rel, "_test.go") {
 			continue
 		}
 		tree, err := parser.ParseFile(token.NewFileSet(), path, body, 0)

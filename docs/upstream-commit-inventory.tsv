@@ -3,222 +3,222 @@ a66c716c0a43cb0f7952932be44eb19cb42e2cfc	fix(tools): drop empty required entry f
 934568f33657a2c53583f0b3c921a45253dab2ca	fix(mcp): negotiate protocol version with fallback	defer-independent	mcphttp/client.go,mcphttp/client_test.go
 f6583b4badfa24cd680301ae74401d97deba3204	fix(mcp): omit protocol version header on initialize	defer-independent	mcphttp/client.go,mcphttp/client_test.go
 65bdc5d73cee4e5576fff18ce2c5e1f503737bd3	fix(auth): keep the JWT signing key in a dedicated volume	defer-independent	.dockerignore,.gitignore,CHANGELOG.md,Dockerfile,README.md,cmd/artex/main.go,docker-compose.yml,scripts/benchmark/README.md,server/auth.go,server/auth_test.go,server/server.go
-248d9d9673afd692b3c11c6c9a7209ed94599f7a	Merge pull request #149 from BaaRai/fix/jwt-key-volume	merge-or-metadata	
+248d9d9673afd692b3c11c6c9a7209ed94599f7a	Merge pull request #149 from BaaRai/fix/jwt-key-volume	merge-or-metadata	-
 e6e9b2f9787d42c00d85a3dc1ba9eb87a12252f2	Add Trendshift badge to README	defer-independent	README.md
 241903888445fc5b16a9c099969d8dfad5b1fade	fix(auth): rate-limit login per IP, 12-character passwords, loopback default	defer-independent	CHANGELOG.md,cmd/artex/main.go,server/auth.go,server/auth_test.go,server/login_limit.go,server/login_limit_test.go,server/server.go,web/src/app/(auth)/setup/page.tsx
 d0d153b76891756a283e2a8af423964ae3cfacd2	fix(auth): trusted proxies for the login rate limit, 12 characters in reset-password.sh	defer-independent	.env.example,CHANGELOG.md,README.md,cmd/artex/main.go,docker-compose.yml,reset-password.sh,server/auth.go,server/login_limit.go,server/login_limit_test.go,server/server.go
 4be2fc5c9a782eb10a511a1a70d758e93b5ec67c	docs, ci: proxy setup for host and Docker, shellcheck reset-password.sh	defer-independent	.github/workflows/ci.yml,README.md
 8beb9c50d6a6729cefad35d04b6c48beb2309140	fix(ci): drop unused variable in reset-password.sh (SC2034)	defer-independent	reset-password.sh
-cb13a2267341f2b56b03f5e514d8154327025265	ci: retrigger after PR head sync	merge-or-metadata	
-43424404ee3cbd52d20bb293e254d0daf4756592	Merge pull request #150 from BaaRai/fix/login-rate-limit-hardening	merge-or-metadata	
+cb13a2267341f2b56b03f5e514d8154327025265	ci: retrigger after PR head sync	merge-or-metadata	-
+43424404ee3cbd52d20bb293e254d0daf4756592	Merge pull request #150 from BaaRai/fix/login-rate-limit-hardening	merge-or-metadata	-
 41e10456d7702cd81cc25122100a99979ff8d031	release: v0.5.1	defer-independent	CHANGELOG.md
-ce279d77d36d1d2d4c8c4dac1d41448cbf65b08a	Merge pull request #151 from BaaRai/release/v0.5.1	merge-or-metadata	
+ce279d77d36d1d2d4c8c4dac1d41448cbf65b08a	Merge pull request #151 from BaaRai/release/v0.5.1	merge-or-metadata	-
 33078a7d353dbad0e861f9ee039712960ad84ef3	Create SECURITY.md	defer-independent	SECURITY.md
-44d755fb2ed50faba041a42bf45cc006e0d46675	Merge pull request #132 from htcom-code/fix/131-mcp-version-fallback	merge-or-metadata	
+44d755fb2ed50faba041a42bf45cc006e0d46675	Merge pull request #132 from htcom-code/fix/131-mcp-version-fallback	merge-or-metadata	-
 9784bb192cb764f4f4b433883f407bc7ae0cca7b	chore: keep secrets out of the Docker build context; drop stale README step	defer-independent	.dockerignore,README.md
-a908e1ec170f973734b3258dd37d667d2562440a	Merge pull request #153 from BaaRai/chore/dockerignore-and-readme	merge-or-metadata	
+a908e1ec170f973734b3258dd37d667d2562440a	Merge pull request #153 from BaaRai/chore/dockerignore-and-readme	merge-or-metadata	-
 13dde2da15e8e1cf136fe72642dac620a103cda5	feat(llm): optional custom User-Agent for LLM requests	dependency-review	CHANGELOG.md,agent/provider.go,agent/provider_capture_test.go,agent/user_agent_test.go,db/config.go,db/schema.sql,server/dto.go,server/server.go,server/server_mgmt.go,server/side_questions.go,web/src/app/(main)/system/llm/page.tsx,web/src/lib/api.ts,web/src/lib/types.ts
 4acdf3bb268d1d9c1bf5fe2d831568812f90a4ff	fix(llm): validate custom User-Agent in the connection-test path	dependency-review	agent/user_agent_test.go,server/llm_key_endpoint_test.go,server/server.go
-9bf5d816aeb361d79de874fcdbeeb0de31bd83f2	Merge pull request #155 from BaaRai/feat/llm-user-agent	merge-or-metadata	
+9bf5d816aeb361d79de874fcdbeeb0de31bd83f2	Merge pull request #155 from BaaRai/feat/llm-user-agent	merge-or-metadata	-
 a7da0559f3494b433b716e98de7692fb69ad936e	docs: Anthropic base URL must not end in /v1	defer-independent	CHANGELOG.md,README.md
-180538e463dcbbe07634f1c25e1af9389055d85c	Merge pull request #157 from BaaRai/docs/anthropic-base-url	merge-or-metadata	
+180538e463dcbbe07634f1c25e1af9389055d85c	Merge pull request #157 from BaaRai/docs/anthropic-base-url	merge-or-metadata	-
 cab0a10c6fdf6f9f353e8c6ddc72fa7f95573ec7	docs: openai-responses base URL suffix	defer-independent	CHANGELOG.md,README.md
-f90e8d2bcb7e9f0a82867b96e195f90737bc4dd0	Merge pull request #158 from BaaRai/docs/openai-responses-base-url	merge-or-metadata	
+f90e8d2bcb7e9f0a82867b96e195f90737bc4dd0	Merge pull request #158 from BaaRai/docs/openai-responses-base-url	merge-or-metadata	-
 9481b8e962c125a77cedbefdd0cee8bb39bc5780	fix(intercept): judge decisions were stored as unknown (prefix case mismatch)	dependency-review	.github/workflows/ci.yml,db/export_test.go,db/intercept.go,db/intercept_filter_test.go,db/intercept_source_test.go,db/schema.sql,db/task_archives_restore.go,intercept/intercept.go,server/intercept_filter_test.go
-9c2b56001d1403184658657415324fa6c9b617be	Merge pull request #159 from BaaRai/fix/intercept-decision-source-prefix	merge-or-metadata	
+9c2b56001d1403184658657415324fa6c9b617be	Merge pull request #159 from BaaRai/fix/intercept-decision-source-prefix	merge-or-metadata	-
 6ce50b7d131d3d075405b1962ba10871da34a7b8	deps: bump Norma replace to v0.4.5	dependency-review	go.mod,go.sum
-fbe78395d5712aa775acd911a5e6c523c69e1419	Merge pull request #160 from BaaRai/chore/norma-v0.4.5	merge-or-metadata	
+fbe78395d5712aa775acd911a5e6c523c69e1419	Merge pull request #160 from BaaRai/chore/norma-v0.4.5	merge-or-metadata	-
 4fe80b860cdebef24ac87986de81636dfa9ade6f	chore: bump norma to v0.4.6 and enable untrusted-output boundary	dependency-review	agent/chat.go,agent/mainagent.go,agent/planner.go,agent/worker.go,go.mod,go.sum
 62571c9b341ad52dcdae2508f3acba2bf03df11c	chore: keep untrusted-output boundary off until isolated smoke test	dependency-review	agent/chat.go,agent/mainagent.go,agent/planner.go,agent/worker.go
-f5db962eeb16277a82b7696ab098bb4773667de3	Merge pull request #161 from BaaRai/chore/norma-v0.4.6	merge-or-metadata	
+f5db962eeb16277a82b7696ab098bb4773667de3	Merge pull request #161 from BaaRai/chore/norma-v0.4.6	merge-or-metadata	-
 f938ba00d9c648bddb46534d4daa6fde8cc4ead2	feat: verified findings backend (S1)	dependency-review	agent/finding_workflow.go,db/finding_verification.go,db/findings.go,db/schema.sql,server/dto.go,server/finding_verification.go,server/finding_verification_test.go,server/orchestration.go
 0a740f0894a85a0a7d7cad26dc0b99c922b1b486	fix: ignore evidence quotes shorter than 8 runes	defer-independent	server/finding_verification.go,server/finding_verification_test.go
 a1426bbd358a705e26b1372a8bab751d9f0bda59	test: use an 8+ rune quote in the unreadable-store case	defer-independent	server/finding_verification_test.go
-34cbbeadb72b84690e3d5a065413895bd892728c	Merge pull request #162 from BaaRai/feat/verified-findings	merge-or-metadata	
+34cbbeadb72b84690e3d5a065413895bd892728c	Merge pull request #162 from BaaRai/feat/verified-findings	merge-or-metadata	-
 1810a82187413de374b6efffc040d8a3f152f23d	feat: verification status badge, filter and note in the findings UI	dependency-review	db/findings.go,server/findings_groups.go,web/src/app/(main)/function/findings/_components/findings-table.tsx,web/src/app/(main)/function/findings/detail/page.tsx,web/src/app/(main)/function/findings/page.tsx,web/src/lib/api.ts,web/src/lib/types.ts
-ec89070b8ed512efaefff92e58eadfc3e77665de	Merge pull request #163 from BaaRai/feat/verification-ui	merge-or-metadata	
+ec89070b8ed512efaefff92e58eadfc3e77665de	Merge pull request #163 from BaaRai/feat/verification-ui	merge-or-metadata	-
 8634ddbf2330894631a351cf3e5c8fb2b2180d59	feat: a completed retest updates the verification state	dependency-review	db/finding_retests.go,db/finding_retests_verification_test.go
-3e75f1f954bbed00f13d0564bd0f03d2cf438726	Merge pull request #164 from BaaRai/feat/retest-verification	merge-or-metadata	
+3e75f1f954bbed00f13d0564bd0f03d2cf438726	Merge pull request #164 from BaaRai/feat/retest-verification	merge-or-metadata	-
 8f50b8179290c09921ad616dbe3c328983ac4a45	feat: record which actor decided an intercept approval	dependency-review	db/intercept.go,db/intercept_decided_by_test.go,db/intercept_detail.go,db/intercept_detail_test.go,db/schema.sql,db/task_archives_restore.go,intercept/intercept.go,server/intercept.go,server/intercept_decided_by_test.go
 2218480ebae4d5537e80b32868cf49a364dc390b	feat: show and filter the decided_by actor in the approval records	dependency-review	db/intercept.go,db/intercept_decided_by_test.go,server/intercept_decided_by_test.go,web/src/components/approval-records.tsx,web/src/lib/api.ts,web/src/lib/mock/data.ts,web/src/lib/mock/handler.ts,web/src/lib/types.ts
 52ea3f65c6934f145eb5b07b9df2ac3523586b96	fix: rename the model filter option to AI-decided	defer-independent	web/src/components/approval-records.tsx
-a83f494d03ab48df340c0ad0e35711e146a7eb7e	Merge pull request #165 from BaaRai/feat/intercept-decided-by	merge-or-metadata	
+a83f494d03ab48df340c0ad0e35711e146a7eb7e	Merge pull request #165 from BaaRai/feat/intercept-decided-by	merge-or-metadata	-
 c73e2872a367d5847e1cd78b9b45a7bab34363e9	feat: enable the untrusted-output boundary with ARTEX_UNTRUSTED_BOUNDARY	dependency-review	.env.example,agent/chat.go,agent/mainagent.go,agent/planner.go,agent/untrusted_boundary.go,agent/untrusted_boundary_test.go,agent/worker.go
 06453409ea649c2de367baacd43a13c6b070f5db	chore: pass ARTEX_UNTRUSTED_BOUNDARY to the artex service	defer-independent	docker-compose.yml
-81eab87d166dddfc0d8be2707eadec788b61be0d	Merge pull request #166 from BaaRai/feat/untrusted-boundary-toggle	merge-or-metadata	
+81eab87d166dddfc0d8be2707eadec788b61be0d	Merge pull request #166 from BaaRai/feat/untrusted-boundary-toggle	merge-or-metadata	-
 a44af3ca2b389688452f4c92ff7019416a375a0d	fix(tools): harden obj against blank required names and heal seeded list_task_credentials rows	dependency-review	agent/toolcatalog_test.go,agent/tools.go,server/orchestration.go,server/tools_wire_test.go
-00f5d8c10380774406361eba6dce6c6e28c6fefc	Merge pull request #130 from kiserufetch/fix/list-task-credentials-empty-required	merge-or-metadata	
+00f5d8c10380774406361eba6dce6c6e28c6fefc	Merge pull request #130 from kiserufetch/fix/list-task-credentials-empty-required	merge-or-metadata	-
 f4f0df128a01f963de6481c26a95a433ebc1c6e1	fix(verification): decode gzip/deflate response bodies before the S1 quote check	defer-independent	server/finding_verification.go,server/finding_verification_decode_test.go
 05df40eecbea1faaa9fc6d6c26e67b68e65e0039	test(verification): lock that an empty bound body never satisfies a quote	defer-independent	server/finding_verification_decode_test.go
-59c3702a5e025335477d33e3a77b47c5e3e26af4	Merge pull request #169 from BaaRai/fix/verification-gzip-body	merge-or-metadata	
+59c3702a5e025335477d33e3a77b47c5e3e26af4	Merge pull request #169 from BaaRai/fix/verification-gzip-body	merge-or-metadata	-
 b17a0ea7960a9888e0506a37a93ce14f0135bbc6	notify: report hidden asset count in overflow suffix	defer-independent	notify/render.go,notify/render_test.go
-cf0b0c10028606777d124fa80f105755302780fd	Merge pull request #170 from BaaRai/fix/notify-overflow-count	merge-or-metadata	
+cf0b0c10028606777d124fa80f105755302780fd	Merge pull request #170 from BaaRai/fix/notify-overflow-count	merge-or-metadata	-
 c84f124cb4969e0b93441d66a6c67b5547999c58	db: report hidden asset count in malformed-ip warning suffix	dependency-review	db/companies.go,db/companies_test.go
 809436e11156d46230c69c3028fde594291aa20c	notify: make the summary and asset limits configurable	defer-independent	notify/event.go,notify/feishu.go,notify/html.go,notify/limits_test.go,notify/markdown.go,notify/pack_test.go,notify/telegram.go,server/notifier.go,server/notify_api.go,server/notify_api_test.go,server/server.go
-2ab10467462af56c0d25ab6385fc538eda7eae37	Merge pull request #171 from BaaRai/fix/companies-overflow-count	merge-or-metadata	
-3b6eb2fd2c93c57ab3cd794bf05145443ee88ab2	Merge pull request #172 from BaaRai/feat/notify-configurable-limits	merge-or-metadata	
+2ab10467462af56c0d25ab6385fc538eda7eae37	Merge pull request #171 from BaaRai/fix/companies-overflow-count	merge-or-metadata	-
+3b6eb2fd2c93c57ab3cd794bf05145443ee88ab2	Merge pull request #172 from BaaRai/feat/notify-configurable-limits	merge-or-metadata	-
 0cc22cb7944fc829f53c08afb90346e309154289	web: add the notification render limits to the notify settings page	defer-independent	web/src/app/(main)/system/notify/page.tsx,web/src/lib/types.ts
 a422a071f6ce94c48795f3c0bc9f0b9f52ab6b93	server: skip Postgres-backed tests when no database is configured	defer-independent	server/cost_ledger_test.go,server/finding_traffic_test.go,server/llm_ollama_test.go,server/llm_test_fallback_test.go,server/planner_quiet_test.go,server/testmain_test.go,server/traffic_ingest_test.go
 542582e3bcbdf7bbd2486fd8c7d4a7b088df708a	notify: pack Feishu digests against the serialized request body	defer-independent	notify/feishu.go,notify/pack_test.go
-9b7276d65aaa5f50880ca4efbfbb75d285671944	Merge pull request #173 from BaaRai/feat/notify-limits-ui	merge-or-metadata	
-b847867e5c7747393d9845fff6bd2ae0c4a97a77	Merge pull request #174 from BaaRai/fix/feishu-digest-overflow	merge-or-metadata	
-b51a0bf74b4982a3a1c44d34610ec9e425037aa3	Merge pull request #175 from BaaRai/chore/server-tests-skip-without-dsn	merge-or-metadata	
+9b7276d65aaa5f50880ca4efbfbb75d285671944	Merge pull request #173 from BaaRai/feat/notify-limits-ui	merge-or-metadata	-
+b847867e5c7747393d9845fff6bd2ae0c4a97a77	Merge pull request #174 from BaaRai/fix/feishu-digest-overflow	merge-or-metadata	-
+b51a0bf74b4982a3a1c44d34610ec9e425037aa3	Merge pull request #175 from BaaRai/chore/server-tests-skip-without-dsn	merge-or-metadata	-
 c0e713d32fdbc3fe64cfe971ca9043dc751f8232	feat(engine): intent claim heartbeat, TTL and fencing token (S3c)	dependency-review	agent/cancelcause.go,agent/terminalreason_test.go,db/exploration.go,db/intent_claim_test.go,db/schema.sql,server/claim_heartbeat_test.go,server/engine.go
-7ccae15e3f9935cbcce9d4abfdd96c93101314ea	Merge pull request #176 from BaaRai/feat/claim-heartbeat-fencing	merge-or-metadata	
+7ccae15e3f9935cbcce9d4abfdd96c93101314ea	Merge pull request #176 from BaaRai/feat/claim-heartbeat-fencing	merge-or-metadata	-
 135b083b9a7330b86faa5d021f6769032e77e50d	feat(guard): planner and main-agent hooks, target-gate scope in every session (S3b 1.1)	dependency-review	agent/hooks_reach_test.go,agent/mainagent.go,agent/planner.go,guard/guard.go,guard/guard_test.go,intercept/intercept.go,server/conversations.go,server/engine.go,server/engine_timeout.go,server/manager.go,server/server.go,server/target_gate_scope_test.go
-ce9f4d010722f93d72a72c81a1dda174f629a555	Merge pull request #177 from BaaRai/feat/target-gate-hooks-scope	merge-or-metadata	
+ce9f4d010722f93d72a72c81a1dda174f629a555	Merge pull request #177 from BaaRai/feat/target-gate-hooks-scope	merge-or-metadata	-
 1f4cb65ca6532479f680c595d2e24edc950698ca	feat(intercept): target-gate schema, opt-in flag and approval requests (S3b 1.2-1.4)	dependency-review	agent/capture_approval_test.go,db/conversation.go,db/finding_retests.go,db/intercept_detail.go,db/schema.sql,db/target_pins.go,db/target_pins_test.go,db/task_archives_restore.go,db/tasks.go,intercept/intercept.go,intercept/target_exempt.go,intercept/target_exempt_test.go,intercept/target_request.go,intercept/target_request_test.go,intercept/testmain_test.go,server/auth.go,server/conversations.go,server/dto.go,server/intercept.go,server/manager.go,server/server.go,server/target_gate_flag_test.go,server/target_gate_scope_test.go,server/task_metadata.go
-923c4a813ad2ae6cb91b0799f8b9104e2437175b	Merge pull request #178 from BaaRai/feat/target-gate-schema-request	merge-or-metadata	
+923c4a813ad2ae6cb91b0799f8b9104e2437175b	Merge pull request #178 from BaaRai/feat/target-gate-schema-request	merge-or-metadata	-
 78f92f44fced7bb6fdb0a1b1f7a76523b8ad8787	feat(intercept): target extraction, resolver, exemptions and the gate in the hook (S3b 1.5-1.7)	dependency-review	agent/target_gate_tools_test.go,db/db.go,db/intercept_detail.go,db/target_pins.go,db/target_pins_test.go,guard/guard.go,guard/guard_test.go,guard/target_gate_test.go,guard/testmain_test.go,intercept/intercept.go,intercept/target.go,intercept/target_exempt.go,intercept/target_extract.go,intercept/target_gate.go,intercept/target_gate_pg_test.go,intercept/target_gate_test.go,intercept/target_request.go,intercept/target_resolve.go,intercept/target_test.go,server/intercept.go,server/manager.go,server/server.go,server/target_gate_scope_test.go,server/target_gate_wiring_test.go
-ec3db7fdecf3c981730a097ece6939779758b18c	Merge pull request #179 from BaaRai/feat/target-gate-extract-resolve-gate	merge-or-metadata	
+ec3db7fdecf3c981730a097ece6939779758b18c	Merge pull request #179 from BaaRai/feat/target-gate-extract-resolve-gate	merge-or-metadata	-
 c0b741bcf626500cccd828dce4ecbb3ed08b43f5	feat(intercept): gate the rendered targets of custom tools (S3b 1.8)	dependency-review	guard/guard.go,guard/target_gate_test.go,intercept/target_rendered.go,intercept/target_rendered_test.go,server/customtool.go,server/customtool_target_gate_test.go,server/customtool_test.go
-a77851db7dca12b01f9b87fa55aa7009f0d1233d	Merge pull request #180 from BaaRai/feat/target-gate-custom-tools	merge-or-metadata	
+a77851db7dca12b01f9b87fa55aa7009f0d1233d	Merge pull request #180 from BaaRai/feat/target-gate-custom-tools	merge-or-metadata	-
 f07e84ac7a2fc680b96e71cadfa0395fd6a7a862	feat(intercept): spawned tasks and triggered conversations inherit the target gate	defer-independent	server/conversations.go,server/orchestration.go,server/server.go,server/target_gate_flag_test.go
 ca15063db711fbe7d77206db5a79eea0a4a7cf2b	fix(intercept): match block rules on the declared targets before any lookup	dependency-review	db/asset_intercept_match.go,guard/target_gate_test.go,intercept/target_declared_test.go,intercept/target_extract.go,intercept/target_gate.go,intercept/target_rendered.go,server/customtool_target_gate_test.go
-743e6b0d15cd2de2e4763a7e6513c62ce1264fc7	Merge pull request #182 from BaaRai/feat/target-gate-inherit-spawn	merge-or-metadata	
-c5e12541bd4af61b8ddd4512505e996c0a56db1c	Merge pull request #183 from BaaRai/fix/target-gate-declared-first	merge-or-metadata	
+743e6b0d15cd2de2e4763a7e6513c62ce1264fc7	Merge pull request #182 from BaaRai/feat/target-gate-inherit-spawn	merge-or-metadata	-
+c5e12541bd4af61b8ddd4512505e996c0a56db1c	Merge pull request #183 from BaaRai/fix/target-gate-declared-first	merge-or-metadata	-
 46e81f5f6716cb75ec55c571f164759029ed49b6	chore: bump norma to v0.4.7	dependency-review	go.mod,go.sum
-1e616c9286d2dac00660aaadc61fb70e136379b8	Merge pull request #184 from BaaRai/chore/bump-norma-v0.4.7	merge-or-metadata	
+1e616c9286d2dac00660aaadc61fb70e136379b8	Merge pull request #184 from BaaRai/chore/bump-norma-v0.4.7	merge-or-metadata	-
 1c3a5f4ffa15cc4aba17b7fc6e4a461fa3e57deb	feat(intercept): check every redirect hop against the target gate (S3b 1.9)	dependency-review	agent/chat.go,agent/mainagent.go,agent/planner.go,agent/webfetch.go,agent/webfetch_redirect_test.go,agent/worker.go,db/intercept_detail.go,intercept/target_gate.go,intercept/target_redirect.go,intercept/target_redirect_pg_test.go,intercept/target_redirect_test.go,intercept/target_request.go,server/customtool.go,server/target_redirect_test.go
-08830365c47f06e523dded486ecc128b97ee26a4	Merge pull request #185 from BaaRai/feat/target-gate-redirect-hops	merge-or-metadata	
+08830365c47f06e523dded486ecc128b97ee26a4	Merge pull request #185 from BaaRai/feat/target-gate-redirect-hops	merge-or-metadata	-
 f6b29b835b2e41c0488fbabacea3deb3dbde5482	feat(intercept): pinned dialer for WebFetch and the custom http tool (S3b 2.1)	dependency-review	agent/chat.go,agent/mainagent.go,agent/planner.go,agent/webfetch.go,agent/webfetch_dialer_test.go,agent/webfetch_redirect_test.go,agent/worker.go,go.mod,go.sum,intercept/intercept.go,intercept/target_dial.go,intercept/target_dial_pg_test.go,intercept/target_dial_test.go,intercept/target_exempt.go,intercept/target_exempt_test.go,intercept/target_gate.go,intercept/target_request.go,intercept/target_resolve.go,server/customtool.go,server/customtool_dial_test.go
-e38e48e80e52de1180c43f1c66cd2b5dc6a55037	Merge pull request #186 from BaaRai/feat/target-gate-pinned-dialer	merge-or-metadata	
+e38e48e80e52de1180c43f1c66cd2b5dc6a55037	Merge pull request #186 from BaaRai/feat/target-gate-pinned-dialer	merge-or-metadata	-
 bbc4f6269a440881bf0eca6742dfbd22f3346e1d	Fix doubled scheme in the custom http tool's recording proxy URL	defer-independent	server/customtool.go,server/customtool_dial_test.go
-31e56a16fc605268848109b9ef5d97cf43569762	Merge pull request #187 from BaaRai/fix/customtool-proxy-scheme	merge-or-metadata	
+31e56a16fc605268848109b9ef5d97cf43569762	Merge pull request #187 from BaaRai/fix/customtool-proxy-scheme	merge-or-metadata	-
 ac003ede28c28039c4c0fbc45466e1d3eb3720b5	chore(docker): verify tool downloads and pin build inputs	defer-independent	Dockerfile
-271f3b088ac530630150a241df1256f76a8b3a25	Merge pull request #188 from BaaRai/chore/docker-verified-tools	merge-or-metadata	
+271f3b088ac530630150a241df1256f76a8b3a25	Merge pull request #188 from BaaRai/chore/docker-verified-tools	merge-or-metadata	-
 8acf1be46e734b614051cd6437e60deccc14ab36	agent: code-owned prompt-injection tails and planner goal anchor (#124)	dependency-review	agent/chat.go,agent/compaction.go,agent/mainagent.go,agent/planner.go,agent/prompt_injection_seed_test.go,agent/promptcatalog.go,agent/untrusted_prompt.go,agent/worker.go,server/shipped_skills_test.go,skills/bbot-recon/SKILL.md
 09ef702c2424161a537039ac3dd924b17f01432f	agent: untrusted-content tail for every chat agent; evidence wording fits the reporter	dependency-review	agent/chat.go,agent/prompt_injection_seed_test.go,agent/untrusted_prompt.go
-2945f58b01d2998ad096cabaa2863853f5cd99e7	Merge pull request #189 from BaaRai/feat/agentic-prompt-hardening	merge-or-metadata	
+2945f58b01d2998ad096cabaa2863853f5cd99e7	Merge pull request #189 from BaaRai/feat/agentic-prompt-hardening	merge-or-metadata	-
 4bcb6d72506371ab03941c54ebe120e47708fa8a	Add agentic guards for goals, hint origin and planner Bash (F5, F6, F11)	dependency-review	agent/agentic_guards_test.go,agent/mainagent.go,agent/planner.go,agent/tools.go,guard/guard.go,guard/guard_test.go,intercept/intercept.go,server/manager.go,server/orchestration.go
-a1f3256cf618345b9d01a04a90879ed5f71baf17	Merge pull request #190 from BaaRai/feat/agentic-guards	merge-or-metadata	
+a1f3256cf618345b9d01a04a90879ed5f71baf17	Merge pull request #190 from BaaRai/feat/agentic-guards	merge-or-metadata	-
 80c192d8acda349b702e49ad4c097a1d262c8cc1	release: v0.6.0	defer-independent	CHANGELOG.md
 1f297d75f2e159586f1a93e46dac8289ca00116e	guard: bound the length of block reasons sent to the model	dependency-review	guard/guard.go,guard/guard_test.go
 8c9c1fc0ab97816fdc25c30fe1199ddb021e1f65	feat(findings): optional counterevidence and confidence_rationale	dependency-review	agent/finding_reasoning_test.go,agent/promptcatalog.go,agent/tools.go,agent/worker.go,db/finding_reasoning_test.go,db/finding_traffic.go,db/findings.go,db/schema.sql,server/dto.go,server/finding_reasoning_test.go,server/finding_verification.go,server/orchestration.go,web/src/app/(main)/function/findings/detail/page.tsx,web/src/lib/types.ts
-f92938836db36afd43e4b4be5d91bddce4f55ffb	Merge pull request #192 from BaaRai/fix/block-reason-bound	merge-or-metadata	
-9355a373f147da9eea602818975d48b6fe8d773f	Merge pull request #193 from BaaRai/feat/finding-evidence-schema	merge-or-metadata	
+f92938836db36afd43e4b4be5d91bddce4f55ffb	Merge pull request #192 from BaaRai/fix/block-reason-bound	merge-or-metadata	-
+9355a373f147da9eea602818975d48b6fe8d773f	Merge pull request #193 from BaaRai/feat/finding-evidence-schema	merge-or-metadata	-
 6f42db90bc14cc56b4ce7762ea42c2c95d62bc8a	docs(changelog): add #192 and #193 to 0.6.0	defer-independent	CHANGELOG.md
 9fddb83d2dae933b9bde07efa020a6a77fae66ba	docs(changelog): date 0.6.0 as 2026-11-12	defer-independent	CHANGELOG.md
-a13c68cb7078d43b66fb398db3d610e513b6d77a	Merge pull request #191 from BaaRai/chore/release-0.6.0	merge-or-metadata	
+a13c68cb7078d43b66fb398db3d610e513b6d77a	Merge pull request #191 from BaaRai/chore/release-0.6.0	merge-or-metadata	-
 62c9b4a178d74255d9c887c701a42a1418d44809	agent: fact provenance (declared source plus server-set origin)	dependency-review	agent/compaction.go,agent/fact_provenance_test.go,agent/planner.go,agent/promptcatalog.go,agent/tools.go,agent/worker.go
 bc33db27354505f5f1fe0ff65c4cb889dcb9a997	server: add the record_fact source enum to existing databases	defer-independent	server/fact_source_schema_test.go,server/orchestration.go
-ff75bfaf1ff60ab3c9fa6544bc598c68b49b65d8	Merge pull request #194 from BaaRai/feat/fact-provenance	merge-or-metadata	
+ff75bfaf1ff60ab3c9fa6544bc598c68b49b65d8	Merge pull request #194 from BaaRai/feat/fact-provenance	merge-or-metadata	-
 975f63434be7c3e43ee98a26ae1c0c3fe1907c28	agent: frame agent-derived fields in a per-message nonce envelope (#124, F3)	dependency-review	agent/agentic_guards_test.go,agent/data_envelope.go,agent/data_envelope_test.go,agent/planner.go,agent/tools.go,agent/worker.go
-0dc8bdf179ffd6943cc3ac4e9b5cdb82e6556ae9	Merge pull request #195 from BaaRai/feat/derived-field-envelope	merge-or-metadata	
+0dc8bdf179ffd6943cc3ac4e9b5cdb82e6556ae9	Merge pull request #195 from BaaRai/feat/derived-field-envelope	merge-or-metadata	-
 37fab188096578dec48f6a76958d5a952d9bad40	fix(coverage): count auto-scope only under a declared root (F8)	dependency-review	agent/auto_scope_hygiene_test.go,agent/goals.go,agent/tools_insert.go,agent/worker.go,db/schema.sql,db/task_assets_context.go,db/task_scope.go,web/src/app/(main)/function/tasks/detail/_tabs/overview-tab.tsx,web/src/lib/types.ts
 cd8a830b53ca467439b7caf46d8ee1966ffa16dd	docs(coverage): say "declared domain or IP root" for auto-scope roots (F8)	dependency-review	agent/tools_insert.go,agent/worker.go,db/schema.sql,db/task_assets_context.go,db/task_scope.go
 88306a05679bb6b175b9512dcaa3c6cb3501422f	fix(tools): migrate the add_task_scope description on existing databases (F8)	defer-independent	server/orchestration.go,server/task_scope_description_test.go
-2c1a49058eb9517c94b199f3cd00ea16421db348	Merge pull request #196 from BaaRai/fix/auto-scope-hygiene	merge-or-metadata	
+2c1a49058eb9517c94b199f3cd00ea16421db348	Merge pull request #196 from BaaRai/fix/auto-scope-hygiene	merge-or-metadata	-
 6dbcd3355271002b7c1932283c68069a90401204	feat(ask_operator): tag requests that name hosts outside the goal (F12)	defer-independent	server/ask_operator.go,server/ask_operator_test.go,web/src/components/transcript.tsx
 a7e91c81e638c0226ce8f38961fc49b90705ad3e	fix(ask_operator): seed the goal targets with bare goal domains (F12)	defer-independent	server/ask_operator.go,server/ask_operator_test.go
 3528287d618d2cba579b88622e0b2b874e2f7d3c	enrich: route the HTTP probe through the pinned dialer (F13)	dependency-review	agent/tools.go,enrich/enrich.go,intercept/enrich_probe_test.go,intercept/export_test.go
-64dabdfbafbff68b3d2535973a154f66defefe62	Merge pull request #197 from BaaRai/feat/ask-operator-target-tag	merge-or-metadata	
-8a937ab306be3931d367a6300f3b0c53234b2058	Merge pull request #198 from BaaRai/fix/enrich-http-gate	merge-or-metadata	
+64dabdfbafbff68b3d2535973a154f66defefe62	Merge pull request #197 from BaaRai/feat/ask-operator-target-tag	merge-or-metadata	-
+8a937ab306be3931d367a6300f3b0c53234b2058	Merge pull request #198 from BaaRai/fix/enrich-http-gate	merge-or-metadata	-
 aefc8c68ecdf6dc380e8da8237560ead3b84776e	agent: typed parser for bbot JSONL output (F10b)	dependency-review	agent/bbot_ingest.go,agent/bbot_ingest_test.go
-840bc53023ca239c8735cc4e65230bc4a77d94b8	Merge pull request #199 from BaaRai/feat/bbot-typed-ingest	merge-or-metadata	
+840bc53023ca239c8735cc4e65230bc4a77d94b8	Merge pull request #199 from BaaRai/feat/bbot-typed-ingest	merge-or-metadata	-
 0f5d93fbeeac908d86954f9eb2bc9114d6a376b3	Add ingest_bbot tool (bbot JSONL, typed scope split)	dependency-review	agent/bbot_ingest_tool.go,agent/bbot_ingest_tool_pg_test.go,agent/bbot_ingest_tool_test.go,agent/tools_insert.go,intercept/target_extract.go
-f90589c03cdd880526ac78cb0522b09fef649e18	Merge pull request #200 from BaaRai/feat/ingest-bbot	merge-or-metadata	
+f90589c03cdd880526ac78cb0522b09fef649e18	Merge pull request #200 from BaaRai/feat/ingest-bbot	merge-or-metadata	-
 1e3c858b4e21a968b7bbb1f53902994e9ba98fba	release: build release body from CHANGELOG section	defer-independent	.github/workflows/ci.yml,.github/workflows/release.yml,scripts/extract-changelog-section.sh,scripts/test-extract-changelog-section.sh
 e59db801738f750be49d61281dd6a3abf8715fcf	Opt-in update banner, off by default	defer-independent	.env.example,README.md,docker-compose.yml,server/server.go,server/update_check.go,server/update_check_test.go,web/src/app/(main)/_components/main-content.tsx,web/src/lib/api.ts
-e5202b1c342bc612c314e1feb33546b0a5acac07	Merge pull request #201 from BaaRai/feat/release-body-from-changelog	merge-or-metadata	
-610991795787742a2962e0effb82c1b2491e71aa	Merge pull request #202 from BaaRai/feat/update-banner-opt-in	merge-or-metadata	
+e5202b1c342bc612c314e1feb33546b0a5acac07	Merge pull request #201 from BaaRai/feat/release-body-from-changelog	merge-or-metadata	-
+610991795787742a2962e0effb82c1b2491e71aa	Merge pull request #202 from BaaRai/feat/update-banner-opt-in	merge-or-metadata	-
 8c3bae41f64aa72d673285ea268bb938eb4fccd4	Untrusted boundary ON by default (opt-out via ARTEX_UNTRUSTED_BOUNDARY=0)	dependency-review	.env.example,README.md,agent/chat.go,agent/mainagent.go,agent/planner.go,agent/untrusted_boundary.go,agent/untrusted_boundary_test.go,agent/worker.go,docker-compose.yml
-34ece5937aaf0131803cf3a2455ea97a3c2e614f	Merge pull request #203 from BaaRai/feat/untrusted-boundary-default-on	merge-or-metadata	
+34ece5937aaf0131803cf3a2455ea97a3c2e614f	Merge pull request #203 from BaaRai/feat/untrusted-boundary-default-on	merge-or-metadata	-
 f3a20ef2c687c9e8e7b2a9f6b5658722b65ccb95	Tool RAG: lexical projection of the bound tool catalog (off by default)	dependency-review	agent/assembly.go,agent/planner.go,agent/toolrag.go,agent/toolrag_test.go,agent/worker.go
 e640c1b0fd192a219bd0f8db6b7258f6ac29e582	Tool RAG: pin the keep set (harness, Skill, deferred) in a test	dependency-review	agent/toolrag_test.go
-b789dd2eae771af8f92f3939702d383a1ab946c6	Merge pull request #204 from BaaRai/feat/tool-rag-lexical	merge-or-metadata	
+b789dd2eae771af8f92f3939702d383a1ab946c6	Merge pull request #204 from BaaRai/feat/tool-rag-lexical	merge-or-metadata	-
 0b59f4670b5c7e8836dadc91ad33df8e06f00575	Egress governor: noise profiles (off by default), per-host rate limit, dedupe and short cache	dependency-review	.env.example,README.md,agent/webfetch.go,docker-compose.yml,egress/egress.go,egress/egress_test.go,enrich/enrich.go,server/customtool.go
 3b5b2c3b8822141d8ce1145ea6083aaeaea5ce7f	WebFetch: coalesce only, never cache; pin the gate-off redirect test to the off profile	dependency-review	agent/webfetch.go,agent/webfetch_egress_test.go,agent/webfetch_redirect_test.go,egress/egress.go,egress/egress_test.go
 6a5adf73fec0e7c4d473225ea8b58a2ae22236b1	Docs: WebFetch results are coalesced, not cached	defer-independent	.env.example,README.md
 d116517c643567016997591a3e9142ac086ae909	Egress: return large unshared responses without an error, namespace the transport cache per client, pace WebFetch only	dependency-review	.env.example,README.md,agent/webfetch.go,egress/egress.go,egress/egress_test.go,enrich/enrich.go,server/customtool.go
-4f2c6ef789f192b4c75d5eca9ec1ce5cafb449cb	Merge pull request #205 from BaaRai/feat/egress-governor	merge-or-metadata	
+4f2c6ef789f192b4c75d5eca9ec1ce5cafb449cb	Merge pull request #205 from BaaRai/feat/egress-governor	merge-or-metadata	-
 16ddfc77794b722901bde9efa4374e593a679092	Hierarchical run budgets: min(child, parent) with forced wrap-up (off by default)	dependency-review	agent/budget.go,agent/budget_test.go,agent/planner.go,agent/worker.go,llmrec/llmrec.go,llmrec/llmrec_test.go,server/engine.go,server/engine_budget.go,server/engine_budget_test.go,server/engine_timeout.go,server/target_gate_scope_test.go
 4cde1a889fd81a83481cfb807171c1b40cb8cdec	Budgets: revive clears the settle state, document config, allow update_finding_report in wrap-up	dependency-review	.env.example,README.md,agent/budget.go,docker-compose.yml,llmrec/llmrec.go,server/engine_budget_test.go,server/engine_timeout.go,server/goals.go
 d234e341fcf50eed83255f277d3370d289912655	Budget docs: wrap-up is typical, not deterministic; [budget] logged per planner round only	defer-independent	.env.example,README.md
-afa6f4faab59f15ae58ee9a624008c72c73eef79	Merge pull request #206 from BaaRai/feat/hierarchical-budgets	merge-or-metadata	
+afa6f4faab59f15ae58ee9a624008c72c73eef79	Merge pull request #206 from BaaRai/feat/hierarchical-budgets	merge-or-metadata	-
 6f3a59e2057362cc1e614d4ce7e7bcdf10b009c1	Coverage ledger: record examined, ruled-out and untested risk classes	dependency-review	agent/budget.go,agent/coverage_ledger.go,agent/coverage_ledger_test.go,agent/planner.go,agent/tools.go,agent/tools_insert.go,agent/worker.go,db/coverage_ledger.go,db/coverage_ledger_test.go,db/schema.sql,db/task_scope.go,intercept/target_extract.go,report/report.go,report/report_test.go,server/engine_timeout.go,server/server.go,web/src/app/(main)/function/tasks/detail/_tabs/overview-tab.tsx,web/src/lib/api.ts
 101c92d516ac7c6cd64f52f7c95b751e4f7b3882	Coverage ledger: review fixes (one-line capped fields, framed gap lines, per-run end_reason)	dependency-review	agent/coverage_ledger.go,agent/coverage_ledger_test.go,agent/planner.go,db/coverage_ledger.go,db/coverage_ledger_test.go,db/schema.sql,db/tasks.go,report/report.go,report/report_test.go,server/engine.go,server/engine_timeout.go,server/manager.go,server/server.go,server/task_end_reason_test.go
-558b685886a9929cc308f50c25b671e4912d15ed	Merge pull request #207 from BaaRai/feat/coverage-ledger	merge-or-metadata	
+558b685886a9929cc308f50c25b671e4912d15ed	Merge pull request #207 from BaaRai/feat/coverage-ledger	merge-or-metadata	-
 9a927846ef587763d6e5f1c7c331d3e1a93e94aa	Intercept judge: closed-question mode, fail-closed to ask	dependency-review	agent/capture_approval_test.go,agent/review_context_test.go,db/intercept_detail.go,guard/judge_precedence_test.go,guard/target_gate_test.go,intercept/closed_judge.go,intercept/closed_judge_pg_test.go,intercept/closed_judge_test.go,intercept/intercept.go,intercept/prompt.go,intercept/review_context.go,intercept/trace.go,server/intercept.go,web/src/app/(main)/system/intercept/page.tsx,web/src/components/approval-records.tsx,web/src/lib/types.ts
 06808396cc68fd9caf0e02753b3d24b3df67aff6	Intercept judge: review fixes for the closed-question mode	dependency-review	intercept/closed_judge.go,intercept/closed_judge_test.go,intercept/intercept.go,server/intercept.go
-c5116f27adb1cad0ba810bb318cb8ca1b6f0108f	Merge pull request #208 from BaaRai/feat/closed-question-judge	merge-or-metadata	
+c5116f27adb1cad0ba810bb318cb8ca1b6f0108f	Merge pull request #208 from BaaRai/feat/closed-question-judge	merge-or-metadata	-
 2457a1f10367c76cefac5e7d5a9f511c31b33dc9	Intercept: argv prefix rules (match_type=argv)	dependency-review	README.md,db/intercept_argv_test.go,db/schema.sql,go.mod,go.sum,guard/argv_test.go,intercept/argv.go,intercept/argv_test.go,intercept/intercept.go,server/intercept.go,server/intercept_argv_test.go,web/src/app/(main)/system/intercept/page.tsx,web/src/lib/types.ts
-e2fd4908f79e333ef80bf45b4ca47bda7ce5c009	Merge pull request #210 from BaaRai/feat/argv-prefix-rules	merge-or-metadata	
+e2fd4908f79e333ef80bf45b4ca47bda7ce5c009	Merge pull request #210 from BaaRai/feat/argv-prefix-rules	merge-or-metadata	-
 62e65f1235ffb31e7d723570589db71f944dfd2d	Intercept: always allow a pending Bash prefix (argv allow rule, code-owned denylist)	dependency-review	intercept/alwaysallow_denylist.go,intercept/alwaysallow_denylist_test.go,intercept/intercept.go,server/intercept.go,server/intercept_always_allow_pg_test.go,server/intercept_argv_test.go,server/server.go,web/src/components/approval-records.tsx,web/src/lib/api.ts,web/src/lib/types.ts
-0edf3f0fa75fa1eb87cae00a24c63dafb91b9dfc	Merge pull request #211 from BaaRai/feat/always-allow-argv	merge-or-metadata	
+0edf3f0fa75fa1eb87cae00a24c63dafb91b9dfc	Merge pull request #211 from BaaRai/feat/always-allow-argv	merge-or-metadata	-
 4595274fd6645d23b7cfe7dade9d8c41ac40099c	Agent: low-and-slow scanner guidance under a noise profile (off by default)	dependency-review	README.md,agent/chat.go,agent/mainagent.go,agent/noise_profile.go,agent/noise_profile_test.go,agent/planner.go,agent/worker.go
 0116786f0258180af54a0f2a48166b7993990e12	Fix review: dalfox --rate-limit/--workers, drop passive subfinder -t	dependency-review	README.md,agent/noise_profile.go,agent/noise_profile_test.go
-6620b5e1969995de74c529f0a9b0444ef2cd1d8c	Merge pull request #212 from BaaRai/feat/noise-prompt	merge-or-metadata	
+6620b5e1969995de74c529f0a9b0444ef2cd1d8c	Merge pull request #212 from BaaRai/feat/noise-prompt	merge-or-metadata	-
 07cc87c1a3f62d9236488c46ae358e25ecffc140	Encrypt stored secrets at rest in PostgreSQL	dependency-review	.env.example,.gitignore,README.md,cmd/artex/main.go,config/config.go,db/config.go,db/notification.go,db/notification_delivery.go,db/schema.sql,db/secrets.go,db/secrets_test.go,db/task_credentials.go,db/testmain_test.go,docker-compose.yml,server/env_scrub.go,server/env_scrub_test.go,server/manager.go,server/secrets_api_test.go,server/server_mgmt.go,server/task_credentials.go,server/task_credentials_test.go,server/testmain_test.go
 4f785a8b4f09d83912a71d7fea70112790735e8f	Guard masked MCP env against a destination change	defer-independent	server/secrets_api_test.go,server/server_mgmt.go,web/src/app/(main)/function/tasks/detail/_tabs/credentials-tab.tsx
-adf4b6d911f3b75fd2ccc9a91cdced3ee5e974fc	Merge pull request #213 from BaaRai/feat/secrets-at-rest	merge-or-metadata	
+adf4b6d911f3b75fd2ccc9a91cdced3ee5e974fc	Merge pull request #213 from BaaRai/feat/secrets-at-rest	merge-or-metadata	-
 374c985d063fbb6179405ab9d9a562a11ab546dd	agent: add ingest_scan_output for nmap XML files	dependency-review	agent/scan_ingest.go,agent/scan_ingest_test.go,agent/scan_ingest_tool.go,agent/scan_ingest_tool_pg_test.go,agent/tools_insert.go,intercept/target_extract.go
-a9b57d06272ce5bbf888b4f382cf7c486a992a5f	Merge pull request #214 from BaaRai/feat/scan-ingest-core	merge-or-metadata	
+a9b57d06272ce5bbf888b4f382cf7c486a992a5f	Merge pull request #214 from BaaRai/feat/scan-ingest-core	merge-or-metadata	-
 07fe075c12c2f326306d046b6ed7f7ea83e68311	agent: ingest nuclei, httpx and ffuf output in ingest_scan_output	dependency-review	agent/bbot_ingest_tool.go,agent/scan_ingest.go,agent/scan_ingest_test.go,agent/scan_ingest_tool.go,agent/scan_ingest_tool_pg_test.go
-37e5b69877638ca1c52f09f9ffe481741482203d	Merge pull request #215 from BaaRai/feat/scan-ingest-jsonl	merge-or-metadata	
+37e5b69877638ca1c52f09f9ffe481741482203d	Merge pull request #215 from BaaRai/feat/scan-ingest-jsonl	merge-or-metadata	-
 dc169b074f017baa2c215a2761a14658379f920d	secrets: encrypt search keys, proxies and the LLM profile proxy at rest	dependency-review	README.md,db/config.go,db/secrets.go,db/secrets_test.go,db/settings.go,server/dto.go,server/secrets_api_test.go,server/server.go,server/server_mgmt.go
-5aab3d3df898e22f6d438a8837745ffeb34ad698	Merge pull request #216 from BaaRai/feat/secrets-phase2	merge-or-metadata	
+5aab3d3df898e22f6d438a8837745ffeb34ad698	Merge pull request #216 from BaaRai/feat/secrets-phase2	merge-or-metadata	-
 68976a7680aed26ef83ee4192d356ffb55d2434f	secrets: encrypt the exec spec of custom tools at rest	dependency-review	README.md,db/secrets.go,db/tools.go,db/tools_secrets_test.go,server/customtool.go,server/platform_tools.go,server/server_mgmt.go,server/tools_secrets_api_test.go,web/src/app/(main)/system/tools/page.tsx,web/src/lib/api.ts
 7899662aee9da72b697ba598cd73da9193627493	secrets: keep a masked tool secret only for its saved destination	defer-independent	server/customtool.go,server/platform_tools.go,server/tools_secrets_api_test.go
-b74ff21e11538cd712ccd736260244bf9a258618	Merge pull request #217 from BaaRai/feat/secrets-phase3-tools-exec	merge-or-metadata	
+b74ff21e11538cd712ccd736260244bf9a258618	Merge pull request #217 from BaaRai/feat/secrets-phase3-tools-exec	merge-or-metadata	-
 fcee6af45ebdd8398f491e04b101b12629f25c47	secrets: encrypt the evidence snapshot heads at rest	dependency-review	db/evidence_secrets_test.go,db/finding_traffic.go,db/finding_traffic_archive.go,db/secrets.go,evidence/testmain_test.go,server/finding_traffic_test.go
-5122baa77fcbf66d2956dcd10dee54f94018256a	Merge pull request #218 from BaaRai/feat/secrets-phase3b-evidence	merge-or-metadata	
+5122baa77fcbf66d2956dcd10dee54f94018256a	Merge pull request #218 from BaaRai/feat/secrets-phase3b-evidence	merge-or-metadata	-
 abb6cb177d5287f7b682bd4140a20ed0c36a37f1	release: add build provenance attestation, CycloneDX SBOM and a dry-run trigger	defer-independent	.github/workflows/release.yml,README.md
-4e126a85246a0fdae6d6f4d3ab1288ff5e92fd33	Merge pull request #219 from BaaRai/feat/release-provenance	merge-or-metadata	
+4e126a85246a0fdae6d6f4d3ab1288ff5e92fd33	Merge pull request #219 from BaaRai/feat/release-provenance	merge-or-metadata	-
 01a9dae49e4457ab99323c766b6a83dc94e46057	test(db): make profile and company-scope tests repeatable on one database	dependency-review	db/company_scope_test.go,db/config_test.go,db/llmretry_test.go
-edc2f4da6da07d55669c5805bed9d6e3f922900e	Merge pull request #220 from BaaRai/fix/db-test-isolation	merge-or-metadata	
+edc2f4da6da07d55669c5805bed9d6e3f922900e	Merge pull request #220 from BaaRai/fix/db-test-isolation	merge-or-metadata	-
 53fc8478da454bce592e06436ad3aab932861684	test(db): close the pool after the row cleanups, report cleanup errors	dependency-review	db/assets_test.go,db/cleanup_helpers_test.go,db/company_scope_consistency_test.go,db/conversation_pin_test.go,db/coverage_ledger_test.go,db/customtool_test.go,db/exploration_sources_test.go,db/task_assets_test.go,db/task_categories_test.go,db/task_context_lock_test.go,db/task_list_performance_test.go,db/task_templates_test.go,db/tasks_test.go
-fe9814c5f6377a202209a7bc494c84386d6ff1e4	Merge pull request #221 from BaaRai/chore/db-test-cleanup-order	merge-or-metadata	
+fe9814c5f6377a202209a7bc494c84386d6ff1e4	Merge pull request #221 from BaaRai/chore/db-test-cleanup-order	merge-or-metadata	-
 9d75df335ff215f8b9c4bde049d3290ef9dd9d83	fix(agent): strip URL userinfo in scan and bbot ingestion	dependency-review	agent/bbot_ingest.go,agent/bbot_ingest_test.go,agent/scan_ingest.go,agent/scan_ingest_test.go,agent/scan_ingest_tool_pg_test.go
-b5c0bb9f330b6b42e01a03bddb5480762187a1b3	Merge pull request #222 from BaaRai/fix/scan-ingest-strip-userinfo	merge-or-metadata	
+b5c0bb9f330b6b42e01a03bddb5480762187a1b3	Merge pull request #222 from BaaRai/fix/scan-ingest-strip-userinfo	merge-or-metadata	-
 939f8d4976daa5efec00aaef1fb39aa9b771a771	db: drop URL userinfo in normalizeURL before storing assets.url	dependency-review	db/assets.go,db/assets_test.go
-8bb4ca0745b11f0477c888c99417639aaba58295	Merge pull request #223 from BaaRai/fix/store-normalize-userinfo	merge-or-metadata	
+8bb4ca0745b11f0477c888c99417639aaba58295	Merge pull request #223 from BaaRai/fix/store-normalize-userinfo	merge-or-metadata	-
 2e43b423eebc9c9aecc82b8073717189728aa6e3	db: normalise archived asset URLs on restore	dependency-review	db/task_archives_restore.go,db/task_archives_restore_url_test.go
 b6e863c746085a105200342d0aa4ebed513d209e	docs: correct stale database and boundary references	dependency-review	CHANGELOG.md,README.md,agent/provider.go,build.sh,cmd/artex/main.go
-8f3f0c54f81d1cbe63d619bc01273bd5c800b215	Merge pull request #224 from BaaRai/fix/archive-restore-normalize-url	merge-or-metadata	
+8f3f0c54f81d1cbe63d619bc01273bd5c800b215	Merge pull request #224 from BaaRai/fix/archive-restore-normalize-url	merge-or-metadata	-
 622b7490e03519f69b0fce4004163caca73eb3bc	docs: finish the post-SQLite data-directory wording	defer-independent	Dockerfile,README.md,docker-compose.yml
 1da0d072222e61f0eb44155d7c33eec53bf21760	db: versioned migrations runner with schema_migrations	dependency-review	db/commands.go,db/db.go,db/llm_records_migrate_test.go,db/llm_usage.go,db/migrate.go,db/migrate_test.go,db/migrations/0001_llm_records.sql,db/migrations/0002_llm_usage.sql
 f3b9f6f688e1aebf3999f622facb8b484f486c3a	db: refuse a pending migration older than the newest applied one	dependency-review	db/migrate.go,db/migrate_test.go
-5cb44fb96965f9604a9a2c282cc713fdedf3c6dd	Merge pull request #226 from BaaRai/feat/versioned-migrations	merge-or-metadata	
+5cb44fb96965f9604a9a2c282cc713fdedf3c6dd	Merge pull request #226 from BaaRai/feat/versioned-migrations	merge-or-metadata	-
 37f2573a535b066f7dd4605d0d59d0c77d3f385a	agent: guard ToolAugment/ToolResolve hooks against concurrent access	dependency-review	agent/assembly.go,agent/assembly_test.go,agent/finding_recorder_test.go,agent/finding_workflow.go,agent/finding_workflow_test.go,agent/toolcatalog.go,agent/toolrag_test.go,server/assembly.go,server/assembly_test.go,server/fact_source_schema_test.go,server/finding_retests_test.go,server/task_scope_description_test.go,server/tools_wire_test.go
 54ff51177d96bfc15809fea12be33d939d204a0e	agent: guard prompt and wrap-up override hooks against concurrent access	dependency-review	agent/assembly_test.go,agent/prompt.go,agent/prompt_injection_seed_test.go,agent/prompt_now_test.go,agent/prompt_test.go,agent/wrapup.go,server/finding_retests_test.go,server/server.go
-ae792126dcfbf7292899bea2bd6fcdc32f7083da	Merge pull request #227 from BaaRai/fix/agent-hook-race	merge-or-metadata	
+ae792126dcfbf7292899bea2bd6fcdc32f7083da	Merge pull request #227 from BaaRai/fix/agent-hook-race	merge-or-metadata	-
 5cdb720122a2122adee02121d3ad700cacb0a58d	test(server): stop leaked fixtures from polluting later tests	defer-independent	server/mgmt_test.go,server/task_outcome_test.go
 149151919f1848d4aa0901c6032c9c6a6f251db8	test(server): join restored task loops before TestTaskDetailReturnsListMetrics cleanup	defer-independent	server/task_detail_metrics_test.go
 8c8ae974004e8d318e5dec1dc36e9eafc172f96d	test(server): join every live test server before its TempDir cleanup	defer-independent	server/chat_llm_resolve_test.go,server/core_test.go,server/inheritance_api_test.go,server/lessons_test.go,server/mgmt_test.go,server/skill_gaps_test.go,server/task_categories_test.go,server/task_control_routes_test.go,server/task_detail_metrics_test.go,server/task_metadata_test.go,server/task_outcome_test.go,server/task_templates_test.go,server/testserver_test.go
-9b20a46eba9f5a0467eb8f1b1a8863689c565976	Merge pull request #228 from BaaRai/fix/flaky-server-tests	merge-or-metadata	
+9b20a46eba9f5a0467eb8f1b1a8863689c565976	Merge pull request #228 from BaaRai/fix/flaky-server-tests	merge-or-metadata	-
 dfa0e8a56665973668fd7830478bbd02d6595ea0	ci: run ./server under the race detector	defer-independent	.github/workflows/ci.yml
-e300f85987a00da01760b526ea70ecdf75a62413	Merge pull request #229 from BaaRai/ci/race-server	merge-or-metadata	
+e300f85987a00da01760b526ea70ecdf75a62413	Merge pull request #229 from BaaRai/ci/race-server	merge-or-metadata	-
 f3a8e82d29678704a0303160e4a90e94eb6a7b36	docs(security): point reports to the BaaRai repository and drop placeholders	defer-independent	SECURITY.md
-f8bc14987264e9c87390ec5ea19e379067e3d45f	Merge pull request #225 from err0rgod/docs/fix-stale-postgres-docs	merge-or-metadata	
-430950570cb71c6c3fde5be97632d4f1155ba61e	Merge pull request #152 from xulytiengviet/patch-1	merge-or-metadata	
+f8bc14987264e9c87390ec5ea19e379067e3d45f	Merge pull request #225 from err0rgod/docs/fix-stale-postgres-docs	merge-or-metadata	-
+430950570cb71c6c3fde5be97632d4f1155ba61e	Merge pull request #152 from xulytiengviet/patch-1	merge-or-metadata	-
 30c787d6905785de51ef086c3a6e653ee5ec3f81	perf(db): batch coverage-graph lookups and index icp scope probes	dependency-review	db/coverage_graph_large_test.go,db/migrate_test.go,db/migrations/0003_task_scope_icp_index.sql,db/task_scope.go
-481dd1c3f299c73eea2f33ed1ab186482effad2f	Merge pull request #230 from BaaRai/perf/coverage-graph	merge-or-metadata	
+481dd1c3f299c73eea2f33ed1ab186482effad2f	Merge pull request #230 from BaaRai/perf/coverage-graph	merge-or-metadata	-
 a866f3752f6e9e714fb297b4fa0e2799a2c62d3d	docs: rewrite README and refresh screenshots	defer-independent	README.md,screenshots/agents.png,screenshots/assets.png,screenshots/assets_test.png,screenshots/chat.png,screenshots/dashboard.png,screenshots/findings.png,screenshots/graph.png,screenshots/intercept.png,screenshots/llm.png,screenshots/logs.png,screenshots/sessions.png,screenshots/tasks.png,screenshots/traffic.png,web/src/app/(main)/system/logs/page.tsx,web/src/lib/mock/data.ts
-c43c69bdd008295173ebf32687c550b9a409b90b	Merge pull request #231 from BaaRai/docs/readme-refresh	merge-or-metadata	
+c43c69bdd008295173ebf32687c550b9a409b90b	Merge pull request #231 from BaaRai/docs/readme-refresh	merge-or-metadata	-
 d8f3c7aec2707c02872376b2a5cd57951e80e31e	feat(intercept): deterministic risk score and batch approval	dependency-review	intercept/risk.go,intercept/risk_test.go,server/intercept.go,server/intercept_batch_decide_test.go,server/server.go,web/src/components/approval-records.tsx,web/src/lib/api.ts,web/src/lib/types.ts
 8f5a67d10c363e5b593633b6dfa7894ff3357de8	fix(intercept): destructive commands score high; chunk batch decisions to the server limit	dependency-review	intercept/risk.go,intercept/risk_test.go,server/intercept_batch_decide_test.go,web/src/components/approval-records.tsx
-97b0fdced66445ffe1dcd6daadc022177ea19cdb	Merge pull request #232 from BaaRai/feat/intercept-risk-batch	merge-or-metadata	
+97b0fdced66445ffe1dcd6daadc022177ea19cdb	Merge pull request #232 from BaaRai/feat/intercept-risk-batch	merge-or-metadata	-
 ac6e2b3c44a1ee9a747af9a3b2298af4adeb1991	feat(egress): change the noise profile at runtime	dependency-review	CHANGELOG.md,README.md,agent/noise_profile.go,agent/noise_profile_test.go,agent/webfetch.go,agent/webfetch_egress_test.go,egress/current_test.go,egress/egress.go,enrich/enrich.go,server/customtool.go,server/manager.go,server/noise.go,server/noise_settings_test.go,server/server.go,web/src/app/(main)/system/settings/noise-profile-card.tsx,web/src/app/(main)/system/settings/page.tsx,web/src/lib/api.ts,web/src/lib/types.ts
-251ab680cce3bf84e0f98c1bbb2b63332a82d59a	Merge pull request #233 from BaaRai/feat/noise-profile-runtime	merge-or-metadata	
+251ab680cce3bf84e0f98c1bbb2b63332a82d59a	Merge pull request #233 from BaaRai/feat/noise-profile-runtime	merge-or-metadata	-
 2e55615713d6401213e6e0cdacfae4fa490d015d	feat(traffic): pace Bash requests at the capture proxy	dependency-review	CHANGELOG.md,README.md,agent/proxyenv_test.go,agent/worker.go,egress/pace.go,egress/pace_test.go,traffic/pace.go,traffic/pace_test.go,traffic/traffic.go,web/src/app/(main)/system/settings/noise-profile-card.tsx
 7f3edf9bfe88d7b91689163eb17dbd4fccd8acbf	fix(agent): noise prompt states what the capture proxy paces	dependency-review	agent/noise_profile.go,agent/noise_profile_test.go
-59f768f1ef98edaf31be3a92ad57be59484a7003	Merge pull request #234 from BaaRai/feat/proxy-pace-bash	merge-or-metadata	
+59f768f1ef98edaf31be3a92ad57be59484a7003	Merge pull request #234 from BaaRai/feat/proxy-pace-bash	merge-or-metadata	-
 fcbd87445e8e03c6a6164622ae5c7bec1b33744c	docs: credit the upstream and complete the unreleased changelog	defer-independent	CHANGELOG.md,README.md
-e636408f6678877d810b333d510b1ffca9eabe19	Merge pull request #235 from BaaRai/docs/upstream-changelog	merge-or-metadata	
+e636408f6678877d810b333d510b1ffca9eabe19	Merge pull request #235 from BaaRai/docs/upstream-changelog	merge-or-metadata	-
 c2d1f557c3cb96979fcf184ec40995fb6e21a933	perf(db): per-task metrics for the task detail and an index-served latest activity	dependency-review	db/exploration.go,db/task_list_performance_test.go,server/server.go,server/task_detail_metrics_test.go
-a59d4301753188af8aa327fed3948b3b9d6e0f20	Merge pull request #236 from BaaRai/perf/task-metrics	merge-or-metadata	
+a59d4301753188af8aa327fed3948b3b9d6e0f20	Merge pull request #236 from BaaRai/perf/task-metrics	merge-or-metadata	-
 fdba29f1a9b2d9741129ff111929485663cebe3a	ci: run gofmt in the go job, and format the 11 files it flags	dependency-review	.github/workflows/ci.yml,agent/tools.go,db/asset_intercept.go,db/assets_test.go,db/task_scope_test.go,db/tasks.go,server/assembly_test.go,server/goal_gate_test.go,server/manager.go,server/server.go,server/task_llm_escalation_test.go,server/tools_wire_test.go
-3975e58ce0094d1229b8d376a5e0bd4d66505149	Merge pull request #237 from BaaRai/ci/gofmt	merge-or-metadata	
+3975e58ce0094d1229b8d376a5e0bd4d66505149	Merge pull request #237 from BaaRai/ci/gofmt	merge-or-metadata	-
 d42988b6a8de5fda4effd5bef7792e768903c138	chore(web): move the shadcn CLI to devDependencies and drop @antv/graphin	defer-independent	web/package-lock.json,web/package.json
-cddcd98f3b5778b90dc74f2f7061048f528433b8	Merge pull request #238 from BaaRai/chore/npm-prod-deps	merge-or-metadata	
+cddcd98f3b5778b90dc74f2f7061048f528433b8	Merge pull request #238 from BaaRai/chore/npm-prod-deps	merge-or-metadata	-
 bc75b5dc43aa85aad65e91e249c50fc1689ca691	chore(web): upgrade next to 16.4.6	defer-independent	web/package-lock.json,web/package.json
-1cbab7cc3963e9f94a4f5498bff1103913f4a386	Merge pull request #239 from BaaRai/chore/next-16-4-6	merge-or-metadata	
+1cbab7cc3963e9f94a4f5498bff1103913f4a386	Merge pull request #239 from BaaRai/chore/next-16-4-6	merge-or-metadata	-
 773fa9183ad455f2f292fe19a8dec600c12c5829	fix(agent): stop on transcript restore failures and keep session identity without persistence	dependency-review	agent/chat.go,agent/mainagent.go,agent/planner.go,agent/session.go,agent/session_test.go,agent/worker.go
-5ed28cde9f350e9e86bf324f768e4684a04396fd	Merge pull request #240 from BaaRai/fix/session-resume	merge-or-metadata	
+5ed28cde9f350e9e86bf324f768e4684a04396fd	Merge pull request #240 from BaaRai/fix/session-resume	merge-or-metadata	-
 e6ab0f34a7bdc2db20e8fa0017e0a645719d9807	fix(server): sum task LLM usage across retries and failover	dependency-review	server/task_llm.go,server/task_llm_usage_test.go
-50f6d07640af85c2caa19ce63ccf239267e9b079	Merge pull request #241 from BaaRai/fix/task-llm-usage	merge-or-metadata	
+50f6d07640af85c2caa19ce63ccf239267e9b079	Merge pull request #241 from BaaRai/fix/task-llm-usage	merge-or-metadata	-
 ce096cdba18acca0316871ff5e64ebc2605120c6	fix(llmrec,sidequestion): fold echoed stream usage with MergeEcho	dependency-review	llmrec/llmrec.go,llmrec/usage_echo_test.go,sidequestion/service.go,sidequestion/usage_echo_test.go
-ff599c65d3eb964c0454787a0cc94d4cd30b66be	Merge pull request #243 from BaaRai/fix/stream-usage-echo	merge-or-metadata	
+ff599c65d3eb964c0454787a0cc94d4cd30b66be	Merge pull request #243 from BaaRai/fix/stream-usage-echo	merge-or-metadata	-
 60728092e1cb5a1ba466ec7de057bb9a6a9e0aaf	fix(db): stop billing cache writes twice in profile cost	dependency-review	db/llm_usage.go,db/llm_usage_cost_test.go
-d147dce3442531d44eaf06774441dbf47edc024a	Merge pull request #244 from BaaRai/fix/cache-write-cost	merge-or-metadata	
+d147dce3442531d44eaf06774441dbf47edc024a	Merge pull request #244 from BaaRai/fix/cache-write-cost	merge-or-metadata	-

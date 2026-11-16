@@ -107,6 +107,8 @@ func newSearchProvider(cfg WebSearchConfig) (searchProvider, error) {
 		backend = "ddgs"
 	}
 	client := newFetchClient(WebFetchConfig{Proxy: cfg.Proxy, CACert: cfg.CACert, InsecureTLS: cfg.InsecureTLS})
+	// Search credentials and POST bodies must never cross a redirect boundary.
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	switch backend {
 	case "ddgs":
 		return &ddgsProvider{client: client, endpoint: ddgsEndpoint}, nil

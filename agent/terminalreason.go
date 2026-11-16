@@ -31,6 +31,7 @@ func (t *runTrace) done(id string) {
 }
 
 var reasonHint = map[harness.TerminalReason]string{
+	ReasonSessionRestore:            "saved session history could not be restored; no model request was sent. An operator must repair or restore the transcript before retrying",
 	harness.ReasonCompleted:         "the model ended this turn normally but left no text summary; facts and assets are as recorded by this turn's tool calls",
 	harness.ReasonMaxTurns:          "reached the turn cap (MaxTurns): the SDK ran the wrap-up and wrote back facts and assets; the intent is marked exhausted so the planner can continue in a different direction, rather than being treated as failed",
 	harness.ReasonTimeout:           "reached this run's wall-clock budget (MaxDuration): at the deadline the in-flight tool is interrupted and the run settles in place, writing back the identified facts and assets; the intent is marked exhausted",

@@ -212,11 +212,22 @@ func (s *Session) View(msgs []llm.Message) []llm.Message {
 		})
 		s.nudgedLastTurn = true
 	}
+	// Projection estimates omit reassembly tags and the nudge. Recheck the
+	// actual outgoing view, and trim tool-result copies even when the model
+	// ignores Compress. Originals and tool-call pairing remain untouched.
+	out := Reassemble(view, msgs, sc, ReassembleOptions{State: &s.state, Tag: true})
+	if cfg.ModelContextLimit > 0 && estimateMessages(out) > cfg.ModelContextLimit*7/10 {
+		var trimmed int
+		view, trimmed = boundToolCopies(view, cfg.ModelContextLimit*7/10, func(v []noa.CoreMessage) int {
+			return estimateMessages(Reassemble(v, msgs, sc, ReassembleOptions{State: &s.state, Tag: true}))
+		})
+		s.lastTruncatedCount += trimmed
+		out = Reassemble(view, msgs, sc, ReassembleOptions{State: &s.state, Tag: true})
+	}
 	// lastView is what the model's refs will be resolved against, so it must be
 	// the array the model actually sees — nudge included.
 	s.lastView = view
 
-	out := Reassemble(view, msgs, sc, ReassembleOptions{State: &s.state, Tag: true})
 	s.lastSentTokens = estimateMessages(out)
 	return out
 }

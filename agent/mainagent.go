@@ -166,14 +166,12 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 		NonStreaming: m.nonStreaming(), // when this profile selects non-streaming, use Provider.Complete
 		MaxTokens:    m.maxTokens(),    // 0 = send no cap, the server's default decides
 	}
-	if m.tx != nil { // persist raw human↔AI conversation; one accumulating file per segment
+	opts.SessionID = fmt.Sprintf("exp%d-main", ts.ID())
+	if mainSeg > 0 {
+		opts.SessionID = fmt.Sprintf("exp%d-main-s%d", ts.ID(), mainSeg)
+	}
+	if m.tx != nil {
 		opts.Transcript = m.tx
-		// Segment 0 keeps the legacy "exp%d-main" name so existing transcripts still
-		// load; each new session (seg>=1) gets its own file for a clean context.
-		opts.SessionID = fmt.Sprintf("exp%d-main", ts.ID())
-		if mainSeg > 0 {
-			opts.SessionID = fmt.Sprintf("exp%d-main-s%d", ts.ID(), mainSeg)
-		}
 	}
 	// experimental feature: when enabled, noa takes over context compression (archive centralized under <workDir>/noa/<SessionID>, persistent).
 	// the session id follows the same rule as the transcript (segment-aware), keeping archive and resume aligned.
@@ -189,7 +187,9 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 	// across turns (each Chat is a fresh session; without this it can't see earlier
 	// messages). First turn: no file yet → Resume loads nothing and proceeds.
 	if m.tx != nil {
-		_ = s.Resume(opts.SessionID)
+		if err := resumeSession(s, opts.SessionID, opts.Transcript); err != nil {
+			return "", err
+		}
 	}
 	// C2: this session is fresh each turn; re-unlock skill-gated MCPs from prior
 	// Skill() calls in the reloaded history so revealed tools stay callable.

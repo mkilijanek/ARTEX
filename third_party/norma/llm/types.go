@@ -25,6 +25,9 @@ const (
 	BlockThinking   BlockType = "thinking"
 	BlockToolUse    BlockType = "tool_use"
 	BlockToolResult BlockType = "tool_result"
+	// BlockRedactedThinking is Anthropic's encrypted thinking block. Its opaque
+	// Data must be replayed verbatim, like a thinking block's signature.
+	BlockRedactedThinking BlockType = "redacted_thinking"
 )
 
 // ContentBlock is one piece of message content. Which fields are populated
@@ -37,9 +40,13 @@ type ContentBlock struct {
 
 	// Thinking block (extended thinking). Anthropic requires the field to be
 	// named "thinking" (not "text") and requires "signature" when replaying
-	// the block in multi-turn history.
+	// the block in multi-turn history. The field is required even when empty
+	// (display-omitted thinking), so MarshalJSON always emits it for this type.
 	Thinking  string `json:"thinking,omitempty"`
 	Signature string `json:"signature,omitempty"`
+
+	// RedactedThinking block: the encrypted payload, replayed unchanged.
+	Data string `json:"data,omitempty"`
 
 	// ToolUse: a model request to invoke a tool.
 	ID    string          `json:"id,omitempty"`
@@ -78,6 +85,23 @@ type ContentBlock struct {
 	ToolUseID string         `json:"tool_use_id,omitempty"`
 	Content   []ContentBlock `json:"content,omitempty"`
 	IsError   bool           `json:"is_error,omitempty"`
+}
+
+// MarshalJSON keeps the "thinking" key on thinking blocks even when it is
+// empty: Anthropic returns {"thinking":"","signature":...} when thinking
+// display is omitted, and replaying it without the key is rejected with
+// "missing field thinking". A thinking block is written in exactly the shape
+// Anthropic sends it; every other block marshals as before.
+func (b ContentBlock) MarshalJSON() ([]byte, error) {
+	if b.Type == BlockThinking {
+		return json.Marshal(struct {
+			Type      BlockType `json:"type"`
+			Thinking  string    `json:"thinking"`
+			Signature string    `json:"signature,omitempty"`
+		}{b.Type, b.Thinking, b.Signature})
+	}
+	type plain ContentBlock
+	return json.Marshal(plain(b))
 }
 
 // TextBlock builds a text content block.
@@ -132,10 +156,17 @@ type Usage struct {
 	OutputTokens     int `json:"output_tokens"`
 	CacheReadTokens  int `json:"cache_read_tokens"`
 	CacheWriteTokens int `json:"cache_write_tokens"`
+	// ContextTokens is the latest physical response's input+output footprint.
+	// It is metadata, never an additive billing bucket. Retry adapters set it
+	// when the four billing counters include more than one physical attempt.
+	ContextTokens int `json:"context_tokens,omitempty"`
 }
 
 // Add accumulates token counts from another Usage.
 func (u *Usage) Add(o Usage) {
+	if o.ContextTokens > 0 {
+		u.ContextTokens = o.ContextTokens
+	}
 	u.InputTokens += o.InputTokens
 	u.OutputTokens += o.OutputTokens
 	u.CacheReadTokens += o.CacheReadTokens
@@ -149,6 +180,9 @@ func (u *Usage) Add(o Usage) {
 // message_start and real counts only in message_delta are thereby recovered
 // instead of lost.
 func (u *Usage) MergeEcho(o Usage) {
+	if o.ContextTokens > 0 {
+		u.ContextTokens = o.ContextTokens
+	}
 	u.OutputTokens += o.OutputTokens
 	if o.InputTokens > u.InputTokens {
 		u.InputTokens = o.InputTokens

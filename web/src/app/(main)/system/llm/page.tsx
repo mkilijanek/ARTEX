@@ -335,6 +335,8 @@ function ProfileSheet({
   const [maxTokens, setMaxTokens] = React.useState("0"); // per-reply output cap; 0 = not sent
   const [maxTokensField, setMaxTokensField] = React.useState(NONE); // which field name carries the cap; NONE = max_tokens
   const [sessionHeaderKey, setSessionHeaderKey] = React.useState(""); // custom session header name; empty = not sent
+  const [endpointMode, setEndpointMode] = React.useState<"base" | "fixed">("base");
+  const [userAgent, setUserAgent] = React.useState(""); // custom User-Agent; empty = keep the default UA
   const [retry, setRetry] = React.useState<LLMRetryOverride>(ZERO_OVERRIDE); // retry override for this profile; all 0 = follow the global
   const [testing, setTesting] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
@@ -366,6 +368,8 @@ function ProfileSheet({
     setMaxTokens(String(profile?.max_tokens ?? 0));
     setMaxTokensField(fromStore(profile?.max_tokens_field));
     setSessionHeaderKey(profile?.session_header_key ?? "");
+    setUserAgent(profile?.user_agent ?? "");
+    setEndpointMode(profile?.endpoint_mode === "fixed" ? "fixed" : "base");
     setRetry(profile?.retry ?? ZERO_OVERRIDE);
     setApiKey("");
     setKeyHint(profile?.api_key_hint ?? "");
@@ -376,7 +380,7 @@ function ProfileSheet({
   const profileId = profile ? Number(profile.id) : undefined;
 
   async function loadModels() {
-    if (loadingModels) return;
+    if (loadingModels || endpointMode === "fixed") return;
     setLoadingModels(true);
     setModels([]);
     try {
@@ -412,6 +416,8 @@ function ProfileSheet({
         profileId,
         streaming,
         sessionHeaderKey.trim(),
+        userAgent.trim(),
+        endpointMode,
       );
       // Show the reply too: only when the model demonstrably spoke is this the same as working inside a session.
       if (r.ok)
@@ -455,6 +461,8 @@ function ProfileSheet({
         // and the backend re-applies the same normalization; this just keeps the UI from sending contradictory values.
         max_tokens_field: format === "openai" ? toStore(maxTokensField) : "",
         session_header_key: sessionHeaderKey.trim(),
+        user_agent: userAgent.trim(),
+        endpoint_mode: endpointMode,
         retry,
       });
       if (isNew) toast.success(`Created: ${name.trim()} (use "Set as active" on its card to enable it)`);
@@ -543,7 +551,7 @@ function ProfileSheet({
                     variant="outline"
                     size="icon"
                     className="shrink-0"
-                    disabled={loadingModels}
+                    disabled={loadingModels || endpointMode === "fixed"}
                     onClick={loadModels}
                     title="Load available models from the API"
                   >
@@ -572,7 +580,15 @@ function ProfileSheet({
           </div>
 
           <div className="grid gap-2">
-            <Label htmlFor="p-base-url">Base URL (optional)</Label>
+            <Label htmlFor="p-endpoint-mode">Endpoint mode</Label>
+            <Select value={endpointMode} onValueChange={(v) => setEndpointMode(v as "base" | "fixed")}>
+              <SelectTrigger id="p-endpoint-mode"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="base">Base URL + provider path</SelectItem>
+                <SelectItem value="fixed">Fixed full endpoint URL</SelectItem>
+              </SelectContent>
+            </Select>
+            <Label htmlFor="p-base-url">{endpointMode === "fixed" ? "Full endpoint URL (required)" : "Base URL (optional)"}</Label>
             <Input
               id="p-base-url"
               className="font-mono"
@@ -580,6 +596,7 @@ function ProfileSheet({
               value={baseUrl}
               onChange={(e) => setBaseUrl(e.target.value)}
             />
+            {endpointMode === "fixed" && <p className="text-muted-foreground text-xs">Requests use this exact URL without appending a path. Enter the model name manually; model listing is unavailable in this mode.</p>}
           </div>
 
           <div className="grid gap-2">
@@ -610,6 +627,21 @@ function ProfileSheet({
               Once a header name is set, every request carries this HTTP header, with the value filled in automatically as the <b>current session's session id</b> (chat sessions like
               conv-12, workers like exp3-worker-i87). Meant for gateways that do prompt caching /
               sticky routing on a session-id header; stable across turns of one session, distinct across sessions. Leave empty to not send it.
+            </p>
+          </div>
+
+          <div className="grid gap-2">
+            <Label htmlFor="p-user-agent">Custom User-Agent (optional)</Label>
+            <Input
+              id="p-user-agent"
+              className="font-mono"
+              placeholder="e.g. my-app/1.0 (empty = default UA)"
+              value={userAgent}
+              onChange={(e) => setUserAgent(e.target.value)}
+            />
+            <p className="text-muted-foreground text-xs">
+              Overrides the <b>User-Agent</b> header on every outbound LLM request. Useful for gateways that route or allow-list by
+              User-Agent. Leave empty to keep the default User-Agent unchanged.
             </p>
           </div>
 
