@@ -76,3 +76,32 @@ Phase 0 is published in #34; Phase A in #35, B in #36 and C in #37. All target
 main and A/B/C include preceding phase commits. Translation #39 and SDK #47 form
 a separate dependency chain. Review fixes are in progress; published does not
 mean accepted or merged, and no live token savings have been measured.
+
+## Review acceptance checklist and rollback (#33)
+
+| Criterion | Evidence / gate | Result |
+| --- | --- | --- |
+| Task success | Identical authorized replay outcomes, no lost constraints/goals | Local regression tests; live comparison NOT RUN |
+| Scope and evidence safety | Graph provenance, negative evidence, permission and trace reconstruction fixtures | Regression gate; no production rollout approval |
+| Recovery | Fresh planner snapshot after restart, immutable stored evidence | Local regression gate |
+| Existing data | Additive usage migration repeated against legacy rows | Local PostgreSQL regression gate |
+| Ollama compatibility | `go test ./server -run TestOllama -count=1` with isolated PostgreSQL; mock HTTP server verifies wire protocol/keyless behavior | Automated protocol check; live Ollama NOT RUN |
+| Prompt growth | TestRenderedAgentPromptByteInventory enforced per-role ceilings | PASS: byte budgets, not token savings |
+| Spend/cache benefits | Provider-reported tokens, retries, cost and memo hit frequency on representative workloads | NOT RUN; required before default-on rollout |
+
+Enable one flag at a time on an isolated replay deployment, restart and capture
+source SHA, inputs, outcome and usage before comparing with flag-off:
+`ARTEX_BOUNDED_CONTEXT=1`, then independently `ARTEX_CACHE_PREFIX=1`, then
+independently `ARTEX_COMPACTION_MEMO=1`. Never infer benefits from synthetic reuse.
+
+Rollback checklist:
+- [ ] Set all three flags to `0` (or unset), restart all ARTEX processes, and verify
+      the effective deployment environment. This clears in-memory snapshots/memos.
+- [ ] Retry a known replay and confirm full overview, original cache boundary and
+      uncached summarization. Preserve transcripts and graph/evidence rows.
+- [ ] If metering itself causes failures, deploy the previous code version; retain
+      additive telemetry columns and historical rows. Do not run destructive DDL.
+- [ ] Confirm task state, scope constraints, evidence retrieval and Ollama mock
+      compatibility after rollback. Record pass/fail and source SHA per criterion.
+
+Unchecked rollback boxes are operator actions, not a claim they were executed.

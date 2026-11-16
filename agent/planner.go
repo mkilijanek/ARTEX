@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 
@@ -354,7 +355,13 @@ Task goal: {{.Goal}}
 No duplicates, no padding; but when the goal is unmet and there are uncovered, deeper plays, dispatch them. Concise, focused, efficient.`
 
 func plannerSystem(goal, dataDir, workDir string) string {
-	body := renderSystem("planner", plannerDefaultTmpl, PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()})
+	tmpl := plannerDefaultTmpl
+	// Keep the baseline prompt order unless prefix caching is explicitly enabled.
+	// renderSystem still gives custom stored templates their original layout.
+	if os.Getenv("ARTEX_CACHE_PREFIX") == "1" {
+		tmpl = strings.Replace(tmpl, "\n\nTask goal: {{.Goal}}", "", 1) + "\n\nTask goal: {{.Goal}}"
+	}
+	body := renderSystem("planner", tmpl, PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()})
 	return body + artifactSpec(workDir)
 }
 

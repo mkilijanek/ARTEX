@@ -19,11 +19,11 @@ func deferredSystem(sysText string, def DeferredInfo) (system []string, boundary
 	sysText += def.FindingGuidance
 	block := actool.RenderDeferredToolsBlock(def.GlobalNames)
 	if block == "" {
-		return []string{sysText}, 0
+		return cachePrefix([]string{sysText}, 0)
 	}
 	system = []string{sysText, block}
 	boundary = len(system) // b >= len → whole system prompt cached (SDK guard)
-	return system, boundary
+	return cachePrefix(system, boundary)
 }
 
 // seedUnlockFromHistory replays prior Skill() invocations in the conversation so
