@@ -109,7 +109,7 @@ Validation at implementation head `6c78339`:
 - Separate complete server race suite: **330 passing events, zero failures, two existing skips**.
 - Temporary integration with Phase C PR #61 is conflict-free; joint cache,
   compaction scheduler, large-graph and index-upgrade tests pass under `-race`.
-- The complete CI race package set is still running; final results go in the PR.
+- Complete CI race package set: **831 passing events, zero failures, three existing skips**.
 
 Logs and JSON plans are retained in the external validation workspace. GitHub
 currently supplies no remote checks; these results are local. Production UI and
