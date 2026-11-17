@@ -43,7 +43,8 @@ func TestPhaseBContextMeasurements(t *testing.T) {
 				incremental = len(raw)
 			}
 			literal := renderPlannerJournal(j)
-			ctx := withContextFragment(t.Context(), literal, j, 1)
+			current, _ := j.materialize()
+			ctx := withContextFragment(t.Context(), literal, current, 1)
 			p := withContextView(ctx, &plannerContextFixtureProvider{receive: func(llm.CompletionRequest) {}}).(*contextViewProvider)
 			req := llm.CompletionRequest{Messages: []llm.Message{llm.UserText(literal)}}
 			toolJSON, _ := json.Marshal(map[string]any{"facts": facts, "has_more": false, "total": 12})

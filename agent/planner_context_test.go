@@ -74,11 +74,30 @@ func TestPlannerJournalSizeResyncAndMandatoryOverflow(t *testing.T) {
 	}
 }
 
+func TestPlannerWireViewHasNoReplayOverhead(t *testing.T) {
+	var previous json.RawMessage
+	for round := range 12 {
+		data := map[string]any{"task": "fixture", "recent_facts": []any{map[string]any{"id": 1, "state": fmt.Sprint(round), "summary": strings.Repeat("evidence ", 40)}}}
+		j, err := advancePlannerJournal(previous, data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		previous, _ = json.Marshal(j)
+		wire := strings.TrimPrefix(renderPlannerJournal(j), plannerSnapshotPrefix)
+		expected, _ := json.Marshal(projectOverview(data))
+		if wire != string(expected) {
+			t.Fatal("model did not receive exact projected current state", wire)
+		}
+	}
+}
+
 func TestPlannerJournalKeepsImmutableBaseBeforeChangingMetadata(t *testing.T) {
 	first, _ := advancePlannerJournal(nil, map[string]any{"task": map[string]any{"description": "fixture", "goal": "stable goal"}, "facts": 1})
 	raw, _ := json.Marshal(first)
 	second, _ := advancePlannerJournal(raw, map[string]any{"task": map[string]any{"description": "fixture", "goal": "stable goal"}, "facts": 2})
-	a, b := renderPlannerJournal(first), renderPlannerJournal(second)
+	araw, _ := json.Marshal(first)
+	braw, _ := json.Marshal(second)
+	a, b := string(araw), string(braw)
 	if a[:strings.Index(a, `"deltas":`)] != b[:strings.Index(b, `"deltas":`)] {
 		t.Fatal("version metadata invalidated stable base prefix")
 	}
@@ -216,22 +235,21 @@ func TestPlannerFreshSessionReceivesReplayAndReportedUsage(t *testing.T) {
 	for i, req := range requests {
 		input := ""
 		for _, message := range req.Messages {
-			if strings.Contains(message.Text(), plannerJournalPrefix) {
+			if strings.Contains(message.Text(), plannerSnapshotPrefix) {
 				input = message.Text()
 				break
 			}
 		}
-		start := strings.Index(input, plannerJournalPrefix)
+		start := strings.Index(input, plannerSnapshotPrefix)
 		if start < 0 {
 			t.Fatal("provider did not receive journal", input)
 		}
-		var j plannerJournal
-		if err := json.NewDecoder(strings.NewReader(input[start+len(plannerJournalPrefix):])).Decode(&j); err != nil {
+		var view map[string]json.RawMessage
+		if err := json.NewDecoder(strings.NewReader(input[start+len(plannerSnapshotPrefix):])).Decode(&view); err != nil {
 			t.Fatal(err)
 		}
-		view, err := j.materialize()
-		if err != nil || j.Version != int64(i+1) || !strings.Contains(string(view["hints"]), fmt.Sprintf("round %d fixture", i)) {
-			t.Fatal("stale/missing view", j, err)
+		if !strings.Contains(string(view["hints"]), fmt.Sprintf("round %d fixture", i)) {
+			t.Fatal("stale/missing materialized view", view)
 		}
 	}
 	if !strings.Contains(output.String(), "reported_input_tokens=123") || !strings.Contains(output.String(), "token_source=provider_usage") {
