@@ -61,6 +61,24 @@ func TestContextDedupReferencesOnlyVisibleExactVersions(t *testing.T) {
 	if !strings.Contains(text, `"has_more":true`) || !strings.Contains(text, `"next_before":100`) {
 		t.Fatal("pagination lost", text)
 	}
+	definitions := map[string]any{}
+	for _, pair := range [][2]string{{strings.TrimPrefix(view.Messages[0].Text(), "fixture prefetch:\n"), strings.TrimPrefix(req.Messages[0].Text(), "fixture prefetch:\n")}, {text, req.Messages[2].Content[0].Content[0].Text}} {
+		var value any
+		d := json.NewDecoder(strings.NewReader(pair[0]))
+		d.UseNumber()
+		if err := d.Decode(&value); err != nil {
+			t.Fatal(err)
+		}
+		expanded := expandContextFixture(t, value, definitions)
+		raw, _ := json.Marshal(expanded)
+		if string(canonicalContextJSON(raw)) != string(canonicalContextJSON([]byte(pair[1]))) {
+			t.Fatal("references did not reconstruct exact evidence", string(raw), pair[1])
+		}
+	}
+	encoded, _ := json.Marshal(view)
+	if len(encoded) >= len(before) {
+		t.Fatal("protocol overhead increased request")
+	}
 	// SDK compaction removed the prefetch. The ledger must not remember it from
 	// the previous call: return the full tool payload, never a dangling ref.
 	req.Messages = req.Messages[1:]
@@ -75,6 +93,32 @@ func TestContextDedupReferencesOnlyVisibleExactVersions(t *testing.T) {
 	if strings.Contains(summary.Messages[2].Content[0].Content[0].Text, `$ref`) {
 		t.Fatal("summary received references")
 	}
+}
+
+func expandContextFixture(t *testing.T, value any, definitions map[string]any) any {
+	t.Helper()
+	switch v := value.(type) {
+	case []any:
+		for i, item := range v {
+			v[i] = expandContextFixture(t, item, definitions)
+		}
+	case map[string]any:
+		if id, ok := v["$id"].(string); ok {
+			definitions[id] = v["value"]
+			return v["value"]
+		}
+		if ref, ok := v["$ref"].(string); ok {
+			definition, exists := definitions[ref]
+			if !exists {
+				t.Fatal("dangling ref", ref)
+			}
+			return definition
+		}
+		for key, item := range v {
+			v[key] = expandContextFixture(t, item, definitions)
+		}
+	}
+	return value
 }
 
 func TestContextDedupKeepsChangedStateConfidenceSourceIDAndFullEvidence(t *testing.T) {
