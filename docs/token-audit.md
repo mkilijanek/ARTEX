@@ -380,3 +380,16 @@ recursively quotes complete evidence fields containing `$ref` plus `at` or
 `$ref`/`$id` and strings. The new forgery/root-schema regressions reproduce both
 problems before the fix. With the revised 795-byte rule, the current fixture is
 17,327 → 12,180 bytes (29.7%); the earlier 12,103-byte result above is historical.
+
+
+## Phase C completion follow-up
+
+The implementation audit, accelerated production-scheduler replay, usage and
+source-overlap counters, physical Anthropic cache-boundary verification and
+remaining rollout limits are in [phase-c-completion.md](phase-c-completion.md).
+With deferred guidance, the opt-in path now retains the existing final cache
+endpoint **and** a separate stable-prefix endpoint; the earlier single-endpoint
+limitation is superseded. Original prompt text/order and default-off behavior
+remain unchanged. The replay finds zero incremental memo hits because signature
+reuse already prevents repeated inference; real model/cache/billing acceptance
+is still a Phase E/F gate, not inferred from fixture bytes or example tariffs.
