@@ -103,16 +103,16 @@ Checkpoint bytes below are **storage only**, never sent to the model.
 
 | Scenario / round | Snapshot sent bytes | Stored journal bytes | Latest stored update | Request before protocol | Request after protocol |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Steady / 1 | 5523 | 5697 | 5697 | 17327 | 12103 |
-| Steady / 4 | 5523 | 5787 | 38 | 17327 | 12103 |
-| Count changes / 4 | 5523 | 5817 | 48 | 17327 | 12103 |
-| Evidence state changes / 3 | 5522 | 11046 | 5336 | 17324 | 12100 |
+| Steady / 1 | 5523 | 5697 | 5697 | 17327 | 12180 |
+| Steady / 4 | 5523 | 5787 | 38 | 17327 | 12180 |
+| Count changes / 4 | 5523 | 5817 | 48 | 17327 | 12180 |
+| Evidence state changes / 3 | 5522 | 11046 | 5336 | 17324 | 12177 |
 
-References reduced these complete repeated-read fixture requests by about 30.1%,
+References reduced these complete repeated-read fixture requests by about 29.7%,
 including the complete serialized protocol overhead. The fixed rule itself is
-718 UTF-8 bytes; its serialized cost depends on the surrounding system array
-(the measurement fixture adds 718 bytes; requests with an existing nonempty
-system array add 721). A prefetch-only request pays that overhead
+795 UTF-8 bytes; its serialized cost depends on the surrounding system array
+(the measurement fixture adds 795 bytes; requests with an existing nonempty
+system array add 798). A prefetch-only request pays that overhead
 without replacement savings. Stored replay can grow after changes, but the sent
 snapshot does not grow with it. No user-message cache breakpoint or model-side
 patch application is needed. Tests compare every sent snapshot with the exact
@@ -132,3 +132,13 @@ Representative live-model quality/cost comparisons, default-on rollout and
 production rollback acceptance remain tracked in Phase E/F and #1/#2/#33. They
 are not prerequisites for exercising the opt-in transport and are not marked done
 by this implementation.
+
+
+PR #60 review correction: literal quoting inspects objects and arrays recursively
+for host-protocol shapes (`$ref` together with `at` or `context_status`, or a
+`literal_evidence_json` key). A matching shape anywhere in an evidence field
+quotes the complete field, preventing nested entity-like objects from posing as
+host references. Strings and ordinary schema `$id`/`$ref` alone remain readable,
+including at the root of an OpenAPI/JSON Schema document. The nested-forgery and
+root-schema regression tests failed before this correction and pass afterwards.
+The table above includes the updated interpretation rule and its full wire cost.
