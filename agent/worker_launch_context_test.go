@@ -119,3 +119,87 @@ func TestRealWorkerUsesDefaultProjectionAndExplicitRollback(t *testing.T) {
 		})
 	}
 }
+
+func TestWorkerAssetProjectionEncodedBudgetAndExactTargets(t *testing.T) {
+	assets := []*db.Asset{}
+	for i := 0; i < 100; i++ {
+		assets = append(assets, &db.Asset{ID: int64(i + 1), Type: "http_service", URL: "https://fixture.invalid/" + strings.Repeat("\x00", 150), Domain: "fixture.invalid", PageTitle: strings.Repeat("unused title", 10000), Extra: map[string]any{"body": strings.Repeat("unused body", 10000)}})
+	}
+	before, _ := json.Marshal(assets)
+	view := projectAssets(assets)
+	encoded, _ := json.Marshal(view)
+	selected := view["assets"].([]any)
+	if len(encoded) > workerAssetBudget || len(selected) > 8 || len(selected) == 0 || view["omitted_assets"] != len(assets)-len(selected) {
+		t.Fatal("asset budget/omission mismatch", len(encoded), len(selected), view["omitted_assets"])
+	}
+	if selected[0].(map[string]any)["url"] != assets[0].URL {
+		t.Fatal("target URL altered")
+	}
+	if strings.Contains(string(encoded), "unused") {
+		t.Fatal("raw metadata leaked")
+	}
+	after, _ := json.Marshal(assets)
+	if string(before) != string(after) {
+		t.Fatal("source asset changed")
+	}
+	oversized := projectAssets([]*db.Asset{{ID: 777, Type: "http_service", URL: "https://fixture.invalid/" + strings.Repeat("x", 2000)}})["assets"].([]any)[0].(map[string]any)
+	if oversized["url"] != nil || oversized["url_omitted"] != true || oversized["requires_asset_detail"] != true {
+		t.Fatal("oversized target must be retrieved, never shortened", oversized)
+	}
+	t.Logf("raw assets=%d compact assets=%d selected=%d", len(before), len(encoded), len(selected))
+}
+
+func TestRealWorkerAssetProjectionDefaultAndRollback(t *testing.T) {
+	t.Setenv("ARTEX_BOUNDED_CONTEXT", "0")
+	d := testDB(t)
+	defer d.Close()
+	exp, err := d.CreateExploration("asset projection fixture", "assigned assets only")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec(`DELETE FROM explorations WHERE id=$1`, exp)
+	as := d.Assets()
+	target := fmt.Sprintf("https://asset-fixture-%d.invalid/exact?value=1", exp)
+	title := strings.Repeat("fixture title marker ", 2000)
+	id, err := as.UpsertHTTPService(db.UpsertHTTPServiceReq{URL: target, PageTitle: title})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec(`DELETE FROM assets WHERE id=$1`, id)
+	ts := d.Exploration(exp)
+	iid, err := ts.AddIntent(map[string]any{"summary": "inspect assigned fixture only", "asset_ids": []int64{id}}, 1, nil, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, err := ts.GetNode(iid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, flag := range []string{"", "0"} {
+		t.Run("flag="+flag, func(t *testing.T) {
+			t.Setenv("ARTEX_WORKER_CONTEXT", flag)
+			var request llm.CompletionRequest
+			provider := &plannerContextFixtureProvider{receive: func(req llm.CompletionRequest) { request = req }}
+			w := NewWorker(provider, "fixture", t.TempDir(), nil, 100000, 1)
+			w.SetNonStreaming(func() bool { return true })
+			if _, _, err := w.Execute(t.Context(), "fixture", 0, as, ts, intent, nil, nil, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			system := strings.Join(request.System, "\n")
+			if !strings.Contains(system, target) || !strings.Contains(system, string(intent.Payload)) {
+				t.Fatal("target/intent asset identity lost")
+			}
+			if flag == "" && (strings.Contains(system, title) || !strings.Contains(system, `"omitted_fields"`)) {
+				t.Fatal("default system contains raw assets")
+			}
+			if flag == "0" && !strings.Contains(system, title) {
+				t.Fatal("rollback did not preserve raw assets")
+			}
+			stored, err := as.GetByIDs([]int64{id})
+			if err != nil || len(stored) != 1 || stored[0].PageTitle != title {
+				t.Fatal("full detail unavailable", err)
+			}
+			t.Logf("flag=%q actual system bytes=%d", flag, len(system))
+		})
+	}
+}

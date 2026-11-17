@@ -13,6 +13,7 @@ import (
 
 const overviewBudget = 16 * 1024
 const plannerPacketBudget = 40 * 1024
+const workerAssetBudget = 8 * 1024
 
 // Projection only changes launch context. Original graph/evidence and mandatory
 // system constraints remain intact. Omitted observations are never negatives.
@@ -239,6 +240,7 @@ func scopedWorkerContext(data map[string]any, intent *db.Node, awareness bool) m
 
 func projectAssets(assets []*db.Asset) map[string]any {
 	out := []any{}
+	result := map[string]any{"assets": out, "omitted_assets": len(assets), "omitted_fields": []string{"page_title", "headers", "body", "metadata"}, "detail_tool": "list_assets(ids); omitted fields are not absent evidence"}
 	for _, a := range assets[:min(len(assets), 8)] {
 		m := map[string]any{"id": a.ID, "type": a.Type, "port": a.Port, "status_code": a.StatusCode}
 		for k, v := range map[string]string{"url": a.URL, "domain": a.Domain, "ip": a.IP} {
@@ -250,6 +252,15 @@ func projectAssets(assets []*db.Asset) map[string]any {
 			}
 		}
 		out = append(out, m)
+		result["assets"] = out
+		result["omitted_assets"] = len(assets) - len(out)
+		encoded, _ := json.Marshal(result)
+		if len(encoded) > workerAssetBudget {
+			out = out[:len(out)-1]
+			result["assets"] = out
+			result["omitted_assets"] = len(assets) - len(out)
+			break
+		}
 	}
-	return map[string]any{"assets": out, "omitted_assets": max(0, len(assets)-8), "omitted_fields": []string{"page_title", "headers", "body", "metadata"}, "detail_tool": "list_assets(ids); omitted fields are not absent evidence"}
+	return result
 }

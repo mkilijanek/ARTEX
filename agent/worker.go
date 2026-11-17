@@ -457,7 +457,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		if ids := intentAssetIDs(intent); len(ids) > 0 {
 			if assets, err := as.GetByIDs(ids); err == nil && len(assets) > 0 {
 				assetView := any(assets)
-				if boundedContextEnabled() {
+				if compactWorkerLaunchEnabled() {
 					assetView = projectAssets(assets)
 				}
 				if b, err := json.Marshal(assetView); err == nil {
