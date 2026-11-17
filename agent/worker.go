@@ -439,8 +439,8 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// inherit a parent run's background into the action reviewer.
 	ctx = intercept.WithReviewContext(ctx, runDir, intercept.ReviewBackground{})
 	data := tsx.graphOverviewData()
-	if boundedContextEnabled() {
-		data = workerContext(data, intent)
+	if compactWorkerLaunchEnabled() {
+		data = workerLaunchContext(data, intent)
 	}
 	overview := renderWorkerGraphOverview(data)
 	if boundedContextEnabled() {

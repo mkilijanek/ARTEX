@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
+	"strings"
 
 	"github.com/Autumn-27/artex/db"
 )
@@ -34,6 +36,8 @@ func projectOverview(data map[string]any) map[string]any {
 	if normalized["intent_id"] != nil {
 		mandatory["recent_facts"], mandatory["finding_list"] = true, true
 		mandatory["recent_facts_filtered_unrelated"], mandatory["finding_list_filtered_unrelated"] = true, true
+		mandatory["recent_facts_omitted_items"], mandatory["finding_list_omitted_items"] = true, true
+		mandatory["retrieval"] = true
 	}
 	out := map[string]any{"projection": true, "detail_required": true,
 		"retrieval": "graph_overview, node_detail(id), list_facts, list_assets; omitted evidence is not negative evidence"}
@@ -140,6 +144,47 @@ func projectOverview(data map[string]any) map[string]any {
 }
 
 func workerContext(data map[string]any, intent *db.Node) map[string]any {
+	return projectOverview(scopedWorkerContext(data, intent, false))
+}
+
+// The default worker launch projection is independent of experimental planner,
+// transcript-reference and trace-paging features. Explicit off restores legacy
+// launch data for rollback without changing any stored graph or scope policy.
+func compactWorkerLaunchEnabled() bool {
+	return !isFalsy(strings.TrimSpace(os.Getenv("ARTEX_WORKER_CONTEXT")))
+}
+
+func workerLaunchContext(data map[string]any, intent *db.Node) map[string]any {
+	out := scopedWorkerContext(data, intent, true)
+	for _, key := range []string{"recent_facts", "finding_list", "awareness_recent_facts", "awareness_finding_list"} {
+		items, _ := out[key].([]any)
+		for _, item := range items {
+			m, _ := item.(map[string]any)
+			text, ok := m["summary"].(string)
+			if !ok {
+				continue
+			}
+			part, _, end := sliceUTF8(text, 0, 384)
+			for raw, _ := json.Marshal(part); len(raw) > 384; raw, _ = json.Marshal(part) {
+				part, _, end = sliceUTF8(text, 0, len(part)/2)
+			}
+			if end < len(text) {
+				m["summary"] = part
+				m["summary_truncated"] = true
+				m["summary_omitted_bytes"] = len(text) - end
+				m["requires_node_detail"] = true
+			}
+		}
+		if len(items) > 20 {
+			out[key] = items[:20]
+			out[key+"_omitted_items"] = len(items) - 20
+		}
+	}
+	out["retrieval"] = "node_detail(id) for complete evidence; list_assets(ids) for targets; partial summaries and omissions are not negative evidence"
+	return projectOverview(out)
+}
+
+func scopedWorkerContext(data map[string]any, intent *db.Node, awareness bool) map[string]any {
 	raw, _ := json.Marshal(data)
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
@@ -165,6 +210,7 @@ func workerContext(data map[string]any, intent *db.Node) map[string]any {
 	for _, key := range []string{"recent_facts", "finding_list"} {
 		items, _ := out[key].([]any)
 		selected := []any{}
+		other := []any{}
 		filtered := 0
 		for _, v := range items {
 			m, _ := v.(map[string]any)
@@ -172,15 +218,23 @@ func workerContext(data map[string]any, intent *db.Node) map[string]any {
 				selected = append(selected, v)
 			} else {
 				filtered++
+				if awareness && len(other) < 3 {
+					other = append(other, v)
+				}
 			}
 		}
 		out[key] = selected
 		out[key+"_filtered_unrelated"] = filtered
+		if awareness {
+			out["awareness_"+key] = other
+			out["awareness_"+key+"_total"] = filtered
+		}
 	}
 	delete(out, "cold_digests")
 	out["intent_id"] = intent.ID
 	out["scope_required_before_action"] = true
-	return projectOverview(out)
+	out["retrieval"] = "node_detail(id) for complete evidence; list_assets(ids) for targets; partial summaries and omissions are not negative evidence"
+	return out
 }
 
 func projectAssets(assets []*db.Asset) map[string]any {
