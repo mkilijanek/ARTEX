@@ -48,7 +48,7 @@ func TestPlannerJournalReplayRemovalsAndResync(t *testing.T) {
 	}
 	// A corrupt chain is not silently replayed to the model. Recover from the
 	// source graph into a new independently usable snapshot/epoch.
-	j.CurrentHash = "corrupt"
+	j.CurrentChecksum = "corrupt"
 	raw, _ = json.Marshal(j)
 	repaired, err := advancePlannerJournal(raw, map[string]any{"facts": 4})
 	if err != nil || repaired.Epoch == j.Epoch || repaired.ResyncReason != "invalid_checkpoint" {
@@ -81,6 +81,22 @@ func TestPlannerJournalKeepsImmutableBaseBeforeChangingMetadata(t *testing.T) {
 	a, b := renderPlannerJournal(first), renderPlannerJournal(second)
 	if a[:strings.Index(a, `"deltas":`)] != b[:strings.Index(b, `"deltas":`)] {
 		t.Fatal("version metadata invalidated stable base prefix")
+	}
+}
+
+func TestPlannerCredentialsStayLiveAndOutsideCheckpoint(t *testing.T) {
+	data := map[string]any{"facts": 1, "task_credentials": []any{map[string]any{"username": "fixture", "password": "fresh-secret"}}, "task_credentials_note": "current only"}
+	j, err := advancePlannerJournal(nil, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(j)
+	if strings.Contains(string(raw), "fresh-secret") || strings.Contains(string(raw), "task_credentials") {
+		t.Fatal("secret retained in checkpoint")
+	}
+	live := renderPlannerCredentials(data)
+	if !strings.Contains(live, "fresh-secret") || !strings.Contains(live, "current only") {
+		t.Fatal("live credentials dropped")
 	}
 }
 

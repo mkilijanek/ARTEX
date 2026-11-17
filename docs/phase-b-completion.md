@@ -11,11 +11,11 @@ evidence, permissions, raw tool output, activity and SDK transcripts are unchang
 `planner_context_checkpoints`, with an exploration foreign key and delete cascade.
 An exploration-row lock serializes callback/write transactions across processes,
 including first creation. A failed callback/write does not consume a version.
-The checkpoint is disposable read-model state; task archives need not copy it.
+The checkpoint is disposable trusted read-model state; its checksum is not authentication or password hashing. Task credentials are excluded from it and rendered live, losslessly, each round; old bases never retain old passwords. Task archives need not copy it.
 Restore without a checkpoint rebuilds it from the restored graph.
 
 `agent/planner_context.go` writes protocol version, epoch, immutable base/version,
-ordered whole-key replacements/removals, current version and SHA256 checksum.
+ordered whole-key replacements/removals, current version and CRC64 accidental-corruption checksum.
 Fresh Planner/Norma instances receive the full replay, never a standalone delta
 and never a dependency on an old model response. Each replay is validated before
 advance. Corruption, missing versions or invalid checksum cause a new epoch and

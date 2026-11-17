@@ -411,7 +411,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		if checkpointErr != nil {
 			return false, "", fmt.Errorf("planner context checkpoint: %w", checkpointErr)
 		}
-		overview = renderPlannerJournal(journal)
+		overview = renderPlannerJournal(journal) + renderPlannerCredentials(data)
 		contextJournal = &journal
 		ctx = withContextFragment(ctx, overview, journal, ts.ID())
 	}
