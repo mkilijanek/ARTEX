@@ -86,8 +86,9 @@ per-tool token precision. Security and context changes remain later phases.
 
 ## Phase B context contract
 
-`ARTEX_BOUNDED_CONTEXT=1` opts into projected launch context and trace slices.
-Default remains zero pending security/rollout validation. Mandatory system
+`ARTEX_BOUNDED_CONTEXT=1` opts into planner context, transcript references and
+trace slices; its default remains zero. Worker launch projection now has its own
+default-on `ARTEX_WORKER_CONTEXT` switch (see milestone completion below). Mandatory system
 constraints and full intent text are unchanged. Projection never changes stored
 graphs, evidence or permissions; omitted evidence cannot establish a negative.
 
@@ -136,7 +137,8 @@ resumes. Unexpected stream EOF without a stop event is an error, not completion.
 
 ## Phase B review corrections (#1, #2, #17–20)
 
-The feature remains opt-in. Goals, hints, task identity, coverage, stagnation,
+At this review stage the feature remained opt-in; the later worker-only rollout
+is documented below. Goals, hints, task identity, coverage, stagnation,
 credentials and worker identity/dependency evidence are preserved without truncation. Optional
 fields carry per-path omission metadata. The 16 KiB target is a **soft** budget:
 mandatory data may exceed it, explicitly marked `mandatory_budget_exceeded`;
@@ -264,7 +266,7 @@ a shortened address is never offered as an executable target. The complete inten
 
 A 100-record escaped-string/large-metadata fixture measures **23,105,893 raw bytes
 → 7,375 projected bytes** (seven records fit). A real Worker SDK request with one
-long page title measures about **53.2 KiB legacy → 11.2 KiB default system**. Tests
+long page title measures about **53.2 kB legacy → 11.2 kB default system**. Tests
 also verify rollback, unchanged stored records, exact short targets and successful
 full retrieval through the actual `list_assets` tool.
 
@@ -295,3 +297,20 @@ only once across the system and launch input, without duplicating safety rules.
 These are deterministic UTF-8 byte measurements, not provider tokenizer counts,
 live model-quality acceptance, billed-token savings or cache-hit claims. Phase E/F
 representative workloads remain separate from this milestone.
+
+
+Validation on Go 1.26.10 and disposable PostgreSQL 16 databases:
+
+- `go test -json -p 1 ./... -count=1 -timeout=600s`: 1,143 passing test/subtest
+  events, zero failures, five existing skips (four tracked upstream/timing cases
+  plus the opt-in live-model test).
+- CI race package set (`agent`, `cmd/artex`, `config`, `db`, `evidence`, `guard`,
+  `intercept`, `llmpool`, `llmrec`, `mcphttp`, `notify`, `sidequestion`, `traffic`):
+  813 passing test/subtest events, zero failures, three existing skips.
+- `go build ./...`, `go vet ./...` and `python3 scripts/verify-norma-source.py` pass.
+- No new skips; DB-backed default/rollback and full read-tool tests ran against
+  PostgreSQL. Local JSON logs are retained in the external validation workspace.
+
+GitHub Actions currently rejects dispatch with “Actions has been disabled for
+this repository” and CodeQL remains queued. The checks above are local validation,
+not a remote CI/CodeQL result. SDK, UI and release workflow source are unchanged.
