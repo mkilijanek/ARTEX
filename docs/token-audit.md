@@ -222,10 +222,12 @@ template places the goal near the top, its stable prefix can remain short; no
 cache improvement is promised for that template without measurement.
 
 
-## Token Efficiency milestone completion, 2026-11-17
+## Token Efficiency implementation and rollout status, 2026-11-17
 
-The remaining review gaps in #1, #2 and #3 are addressed independently of the
-experimental planner/transcript features. `ARTEX_WORKER_CONTEXT` defaults to `0`
+The implementation gaps in #1, #2 and #3 are addressed independently of the
+experimental planner/transcript features. Default rollout for #1/#2 remains
+unaccepted pending the live quality comparison in #33; this milestone is not yet
+complete, and PR #58 must not automatically close those two issues. `ARTEX_WORKER_CONTEXT` defaults to `0`
 in code, `.env.example` and Compose; `1`, `true`, `on` or `yes` selects the compact
 launch described below, and any other value keeps the legacy full worker overview,
 its original introduction and raw asset records. The default stays off because the
@@ -331,7 +333,9 @@ Validation on Go 1.26.10 and disposable PostgreSQL 16 databases:
   `awareness_finding_list` (excerpted to 384 bytes), so a worker can still see
   what was already reported. Other intents are not listed in the compact view;
   that is the remaining difference the comparison has to judge.
-- **Dependency evidence by id.** A DB-backed test pushes a parent's fact and
+- **Dependency evidence by id.** Edge-derived parent IDs also seed selection
+  when the assigned intent is absent from all overview windows. A DB-backed test
+  reproduces that case as well as pushing a parent's fact and
   finding out of the overview windows with newer unrelated nodes and checks they
   still reach the worker with provenance. A failed lookup is reported as
   `dependency_evidence_unavailable`; it never looks like "no dependencies".
@@ -348,3 +352,22 @@ corrections; the commands were re-run afterwards (see the pull request).
 GitHub Actions currently rejects dispatch with “Actions has been disabled for
 this repository” and CodeQL remains queued. The checks above are local validation,
 not a remote CI/CodeQL result. SDK, UI and release workflow source are unchanged.
+
+
+### Follow-up verification after review
+
+At `d673e91`, the new missing-intent-window regression fails on `2360a03` with
+empty selected facts/findings and passes after retaining edge-derived parents.
+`go test ./agent -count=1 -timeout=240s` passes with 224 positive test/subtest events,
+zero failures and two existing skips against a fresh PostgreSQL 16 database.
+The full `agent` package also passes under `-race` with the same 224/0/2
+outcome on a separate fresh database.
+Build, vet and Norma source-provenance verification pass. A temporary local merge
+of PR #58 with PR #60 is conflict-free; focused context, Worker, dependency and
+measurement tests also pass under the race detector. No integration merge was
+published to main.
+
+PR #60's 17,327 → 12,103-byte measurement was independently reproduced. Its
+first-occurrence, exact-version reconstruction, literal-reference quoting and
+prefix-stability tests pass. These checks do not satisfy the outstanding live
+quality/default-rollout gate for #1/#2 and #33.
