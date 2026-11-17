@@ -10,6 +10,7 @@ import (
 )
 
 func attachSideCapture(ctx context.Context, opts *agentcore.Options) context.Context {
+	opts.Provider = withContextView(ctx, opts.Provider)
 	attachModelMetrics(opts)
 	ri := RunInfoFrom(ctx)
 	p := sidequestion.Parent{TaskID: ri.TaskID, ExplorationID: ri.ExplorationID, IntentID: ri.IntentID}

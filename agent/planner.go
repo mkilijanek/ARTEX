@@ -413,6 +413,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		}
 		overview = renderPlannerJournal(journal)
 		contextJournal = &journal
+		ctx = withContextFragment(ctx, overview, journal, ts.ID())
 	}
 	situational := renderTriggers(ts, triggers) + overview
 	// Task-level deadline / endgame mode (injected via ctx, see taskclock.go). On the
