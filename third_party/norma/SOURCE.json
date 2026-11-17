@@ -116,20 +116,22 @@
     "examples/custom-llm/main.go": "031f94f0226f1a94636d73378b0b42f6d511e74db29466786e3ec45e5ee74668",
     "cmd/agentcore/main.go": "c3424771da8accbc9b2818ba820cf79e6d3375db46752c724f7be5611ca8fb86"
   },
-  "snapshot_version": "v0.4.8+artex.1",
+  "snapshot_version": "v0.4.8+artex.2",
   "patched_sha256": {
-    "harness/query.go": "98d13cca14ad7460c2b1b5d0981ab58284eedf1aee6a59e6f3f26d789fb33732",
+    "harness/query.go": "98ef1d034aa18e88643e800833650676204d167c8c3509b6bc4c6986a980d8aa",
     "tool/task.go": "369b95f23df0a203a356bd2d77a10c2912af998a34149b92ec8dce6d6dd3bbe4",
     "tool/shell_session.go": "ec7b955d9034f057ad397ba5117eacf1abcf6d0ea017413e6748a5ab5c3d5ed0",
     "tool/shell_tools.go": "3200d902b3e437e2df0f685eee90b5bc940f6435183f88c526901c3b647e3d26",
-    "llm/types.go": "e301fb6101f1430940316c8e2d837c72031067c75bd2aa50bcf09f99031658eb",
+    "llm/types.go": "c48e26cdc22eabadb910fa58af2fc619aba4f35789a90fca7fec24bdf88f7d4e",
     "noaadapter/compactor.go": "c51a25678c772d78256d19d0c8b1805e62e301dceab38f04e4841ee386541e3a",
     "noaadapter/materialize.go": "5941212091ac3953d9df8d564cb857e55e5c8749591ff7879123c8acd3979621",
     "noaadapter/session.go": "c6cee1cd24dd89dbb64baecc3bd6655960edacf3dc44a2254fe3c5217ad72c28",
     "noaadapter/project.go": "1358ef0b8ff78076d17993694e146afb47e53f3add32b3e022a33e848296d847",
     "noa/archive.go": "3e433162334a20004e60f19ca25c8f69684cdb049a773c1e6c9338ec57201f56",
     "skill/skill.go": "fc6daf56e9bb7da572c5f315432640ad0b7e989c77fc130d6c6e8fe22ba99496",
-    "tool/websearch.go": "58bef3c70a509d1809ec5b1b2ac70b6706999675b80002c66daaacae91db5d3c"
+    "tool/websearch.go": "58bef3c70a509d1809ec5b1b2ac70b6706999675b80002c66daaacae91db5d3c",
+    "llm/anthropic.go": "f1123b499ba91457d1251c397e2a9ef5dc9d0ceb97eb9977d45c83e8f5e8576f",
+    "agentcore/agentcore.go": "6dbd7a6da1641b91e16981a7c9a120c661373dbf6ab80b0b319b373ad41aefc5"
   },
   "extra_sha256": {
     "agentcore/agentcore_test.go": "47588f43964cc289b9199bd4daaed510232644e5a84abe9cbc8a96888131137d",
@@ -208,7 +210,8 @@
     "tool/webfetch_redirect_test.go": "057a98db707ad81be7dd5b2502d2bf118d91f137c27383c0b58e9a9dd3ee72fd",
     "transcript/transcript_test.go": "4e472be30fe84a6bc4750589c519feb99ab8610027f1a082fee348daca8cc0d3",
     "noaadapter/redacted_only_test.go": "d01c8d9801df5d17acaf42c6107f4ae64bf7a034d89097c5bc6a71057a279f85",
-    "tool/websearch_redirect_test.go": "43a21ca373ae7e6af522cb21e77fa22fcd21c2a897f013c38c6780b7c8bdd4b2"
+    "tool/websearch_redirect_test.go": "43a21ca373ae7e6af522cb21e77fa22fcd21c2a897f013c38c6780b7c8bdd4b2",
+    "llm/artex_system_breakpoints_test.go": "51190584031d8c237e9a785b603ac9d20fa373602e654a472cc5a4eea346dc50"
   },
   "upstream_test_sha256": {
     "agentcore/agentcore_test.go": "47588f43964cc289b9199bd4daaed510232644e5a84abe9cbc8a96888131137d",
