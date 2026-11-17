@@ -74,6 +74,16 @@ func TestPlannerJournalSizeResyncAndMandatoryOverflow(t *testing.T) {
 	}
 }
 
+func TestPlannerJournalKeepsImmutableBaseBeforeChangingMetadata(t *testing.T) {
+	first, _ := advancePlannerJournal(nil, map[string]any{"task": map[string]any{"description": "fixture", "goal": "stable goal"}, "facts": 1})
+	raw, _ := json.Marshal(first)
+	second, _ := advancePlannerJournal(raw, map[string]any{"task": map[string]any{"description": "fixture", "goal": "stable goal"}, "facts": 2})
+	a, b := renderPlannerJournal(first), renderPlannerJournal(second)
+	if a[:strings.Index(a, `"deltas":`)] != b[:strings.Index(b, `"deltas":`)] {
+		t.Fatal("version metadata invalidated stable base prefix")
+	}
+}
+
 func TestPlannerJournalPersistsAcrossFreshHandlesAndSerializesUpdates(t *testing.T) {
 	d := testDB(t)
 	defer d.Close()

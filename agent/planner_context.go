@@ -26,10 +26,10 @@ type overviewDelta struct {
 type plannerJournal struct {
 	Protocol          int                        `json:"protocol"`
 	Epoch             string                     `json:"epoch"`
-	Version           int64                      `json:"version"`
 	BaseVersion       int64                      `json:"base_version"`
 	Base              map[string]json.RawMessage `json:"base"`
 	Deltas            []overviewDelta            `json:"deltas"`
+	Version           int64                      `json:"version"`
 	CurrentHash       string                     `json:"current_hash"`
 	ResyncReason      string                     `json:"resync_reason,omitempty"`
 	MandatoryOverflow bool                       `json:"mandatory_budget_exceeded,omitempty"`
@@ -101,6 +101,14 @@ func advancePlannerJournal(previous json.RawMessage, data map[string]any) (plann
 	reason := "initial"
 	if len(previous) > 0 {
 		if json.Unmarshal(previous, &j) == nil {
+			for key, value := range j.Base {
+				j.Base[key] = canonicalContextJSON(value)
+			}
+			for i := range j.Deltas {
+				for key, value := range j.Deltas[i].Replace {
+					j.Deltas[i].Replace[key] = canonicalContextJSON(value)
+				}
+			}
 			old, err = j.materialize()
 		} else {
 			err = fmt.Errorf("invalid checkpoint JSON")
