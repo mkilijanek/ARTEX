@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/norma/llm"
@@ -258,6 +259,90 @@ func TestPlannerFreshSessionReceivesReplayAndReportedUsage(t *testing.T) {
 }
 
 type plannerContextFixtureProvider struct{ receive func(llm.CompletionRequest) }
+
+func TestPlannerCheckpointLockAllowsChildInserts(t *testing.T) {
+	d := testDB(t)
+	defer d.Close()
+	exp, err := d.CreateExploration("lock fixture", "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec(`DELETE FROM explorations WHERE id=$1`, exp)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	go func() {
+		_, err := d.Exploration(exp).UpdatePlannerContext(ctx, func(json.RawMessage) (json.RawMessage, error) {
+			close(entered)
+			select {
+			case <-release:
+				return json.RawMessage(`{}`), nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		})
+		finished <- err
+	}()
+	<-entered
+	inserted := make(chan error, 1)
+	go func() {
+		_, err := d.Exploration(exp).AddNode(db.KindFact, map[string]any{"summary": "concurrent child"}, 0, "confirmed", "fixture", nil)
+		inserted <- err
+	}()
+	select {
+	case err := <-inserted:
+		close(release)
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		close(release)
+		<-finished
+		<-inserted
+		t.Fatal("checkpoint lock blocked child insert")
+	}
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPlannerCheckpointFailureFallsBackToCurrentSnapshot(t *testing.T) {
+	t.Setenv("ARTEX_BOUNDED_CONTEXT", "1")
+	d := testDB(t)
+	defer d.Close()
+	exp, err := d.CreateExploration("fallback fixture", "keep planning available")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec(`DELETE FROM explorations WHERE id=$1`, exp)
+	constraint := fmt.Sprintf("checkpoint_failure_%d", exp)
+	if _, err := d.Exec(fmt.Sprintf(`ALTER TABLE planner_context_checkpoints ADD CONSTRAINT %s CHECK(exploration_id <> %d) NOT VALID`, constraint, exp)); err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec("ALTER TABLE planner_context_checkpoints DROP CONSTRAINT " + constraint)
+	var requests []llm.CompletionRequest
+	provider := &plannerContextFixtureProvider{receive: func(req llm.CompletionRequest) { requests = append(requests, req) }}
+	p := NewPlanner(provider, "fixture", t.TempDir(), nil, 100000, 1)
+	p.SetNonStreaming(func() bool { return true })
+	if _, _, err := p.Plan(t.Context(), exp, nil, d.Exploration(exp), "fixture", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 1 {
+		t.Fatal("checkpoint error stopped planning")
+	}
+	raw, _ := json.Marshal(requests[0].Messages)
+	if !strings.Contains(string(raw), "keep planning available") {
+		t.Fatal("fallback lost current goal")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, _, err := p.Plan(ctx, exp, nil, d.Exploration(exp), "fixture", nil, nil); err == nil {
+		t.Fatal("cancellation swallowed")
+	}
+	if len(requests) != 1 {
+		t.Fatal("cancelled round reached provider")
+	}
+}
 
 func (p *plannerContextFixtureProvider) Complete(_ context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
 	p.receive(req)

@@ -17,7 +17,7 @@ func (s *ExplorationStore) UpdatePlannerContext(ctx context.Context, update func
 	}
 	defer tx.Rollback()
 	var id int64
-	if err = tx.QueryRowContext(ctx, `SELECT id FROM explorations WHERE id=$1 FOR UPDATE`, s.expID).Scan(&id); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT id FROM explorations WHERE id=$1 FOR NO KEY UPDATE`, s.expID).Scan(&id); err != nil {
 		return nil, err
 	}
 	var previous []byte
