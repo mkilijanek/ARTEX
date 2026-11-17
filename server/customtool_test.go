@@ -111,6 +111,8 @@ print("port=" + str(a["port"]))
 // method/url/header/body templates are rendered from params, the request is sent,
 // and the response status+body are returned. No recording proxy → s.m untouched.
 func TestRunHTTPTool(t *testing.T) {
+	// No loader registered means the egress policy fails closed.
+	setCredPolicy(t, credStaticRules(nil, nil), "1", nil)
 	var gotMethod, gotAuth, gotBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotMethod = r.Method
@@ -169,6 +171,8 @@ func TestDetectPython(t *testing.T) {
 // same valve every other tool uses — a session with no OutputDir falls back to a
 // head+tail cut, so a body far past the default cap comes back shortened.
 func TestHTTPToolTruncatesLargeBody(t *testing.T) {
+	// No loader registered means the egress policy fails closed.
+	setCredPolicy(t, credStaticRules(nil, nil), "1", nil)
 	big := strings.Repeat("x", 40000) // past Capture's 30000 default
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(big))
