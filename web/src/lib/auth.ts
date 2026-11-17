@@ -19,8 +19,11 @@ export const auth = {
 
   setToken(token: string): void {
     localStorage.setItem(TOKEN_KEY, token);
-    // Also write a cookie for the Next.js middleware to read server-side
-    document.cookie = `${TOKEN_KEY}=${encodeURIComponent(token)}; path=/; max-age=${COOKIE_MAX_AGE}; SameSite=Lax`;
+    // Also write a cookie for the Next.js middleware to read server-side.
+    // Secure on HTTPS so the session token is never sent over plain HTTP; a
+    // plain-HTTP deployment (local use) keeps working without the attribute.
+    const secure = window.location.protocol === "https:" ? "; Secure" : "";
+    document.cookie = `${TOKEN_KEY}=${encodeURIComponent(token)}; path=/; max-age=${COOKIE_MAX_AGE}; SameSite=Lax${secure}`;
   },
 
   clearToken(): void {
