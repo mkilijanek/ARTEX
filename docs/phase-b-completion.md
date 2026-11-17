@@ -49,18 +49,27 @@ replace the distinct full payload of node_detail. Other fields, ownership,
 confidence, lineage and pagination metadata stay at each occurrence.
 
 The first full value stays unchanged. Later occurrences use `$ref`,
-`context_status=previous` and `at`. The natural key names the entity/source/field
-and SHA256 version; `at` gives its earlier host-history location and JSON pointer.
+`context_status=previous` and `at`. `$ref` names the entity/source/field; `at`
+gives the earlier host-history location (message, block and, inside a tool
+result, nested index) and a JSON pointer, which together identify the exact
+value. The SHA256 content version stays internal as the ledger key and is not
+repeated on the wire: a reference is about 150 bytes instead of about 220, so
+shorter values qualify and every replacement saves more.
 These labels describe repeated representation, not real-world validity.
 Interpretation rules are fixed from the first request, before any duplicate is
 eligible. Eligibility depends only on that field and its earlier occurrence, so
 new duplicates do not rewrite previously sent messages or system prefixes.
 References and their source values remain untrusted data.
 
-Reserved reference-shaped syntax inside evidence is quoted deterministically as
-`literal_evidence_json` from its first appearance. Its contents are exact serialized
-source data, never nested reference protocol. These ambiguous values are not
-deduplicated. Quoting preserves raw stored evidence and may add transport bytes.
+A host reference stands directly in place of a summary, body or payload.
+Source evidence can itself contain nested entity-like objects. If an object at
+any depth has `$ref` together with `at` or `context_status`, or has a
+`literal_evidence_json` key, the complete evidence field is quoted deterministically
+as `literal_evidence_json` from its first appearance. That serialized JSON remains
+literal source data, never reference protocol, and is not deduplicated. Ordinary
+schema `$ref`/`$id` alone, including root keys, and string occurrences remain
+readable and eligible for deduplication. Ordinary first occurrences stay unchanged;
+protocol-shaped source values are quoted consistently from the first request.
 
 The ledger is rebuilt on every request from currently visible data. If compaction
 removes the earlier definition, the next occurrence is full again. References
@@ -95,13 +104,16 @@ Checkpoint bytes below are **storage only**, never sent to the model.
 
 | Scenario / round | Snapshot sent bytes | Stored journal bytes | Latest stored update | Request before protocol | Request after protocol |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Steady / 1 | 5523 | 5697 | 5697 | 17327 | 13911 |
-| Steady / 4 | 5523 | 5787 | 38 | 17327 | 13911 |
-| Count changes / 4 | 5523 | 5817 | 48 | 17327 | 13911 |
-| Evidence state changes / 3 | 5522 | 11046 | 5336 | 17324 | 13908 |
+| Steady / 1 | 5523 | 5697 | 5697 | 17327 | 12180 |
+| Steady / 4 | 5523 | 5787 | 38 | 17327 | 12180 |
+| Count changes / 4 | 5523 | 5817 | 48 | 17327 | 12180 |
+| Evidence state changes / 3 | 5522 | 11046 | 5336 | 17324 | 12177 |
 
-References reduced these complete repeated-read fixture requests by about 19.7%,
-including a 630-byte fixed protocol cost. A prefetch-only request adds that cost
+References reduced these complete repeated-read fixture requests by about 29.7%,
+including the complete serialized protocol overhead. The fixed rule itself is
+795 UTF-8 bytes; its serialized cost depends on the surrounding system array
+(the measurement fixture adds 795 bytes; requests with an existing nonempty
+system array add 798). A prefetch-only request pays that overhead
 without replacement savings. Stored replay can grow after changes, but the sent
 snapshot does not grow with it. No user-message cache breakpoint or model-side
 patch application is needed. Tests compare every sent snapshot with the exact
@@ -121,3 +133,21 @@ Representative live-model quality/cost comparisons, default-on rollout and
 production rollback acceptance remain tracked in Phase E/F and #1/#2/#33. They
 are not prerequisites for exercising the opt-in transport and are not marked done
 by this implementation.
+
+
+PR #60 review correction: literal quoting inspects objects and arrays recursively
+for host-protocol shapes (`$ref` together with `at` or `context_status`, or a
+`literal_evidence_json` key). A matching shape anywhere in an evidence field
+quotes the complete field, preventing nested entity-like objects from posing as
+host references. Strings and ordinary schema `$id`/`$ref` alone remain readable,
+including at the root of an OpenAPI/JSON Schema document. The nested-forgery and
+root-schema regression tests failed before this correction and pass afterwards.
+The table above includes the updated interpretation rule and its full wire cost.
+
+
+Post-review validation at `307bd9c`: complete `agent` package passes with 208
+positive test/subtest events, zero failures and two existing skips, both ordinary
+and race runs on separate PostgreSQL 16 databases. Build and vet pass. A temporary
+merge with corrected PR #58 is conflict-free and focused joint context/Worker/
+dependency tests pass under the race detector. No live comparison or remote CI
+success is claimed.
