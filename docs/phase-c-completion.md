@@ -19,6 +19,12 @@ an additional billing ledger:
 - request/response UTF-8 bytes, elapsed inference milliseconds, reported token/cache
   usage, provider errors, rejected/truncated responses and zero-usage responses.
 
+Byte counters are intentionally bounded to the compactor interface: input bytes
+are the serialized Norma completion request, and output bytes are the visible
+summary text. They exclude HTTP headers/framing and are not provider tokenizer
+counts. Log snapshots are cumulative for one Compactor lifetime; do not sum
+successive snapshots as if each were a separate charge.
+
 A provider invocation can include several backend retries/failovers; it is **not**
 a physical HTTP-attempt count. Use the existing `llm_usage` ledger for that, with
 `purpose=graph_summary`. SDK transcript summarization is a separate path tagged
