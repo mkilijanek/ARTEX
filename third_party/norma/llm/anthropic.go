@@ -109,7 +109,8 @@ func buildAnthropicSystem(req CompletionRequest) []anthropicSystemBlock {
 			if len(ordered) > 4 {
 				ordered = append(ordered[:3], end)
 			}
-			blocks := make([]anthropicSystemBlock, 0, len(ordered)+1)
+			// Four cache endpoints plus an optional uncached dynamic tail.
+			blocks := make([]anthropicSystemBlock, 0, 5)
 			start := 0
 			for _, point := range ordered {
 				blocks = append(blocks, anthropicSystemBlock{Type: "text", Text: joinSystem(req.System[start:point]), CacheControl: map[string]any{"type": "ephemeral"}})

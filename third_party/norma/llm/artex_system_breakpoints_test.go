@@ -35,3 +35,18 @@ func TestAnthropicAdditionalPrefixKeepsLegacyEndpointAndText(t *testing.T) {
 		t.Fatal("limit lost final endpoint", b)
 	}
 }
+
+// The maximum cache endpoint count must still leave room for the dynamic tail.
+func TestAnthropicMaximumCacheEndpointsWithDynamicTail(t *testing.T) {
+	system := []string{"a", "b", "c", "d", "e", "f", "dynamic"}
+	blocks := buildAnthropicSystem(CompletionRequest{System: system, DynamicBoundary: 6, CacheBreakpoints: []int{5, 4, 3, 2, 1}})
+	want := []string{"a", "b", "c", "d\n\ne\n\nf", "dynamic"}
+	if len(blocks) != len(want) {
+		t.Fatalf("got %d blocks, want %d", len(blocks), len(want))
+	}
+	for i, block := range blocks {
+		if block.Text != want[i] || (block.CacheControl != nil) != (i < 4) {
+			t.Fatalf("block %d: text=%q cache=%v", i, block.Text, block.CacheControl)
+		}
+	}
+}
