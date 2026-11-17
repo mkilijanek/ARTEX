@@ -61,14 +61,15 @@ eligible. Eligibility depends only on that field and its earlier occurrence, so
 new duplicates do not rewrite previously sent messages or system prefixes.
 References and their source values remain untrusted data.
 
-A reference only ever stands directly in place of a summary, body or payload.
-A stored value in that position that is itself an object with a top-level
-`$ref`, `$id` or `literal_evidence_json` key is quoted deterministically as
-`literal_evidence_json` from its first appearance; its contents are exact
-serialized source data, never reference protocol, and it is not deduplicated.
-The same keys deeper inside a value or inside a string are ordinary evidence:
-OpenAPI and JSON Schema documents, which use `$ref` and `$id` throughout, are
-sent readable and unescaped and remain eligible for deduplication.
+A host reference stands directly in place of a summary, body or payload.
+Source evidence can itself contain nested entity-like objects. If an object at
+any depth has `$ref` together with `at` or `context_status`, or has a
+`literal_evidence_json` key, the complete evidence field is quoted deterministically
+as `literal_evidence_json` from its first appearance. That serialized JSON remains
+literal source data, never reference protocol, and is not deduplicated. Ordinary
+schema `$ref`/`$id` alone, including root keys, and string occurrences remain
+readable and eligible for deduplication. Ordinary first occurrences stay unchanged;
+protocol-shaped source values are quoted consistently from the first request.
 
 The ledger is rebuilt on every request from currently visible data. If compaction
 removes the earlier definition, the next occurrence is full again. References
@@ -142,3 +143,11 @@ host references. Strings and ordinary schema `$id`/`$ref` alone remain readable,
 including at the root of an OpenAPI/JSON Schema document. The nested-forgery and
 root-schema regression tests failed before this correction and pass afterwards.
 The table above includes the updated interpretation rule and its full wire cost.
+
+
+Post-review validation at `307bd9c`: complete `agent` package passes with 208
+positive test/subtest events, zero failures and two existing skips, both ordinary
+and race runs on separate PostgreSQL 16 databases. Build and vet pass. A temporary
+merge with corrected PR #58 is conflict-free and focused joint context/Worker/
+dependency tests pass under the race detector. No live comparison or remote CI
+success is claimed.
