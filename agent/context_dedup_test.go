@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"iter"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -61,7 +62,12 @@ func TestContextDedupReferencesOnlyVisibleExactVersions(t *testing.T) {
 	if !strings.Contains(text, `"has_more":true`) || !strings.Contains(text, `"next_before":100`) {
 		t.Fatal("pagination lost", text)
 	}
-	definitions := map[string]any{}
+	// The wire reference names the entity field without the 64-hex content
+	// version; at alone must locate the exact earlier value.
+	if !strings.Contains(text, `"$ref":"fact/exploration/7/9007199254740993/summary"`) || strings.Contains(view.Messages[0].Text(), `"nested"`) {
+		t.Fatal("unexpected wire reference", text)
+	}
+	resolve := func(at map[string]any) any { return resolveContextAt(t, view, at, "fixture prefetch:\n") }
 	for _, pair := range [][2]string{{strings.TrimPrefix(view.Messages[0].Text(), "fixture prefetch:\n"), strings.TrimPrefix(req.Messages[0].Text(), "fixture prefetch:\n")}, {text, req.Messages[2].Content[0].Content[0].Text}} {
 		var value any
 		d := json.NewDecoder(strings.NewReader(pair[0]))
@@ -69,10 +75,7 @@ func TestContextDedupReferencesOnlyVisibleExactVersions(t *testing.T) {
 		if err := d.Decode(&value); err != nil {
 			t.Fatal(err)
 		}
-		if len(definitions) == 0 {
-			walkContextFields(value, "", "exploration/7", func(key string, value any) any { definitions[key] = value; return value })
-		}
-		expanded := expandContextFixture(t, value, definitions)
+		expanded := expandContextFixture(t, value, resolve)
 		raw, _ := json.Marshal(expanded)
 		if string(canonicalContextJSON(raw)) != string(canonicalContextJSON([]byte(pair[1]))) {
 			t.Fatal("references did not reconstruct exact evidence", string(raw), pair[1])
@@ -150,30 +153,103 @@ func TestContextDedupQuotesReservedSyntaxInsideEvidence(t *testing.T) {
 	}
 }
 
-func expandContextFixture(t *testing.T, value any, definitions map[string]any) any {
+// expandContextFixture replaces every wire reference by the value its at
+// locates, exactly as the interpretation rule tells the model to.
+func expandContextFixture(t *testing.T, value any, resolve func(at map[string]any) any) any {
 	t.Helper()
 	switch v := value.(type) {
 	case []any:
 		for i, item := range v {
-			v[i] = expandContextFixture(t, item, definitions)
+			v[i] = expandContextFixture(t, item, resolve)
 		}
 	case map[string]any:
-		if id, ok := v["$id"].(string); ok {
-			definitions[id] = v["value"]
-			return v["value"]
-		}
-		if ref, ok := v["$ref"].(string); ok {
-			definition, exists := definitions[ref]
-			if !exists {
-				t.Fatal("dangling ref", ref)
+		if _, ok := v["$ref"].(string); ok {
+			at, located := v["at"].(map[string]any)
+			if !located || v["context_status"] != "previous" {
+				t.Fatal("reference without location", v)
 			}
-			return definition
+			return resolve(at)
 		}
 		for key, item := range v {
-			v[key] = expandContextFixture(t, item, definitions)
+			v[key] = expandContextFixture(t, item, resolve)
 		}
 	}
 	return value
+}
+
+func resolveContextAt(t *testing.T, view llm.CompletionRequest, at map[string]any, prefetchPrefix string) any {
+	t.Helper()
+	index := func(key string) int {
+		n, err := at[key].(json.Number).Int64()
+		if err != nil {
+			t.Fatal("bad index", key, at)
+		}
+		return int(n)
+	}
+	block := view.Messages[index("message")].Content[index("block")]
+	text := strings.TrimPrefix(block.Text, prefetchPrefix)
+	if _, nested := at["nested"]; nested {
+		text = block.Content[index("nested")].Text
+	}
+	var value any
+	d := json.NewDecoder(strings.NewReader(text))
+	d.UseNumber()
+	if err := d.Decode(&value); err != nil {
+		t.Fatal(err)
+	}
+	pointer, _ := at["json_pointer"].(string)
+	for _, part := range strings.Split(strings.TrimPrefix(pointer, "/"), "/") {
+		switch v := value.(type) {
+		case map[string]any:
+			value = v[part]
+		case []any:
+			i, err := strconv.Atoi(part)
+			if err != nil || i >= len(v) {
+				t.Fatal("bad pointer", pointer)
+			}
+			value = v[i]
+		default:
+			t.Fatal("pointer leaves the document", pointer)
+		}
+	}
+	if value == nil {
+		t.Fatal("dangling reference", at)
+	}
+	return value
+}
+
+// OpenAPI and JSON Schema evidence uses $ref and $id throughout. Nested or
+// string occurrences are not protocol: they must not be quoted, must not grow
+// the request, and must still deduplicate.
+func TestContextDedupLeavesNestedSchemaReferencesReadable(t *testing.T) {
+	t.Setenv("ARTEX_BOUNDED_CONTEXT", "1")
+	ctx, req := contextFixtureRequest(t, false)
+	p := withContextView(ctx, &plannerContextFixtureProvider{receive: func(llm.CompletionRequest) {}}).(*contextViewProvider)
+	schema := `{"openapi":"3.1.0","$schema":"https://json-schema.org/draft/2020-12/schema","components":{"schemas":{"Order":{"$id":"order","properties":{"owner":{"$ref":"#/components/schemas/User"},"note":{"type":"string","example":"see \"$ref\" in the spec ` + strings.Repeat("padding ", 60) + `"}}}}}}`
+	node := `{"id":41,"kind":"fact","state":"confirmed","payload":` + schema + `}`
+	req.Messages[1].Content[2].Name = "node_detail"
+	req.Messages[2].Content[0].Content[0].Text = node
+	req.Messages = append(req.Messages,
+		llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: "read-2", Name: "node_detail", Input: json.RawMessage(`{}`)}}},
+		llm.Message{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.BlockToolResult, ToolUseID: "read-2", Content: []llm.ContentBlock{llm.TextBlock(node)}}}})
+	view := p.request(ctx, req)
+	first, second := view.Messages[2].Content[0].Content[0].Text, view.Messages[4].Content[0].Content[0].Text
+	if first != node {
+		t.Fatal("first schema occurrence was rewritten or quoted", first)
+	}
+	if strings.Contains(second, "literal_evidence_json") || !strings.Contains(second, `"$ref":"fact/exploration/7/41/payload"`) || len(second) >= len(node) {
+		t.Fatal("repeated schema payload was not deduplicated", second)
+	}
+	var repeated map[string]any
+	d := json.NewDecoder(strings.NewReader(second))
+	d.UseNumber()
+	if err := d.Decode(&repeated); err != nil {
+		t.Fatal(err)
+	}
+	expanded, _ := json.Marshal(expandContextFixture(t, repeated, func(at map[string]any) any { return resolveContextAt(t, view, at, "") }))
+	if string(canonicalContextJSON(expanded)) != string(canonicalContextJSON([]byte(node))) {
+		t.Fatal("schema payload not reconstructed", string(expanded))
+	}
 }
 
 func TestContextDedupKeepsChangedStateConfidenceSourceIDAndFullEvidence(t *testing.T) {

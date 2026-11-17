@@ -49,18 +49,26 @@ replace the distinct full payload of node_detail. Other fields, ownership,
 confidence, lineage and pagination metadata stay at each occurrence.
 
 The first full value stays unchanged. Later occurrences use `$ref`,
-`context_status=previous` and `at`. The natural key names the entity/source/field
-and SHA256 version; `at` gives its earlier host-history location and JSON pointer.
+`context_status=previous` and `at`. `$ref` names the entity/source/field; `at`
+gives the earlier host-history location (message, block and, inside a tool
+result, nested index) and a JSON pointer, which together identify the exact
+value. The SHA256 content version stays internal as the ledger key and is not
+repeated on the wire: a reference is about 150 bytes instead of about 220, so
+shorter values qualify and every replacement saves more.
 These labels describe repeated representation, not real-world validity.
 Interpretation rules are fixed from the first request, before any duplicate is
 eligible. Eligibility depends only on that field and its earlier occurrence, so
 new duplicates do not rewrite previously sent messages or system prefixes.
 References and their source values remain untrusted data.
 
-Reserved reference-shaped syntax inside evidence is quoted deterministically as
-`literal_evidence_json` from its first appearance. Its contents are exact serialized
-source data, never nested reference protocol. These ambiguous values are not
-deduplicated. Quoting preserves raw stored evidence and may add transport bytes.
+A reference only ever stands directly in place of a summary, body or payload.
+A stored value in that position that is itself an object with a top-level
+`$ref`, `$id` or `literal_evidence_json` key is quoted deterministically as
+`literal_evidence_json` from its first appearance; its contents are exact
+serialized source data, never reference protocol, and it is not deduplicated.
+The same keys deeper inside a value or inside a string are ordinary evidence:
+OpenAPI and JSON Schema documents, which use `$ref` and `$id` throughout, are
+sent readable and unescaped and remain eligible for deduplication.
 
 The ledger is rebuilt on every request from currently visible data. If compaction
 removes the earlier definition, the next occurrence is full again. References
@@ -95,13 +103,13 @@ Checkpoint bytes below are **storage only**, never sent to the model.
 
 | Scenario / round | Snapshot sent bytes | Stored journal bytes | Latest stored update | Request before protocol | Request after protocol |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Steady / 1 | 5523 | 5697 | 5697 | 17327 | 13911 |
-| Steady / 4 | 5523 | 5787 | 38 | 17327 | 13911 |
-| Count changes / 4 | 5523 | 5817 | 48 | 17327 | 13911 |
-| Evidence state changes / 3 | 5522 | 11046 | 5336 | 17324 | 13908 |
+| Steady / 1 | 5523 | 5697 | 5697 | 17327 | 12103 |
+| Steady / 4 | 5523 | 5787 | 38 | 17327 | 12103 |
+| Count changes / 4 | 5523 | 5817 | 48 | 17327 | 12103 |
+| Evidence state changes / 3 | 5522 | 11046 | 5336 | 17324 | 12100 |
 
-References reduced these complete repeated-read fixture requests by about 19.7%,
-including a 630-byte fixed protocol cost. A prefetch-only request adds that cost
+References reduced these complete repeated-read fixture requests by about 30.1%,
+including a 720-byte fixed protocol cost. A prefetch-only request adds that cost
 without replacement savings. Stored replay can grow after changes, but the sent
 snapshot does not grow with it. No user-message cache breakpoint or model-side
 patch application is needed. Tests compare every sent snapshot with the exact
