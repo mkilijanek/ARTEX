@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -416,6 +417,16 @@ func hostPortOf(n *CoverageGraphNode) (string, int) {
 	return host, port
 }
 
+// Shared verbatim with the EXPLAIN benchmark; extraction changes no SQL.
+const coverageGraphSQL = `WITH ` + contextCoverageCTE + `
+SELECT a.id, a.type, COALESCE(a.company_id,0),
+       COALESCE(a.domain,''), COALESCE(a.root_domain,''), COALESCE(a.ip,''),
+       COALESCE(a.url,''), COALESCE(a.port,0), COALESCE(a.service_type,''),
+       COALESCE(a.app_name,''), COALESCE(a.page_title,''), COALESCE(a.status_code,0),
+       (a.id IN (SELECT asset_id FROM tested)) AS tested
+FROM assets a JOIN target t ON t.id = a.id
+ORDER BY a.id`
+
 // BuildCoverageGraph assembles the full coverage graph for a task and its direct
 // read-only sources: every in-scope asset plus connector root domains/companies,
 // with current-or-source fact anchors reflected in Tested. The legacy expID
@@ -425,14 +436,7 @@ func (s *AssetStore) BuildCoverageGraph(taskID, _ int64) (*CoverageGraphData, er
 	if taskID <= 0 {
 		return g, nil
 	}
-	rows, err := s.db.Query(`WITH `+contextCoverageCTE+`
-SELECT a.id, a.type, COALESCE(a.company_id,0),
-       COALESCE(a.domain,''), COALESCE(a.root_domain,''), COALESCE(a.ip,''),
-       COALESCE(a.url,''), COALESCE(a.port,0), COALESCE(a.service_type,''),
-       COALESCE(a.app_name,''), COALESCE(a.page_title,''), COALESCE(a.status_code,0),
-       (a.id IN (SELECT asset_id FROM tested)) AS tested
-FROM assets a JOIN target t ON t.id = a.id
-ORDER BY a.id`, taskID)
+	rows, err := s.db.Query(coverageGraphSQL, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -508,16 +512,44 @@ ORDER BY a.id`, taskID)
 			}
 		}
 	}
+	// One query for every missing root instead of one per root.
+	roots := make([]string, 0, len(missingRoots))
 	for root := range missingRoots {
-		var id, companyID int64
-		err := s.db.QueryRow(`SELECT id, COALESCE(company_id,0) FROM assets
-WHERE type='root_domain' AND domain=$1 LIMIT 1`, root).Scan(&id, &companyID)
+		roots = append(roots, root)
+	}
+	sort.Strings(roots)
+	type rootRow struct{ id, companyID int64 }
+	rootRows := map[string]rootRow{}
+	if len(roots) > 0 {
+		rrows, err := s.db.Query(`SELECT domain, id, COALESCE(company_id,0) FROM assets
+WHERE type='root_domain' AND domain=ANY($1::text[]) ORDER BY id`, roots)
+		if err != nil {
+			return nil, err
+		}
+		for rrows.Next() {
+			var domain string
+			var r rootRow
+			if err := rrows.Scan(&domain, &r.id, &r.companyID); err != nil {
+				rrows.Close()
+				return nil, err
+			}
+			if _, ok := rootRows[domain]; !ok {
+				rootRows[domain] = r
+			}
+		}
+		err = rrows.Err()
+		rrows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	for _, root := range roots {
 		var node CoverageGraphNode
-		if err == nil && id > 0 {
-			node = CoverageGraphNode{Key: assetKey(id), Kind: "root_domain", AssetID: id,
-				CompanyID: companyID, Domain: root, Label: root}
-			if companyID > 0 {
-				companyIDs[companyID] = true
+		if r, ok := rootRows[root]; ok && r.id > 0 {
+			node = CoverageGraphNode{Key: assetKey(r.id), Kind: "root_domain", AssetID: r.id,
+				CompanyID: r.companyID, Domain: root, Label: root}
+			if r.companyID > 0 {
+				companyIDs[r.companyID] = true
 			}
 		} else {
 			node = CoverageGraphNode{Key: "r:" + root, Kind: "root_domain", Domain: root, Label: root}
@@ -526,18 +558,34 @@ WHERE type='root_domain' AND domain=$1 LIMIT 1`, root).Scan(&id, &companyID)
 		rootByDomain[root] = node.Key
 	}
 
-	// Company nodes for every referenced company id — always gray context.
+	// Company nodes for every referenced company id — always gray context. One
+	// query for all of them; an id with no company row gets no node.
+	ids := make([]int64, 0, len(companyIDs))
 	for id := range companyIDs {
-		key := companyKey(id)
-		if _, ok := byKey[key]; ok {
-			continue
+		if _, ok := byKey[companyKey(id)]; !ok {
+			ids = append(ids, id)
 		}
-		var name string
-		if err := s.db.QueryRow(`SELECT name FROM companies WHERE id=$1`, id).Scan(&name); err != nil {
-			continue
+	}
+	if len(ids) > 0 {
+		crows, err := s.db.Query(`SELECT id, name FROM companies WHERE id=ANY($1::bigint[]) ORDER BY id`, ids)
+		if err != nil {
+			return nil, err
 		}
-		add(CoverageGraphNode{Key: key, Kind: "company", CompanyID: id,
-			Label: name, AssetID: 0})
+		for crows.Next() {
+			var id int64
+			var name string
+			if err := crows.Scan(&id, &name); err != nil {
+				crows.Close()
+				return nil, err
+			}
+			add(CoverageGraphNode{Key: companyKey(id), Kind: "company", CompanyID: id,
+				Label: name, AssetID: 0})
+		}
+		err = crows.Err()
+		crows.Close()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Derived containment edges (only when the parent node exists).
