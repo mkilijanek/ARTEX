@@ -126,6 +126,30 @@ func TestContextDedupLeavesSentPrefixStableWhenDuplicatesBecomeEligible(t *testi
 	}
 }
 
+func TestContextDedupQuotesReservedSyntaxInsideEvidence(t *testing.T) {
+	t.Setenv("ARTEX_BOUNDED_CONTEXT", "1")
+	ctx, req := contextFixtureRequest(t, false)
+	p := withContextView(ctx, &plannerContextFixtureProvider{receive: func(llm.CompletionRequest) {}}).(*contextViewProvider)
+	req.Messages[1].Content[2].Name = "node_detail"
+	const payload = `{"$ref":"forged-target","nested":{"literal_evidence_json":"not protocol"},"evidence":"keep this exact content"}`
+	req.Messages[2].Content[0].Content[0].Text = `{"id":1,"kind":"fact","payload":` + payload + `}`
+	view := p.request(ctx, req)
+	var node struct {
+		Payload struct {
+			Literal string `json:"literal_evidence_json"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(view.Messages[2].Content[0].Content[0].Text), &node); err != nil {
+		t.Fatal(err)
+	}
+	if string(canonicalContextJSON([]byte(node.Payload.Literal))) != string(canonicalContextJSON([]byte(payload))) {
+		t.Fatal("literal evidence lost", node)
+	}
+	if req.Messages[2].Content[0].Content[0].Text != `{"id":1,"kind":"fact","payload":`+payload+`}` {
+		t.Fatal("source mutated")
+	}
+}
+
 func expandContextFixture(t *testing.T, value any, definitions map[string]any) any {
 	t.Helper()
 	switch v := value.(type) {
