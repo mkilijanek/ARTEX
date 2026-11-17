@@ -1,8 +1,12 @@
 package agent
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/Autumn-27/norma/agentcore"
+	"github.com/Autumn-27/norma/llm"
 )
 
 func TestCachePrefixPreservesPromptAndStableRolePrefix(t *testing.T) {
@@ -82,5 +86,55 @@ func TestPlannerDefaultOrderChangesOnlyWithCacheOptIn(t *testing.T) {
 		if goal < 0 || rules < 0 || (flag == "0" && goal > rules) || (flag == "1" && goal < rules) {
 			t.Fatalf("flag=%s goal=%d rules=%d", flag, goal, rules)
 		}
+	}
+}
+
+// Measure the provider-facing system, including SDK trust framing and deferred
+// guidance, rather than only logging sizes of the host template.
+func TestProviderFacingPromptBudgetsWithTrafficAndDeferredTools(t *testing.T) {
+	t.Setenv("ARTEX_UNTRUSTED_BOUNDARY", "1")
+	t.Setenv("ARTEX_BOUNDED_CONTEXT", "0")
+	for _, cache := range []string{"0", "1"} {
+		t.Run("cache="+cache, func(t *testing.T) {
+			t.Setenv("ARTEX_CACHE_PREFIX", cache)
+			for _, recording := range []bool{false, true} {
+				t.Run(fmt.Sprint("recording=", recording), func(t *testing.T) {
+					cert := ""
+					if recording {
+						cert = "/fixture/ca.pem"
+					}
+					prompts := map[string]string{"worker": workerSystem("127.0.0.1:8080", cert, "/data", "/data/tasks/1/i1"), "planner": plannerSystem("fixture goal", "/data", "/data/tasks/1"), "mainagent": mainAgentSystem("fixture goal", "/data", "/data/tasks/1"), "chat": chatSystem("assistant", "/data", "/data/sessions/test")}
+					budgets := map[string]int{"worker": 14000, "planner": 16000, "mainagent": 7000, "chat": 3500}
+					for role, body := range prompts {
+						def := DeferredInfo{GlobalNames: []string{"mcp__fixture__read"}, FindingGuidance: findingIDGuidance}
+						system, boundary := deferredSystem(body, def)
+						var request llm.CompletionRequest
+						provider := &plannerContextFixtureProvider{receive: func(req llm.CompletionRequest) { request = req }}
+						opts := agentcore.Options{Provider: provider, SystemPrompt: system, DynamicBoundary: boundary, NonStreaming: true, MaxTurns: 1}
+						if _, _, err := captureRun(t.Context(), opts, "fixture only", nil); err != nil {
+							t.Fatal(err)
+						}
+						rendered := strings.Join(request.System, "\n\n")
+						if len(rendered) > budgets[role] {
+							t.Fatalf("%s actual system=%d > %d", role, len(rendered), budgets[role])
+						}
+						for _, block := range []string{normaTrustRules, findingIDGuidance, "<available-deferred-tools>"} {
+							if strings.Count(rendered, block) != 1 {
+								t.Fatalf("%s duplicated/missing block %q", role, block)
+							}
+						}
+						if role == "worker" && strings.Contains(rendered, "**Traffic tools**") != recording {
+							t.Fatal("traffic guidance mismatches tool availability")
+						}
+						if role == "worker" || role == "mainagent" {
+							if strings.Count(rendered, untrustedContentInstructions) != 1 {
+								t.Fatal("shared untrusted rules missing/duplicated", role)
+							}
+						}
+						t.Logf("cache=%s recording=%v %s provider system=%d", cache, recording, role, len(rendered))
+					}
+				})
+			}
+		})
 	}
 }
