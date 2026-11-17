@@ -91,11 +91,13 @@ Default remains zero pending security/rollout validation. Mandatory system
 constraints and full intent text are unchanged. Projection never changes stored
 graphs, evidence or permissions; omitted evidence cannot establish a negative.
 
-Planner packets contain one current snapshot. Each request is independent of
-prior SDK sessions; restart/eviction starts a new epoch. Optional content targets
-16 KiB, with explicit omission paths; mandatory instructions/signals are retained
-even above that soft target, marked `mandatory_budget_exceeded`. A durable delta
-protocol is not implemented and remains tracked in #17.
+Planner context uses a durable PostgreSQL checkpoint: one immutable base plus
+versioned replace/remove deltas, replayed in each fresh SDK session. Restart
+retains the epoch/version; corrupt checkpoints rebuild from the source graph in a
+new epoch. Resync occurs every eight updates or before replay exceeds 40 KiB.
+Optional projection targets 16 KiB; mandatory instructions/signals remain lossless
+above the soft targets with explicit `mandatory_budget_exceeded`. See
+[Phase B completion](phase-b-completion.md) for protocol, tests and measurements.
 
 Worker launches select dependency/own-intent observations, preserve IDs,
 confidence and source identity, and omit unrelated frontier/digest material.
@@ -139,9 +141,10 @@ fields carry per-path omission metadata. The 16 KiB target is a **soft** budget:
 mandatory data may exceed it, explicitly marked `mandatory_budget_exceeded`;
 correctness takes precedence over savings. Do not claim a hard bound on all prompts.
 
-Planner packets now send one current snapshot, not a base plus duplicated changes.
-Fresh SDK sessions cannot safely use standalone deltas. Logs record source/packet
-bytes per round, not provider token savings. Dependency filtering precedes optional
+Planner packets replay a persisted base plus ordered deltas; a fresh session
+never receives a standalone delta. Logs distinguish source/replay/update bytes,
+explicit UTF-8/4 token estimates and provider-reported input/output/cache usage.
+They do not assert model-cost savings. Dependency filtering precedes optional
 trimming and uses producing intent IDs; direct fact/finding parents are retained
 as well, because graph edges can point from those node kinds to an intent.
 
@@ -149,13 +152,16 @@ Asset omissions are explicit at field level. Trace pagination parameters exist
 only with the flag enabled, unavailable step IDs are reported, and detail batches
 have an aggregate 16 KiB encoded budget with continuation offsets.
 
-#20 remains incomplete: this projection suppresses identical entries while
-preserving changed state and source identity, but does not deduplicate across
-prefetch, tool results and SDK history. That requires a unified provenance and
-history protocol; deleting evidence by matching text would be unsafe. #17's durable
-delta protocol and live per-round token comparison are also not delivered. These
-issues must not auto-close from this PR. #1/#2 remain opt-in rollout work rather
-than default-on completion claims.
+#17/#20 are completed by the follow-up protocol in `agent/planner_context.go`
+and `agent/context_dedup.go`: durable replay plus request-local, versioned field
+references across registered prefetch and known graph read tools/history. Source,
+node ID, kind, state, confidence and exact content determine identity. Full
+transcripts/evidence stay unchanged; after compaction, missing definitions become
+full data again. Transformations are retained only when the complete request,
+including protocol instructions, is smaller. Representative deterministic
+measurements are in [phase-b-completion.md](phase-b-completion.md). Live model
+quality/cost acceptance remains Phase E/F work; #1/#2 remain opt-in rollout work
+rather than default-on completion claims.
 
 ## Phase C review: prompt inventory and memo acceptance
 
