@@ -51,7 +51,7 @@ func TestContextDedupReferencesOnlyVisibleExactVersions(t *testing.T) {
 		t.Fatal("mutated SDK request/history")
 	}
 	raw, _ := json.Marshal(view)
-	if !strings.Contains(string(raw), `$ref`) || !strings.Contains(view.Messages[0].Text(), `$id`) || !strings.Contains(string(raw), `9007199254740993`) {
+	if !strings.Contains(string(raw), `$ref`) || view.Messages[0].Text() != req.Messages[0].Text() || !strings.Contains(string(raw), `9007199254740993`) {
 		t.Fatal("no identity-preserving reference", string(raw))
 	}
 	if view.Messages[1].Content[0].Signature != "opaque" || view.Messages[1].Content[1].Data != "encrypted" || view.Messages[1].Content[2].ThoughtSignature != "gemini-opaque" {
@@ -68,6 +68,9 @@ func TestContextDedupReferencesOnlyVisibleExactVersions(t *testing.T) {
 		d.UseNumber()
 		if err := d.Decode(&value); err != nil {
 			t.Fatal(err)
+		}
+		if len(definitions) == 0 {
+			walkContextFields(value, "", "exploration/7", func(key string, value any) any { definitions[key] = value; return value })
 		}
 		expanded := expandContextFixture(t, value, definitions)
 		raw, _ := json.Marshal(expanded)
@@ -92,6 +95,34 @@ func TestContextDedupReferencesOnlyVisibleExactVersions(t *testing.T) {
 	summary := provider.request(llmmeta.WithCall(ctx, "transcript_summary", 0), req)
 	if strings.Contains(summary.Messages[2].Content[0].Content[0].Text, `$ref`) {
 		t.Fatal("summary received references")
+	}
+}
+
+func TestContextDedupLeavesSentPrefixStableWhenDuplicatesBecomeEligible(t *testing.T) {
+	t.Setenv("ARTEX_BOUNDED_CONTEXT", "1")
+	ctx, req := contextFixtureRequest(t, false)
+	p := withContextView(ctx, &plannerContextFixtureProvider{receive: func(llm.CompletionRequest) {}}).(*contextViewProvider)
+	firstInput := req
+	firstInput.Messages = req.Messages[:1]
+	first := p.request(ctx, firstInput)
+	second := p.request(ctx, req)
+	a, _ := json.Marshal(first.Messages)
+	b, _ := json.Marshal(second.Messages[:1])
+	if string(a) != string(b) {
+		t.Fatal("previously sent message changed")
+	}
+	a, _ = json.Marshal(first.System)
+	b, _ = json.Marshal(second.System)
+	if string(a) != string(b) {
+		t.Fatal("system prefix changed when duplicate appeared")
+	}
+	thirdInput := req
+	thirdInput.Messages = append(append([]llm.Message(nil), req.Messages...), req.Messages[1:]...)
+	third := p.request(ctx, thirdInput)
+	a, _ = json.Marshal(second.Messages)
+	b, _ = json.Marshal(third.Messages[:len(second.Messages)])
+	if string(a) != string(b) {
+		t.Fatal("previous references changed after append")
 	}
 }
 
