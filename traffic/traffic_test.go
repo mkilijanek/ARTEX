@@ -408,3 +408,63 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 		t.Fatalf("blobC still exists after last reference removed: %v", err)
 	}
 }
+
+// A host is request-controlled. One that names the store's own directories (or
+// "." / "..") must never select them as a "host tree": that tree is renamed
+// away and removed, which would destroy the index, blob store or CA.
+func TestDeleteHostsNeverTouchesStoreDirectories(t *testing.T) {
+	dir := t.TempDir()
+	tr, err := Open(dir, "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close()
+	marker := filepath.Join(dir, "_blobs", "marker")
+	if err := os.WriteFile(marker, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reserved := []string{"_blobs", "_ca", "_index", "_delete_staging", "..", "."}
+	for i, h := range append([]string{"victim.example.com"}, reserved...) {
+		id := fmt.Sprintf("1-%04d", i+1)
+		if _, err := tr.DB().Exec(`INSERT INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path)
+VALUES(?,?,?,?,?,?,?,?,?,?,?)`, id, i+1, h, "GET", "/", "http://x/", 200, "text/html", 0, 0, "x/GET/"+id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hostTree := filepath.Join(dir, "victim.example.com")
+	if err := os.MkdirAll(hostTree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	intact := func(step string) {
+		t.Helper()
+		for _, name := range []string{"_blobs", "_ca", "_index"} {
+			if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+				t.Fatalf("%s removed store directory %s: %v", step, name, err)
+			}
+		}
+		if _, err := os.Stat(marker); err != nil {
+			t.Fatalf("%s removed blob store contents: %v", step, err)
+		}
+		if _, err := os.Stat(dir); err != nil {
+			t.Fatalf("%s removed the store root: %v", step, err)
+		}
+	}
+	// Exact path: rows go, directories stay.
+	n, err := tr.DeleteHostsExact(reserved[:3])
+	if err != nil || n != 3 {
+		t.Fatalf("exact delete of reserved names: n=%d err=%v", n, err)
+	}
+	intact("DeleteHostsExact")
+	// Substring path resolves directories from recorded hosts.
+	if _, err := tr.DeleteHost("_"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tr.DeleteHost("."); err != nil {
+		t.Fatal(err)
+	}
+	intact("DeleteHost")
+	// A real host tree is still removed.
+	if _, err := os.Stat(hostTree); !os.IsNotExist(err) {
+		t.Fatalf("ordinary host tree should be removed, stat err=%v", err)
+	}
+}

@@ -89,7 +89,7 @@ export function FindingRetestPanel({
         </div>
         {running?.conversation_id != null ? (
           <Button asChild variant="outline" size="sm">
-            <Link href={`/chat?c=${running.conversation_id}`} title="View the running retest session">
+            <Link href={`/chat?c=${encodeURIComponent(String(running.conversation_id))}`} title="View the running retest session">
               <Spinner data-icon="inline-start" aria-hidden="true" />
               Retesting
             </Link>
@@ -138,7 +138,7 @@ export function FindingRetestPanel({
                   </span>
                   {item.conversation_id != null ? (
                     <Button asChild variant="ghost" size="sm" className="ml-auto">
-                      <Link href={`/chat?c=${item.conversation_id}`}>View session</Link>
+                      <Link href={`/chat?c=${encodeURIComponent(String(item.conversation_id))}`}>View session</Link>
                     </Button>
                   ) : (
                     <span className="text-muted-foreground text-xs">Conversation deleted</span>
