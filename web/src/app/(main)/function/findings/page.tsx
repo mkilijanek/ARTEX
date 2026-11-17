@@ -1075,7 +1075,7 @@ export default function FindingsPage() {
                         {group.task_id !== null && (
                           <Button size="icon-sm" variant="ghost" asChild>
                             <Link
-                              href={`/function/tasks/detail?id=${group.task_id}`}
+                              href={`/function/tasks/detail?id=${encodeURIComponent(String(group.task_id))}`}
                               aria-label={`View task #${group.task_id}`}
                             >
                               <ArrowUpRightIcon />

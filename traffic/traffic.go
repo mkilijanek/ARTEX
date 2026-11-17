@@ -679,6 +679,37 @@ func sanitize(s string) string {
 	return out
 }
 
+// storeDirs are the store's own directories directly under the traffic root.
+// They are never host trees, whatever a host happens to be called.
+var storeDirs = []string{"_index", "_blobs", "_ca", "_delete_staging"}
+
+// legacyHostDir maps a host to the directory the pre-SQLite layout used for it.
+// A host is request-controlled (API input or a recorded Host value), and the
+// directory it names is later renamed away and removed, so the result must be a
+// direct child of the store that is not one of the store's own directories:
+// sanitize keeps "." and "..", and a host literally named like a store directory
+// would otherwise select the index, the blob store, the CA or the staging area
+// for deletion. The comparison ignores case because the filesystem may. Any
+// other name, including an underscore-prefixed host, keeps its tree so that an
+// exact delete still removes it. ok=false means "no legacy directory".
+func (t *Traffic) legacyHostDir(host string) (dir string, ok bool) {
+	name := sanitize(host)
+	if name == "." || name == ".." {
+		return "", false
+	}
+	for _, reserved := range storeDirs {
+		if strings.EqualFold(name, reserved) {
+			return "", false
+		}
+	}
+	root := filepath.Clean(t.dir)
+	dir = filepath.Join(root, name)
+	if filepath.Dir(dir) != root || filepath.Base(dir) != name {
+		return "", false
+	}
+	return dir, true
+}
+
 var blobHashRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // blobPath locates a stored blob. Current writes use one bucket level; blobs
@@ -1218,7 +1249,9 @@ func (t *Traffic) hostTrees(where string, args ...any) ([]string, error) {
 		if err := rows.Scan(&h); err != nil {
 			return nil, err
 		}
-		dirs = append(dirs, filepath.Join(t.dir, sanitize(h)))
+		if dir, ok := t.legacyHostDir(h); ok {
+			dirs = append(dirs, dir)
+		}
 	}
 	return dirs, rows.Err()
 }
@@ -1451,7 +1484,9 @@ func (t *Traffic) stageDeleteHostsExact(hosts []string, archiveID, taskID int64)
 	// own an orphaned directory that this deletion should take with it.
 	legacy := make([]string, 0, len(unique))
 	for _, h := range unique {
-		legacy = append(legacy, filepath.Join(t.dir, sanitize(h)))
+		if dir, ok := t.legacyHostDir(h); ok {
+			legacy = append(legacy, dir)
+		}
 	}
 
 	tx, err := t.db.Begin()

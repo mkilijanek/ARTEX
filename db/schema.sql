@@ -784,6 +784,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_task_scope_v2 ON task_scope(
 CREATE INDEX IF NOT EXISTS idx_ts_domain  ON task_scope(domain) WHERE kind IN ('root_domain','subdomain');
 CREATE INDEX IF NOT EXISTS idx_ts_net     ON task_scope USING GIST(net inet_ops) WHERE kind IN ('ip','cidr');
 CREATE INDEX IF NOT EXISTS idx_ts_company ON task_scope(company_id) WHERE kind = 'company';
+-- PR #230: avoid scanning the composite task/kind index for every ICP probe.
+-- Use the fork's existing idempotent startup schema path for fresh/old stores.
+CREATE INDEX IF NOT EXISTS idx_ts_icp ON task_scope(value) WHERE kind = 'icp';
 
 -- =====================================================================
 -- E. Agents / prompt templates / variable catalog

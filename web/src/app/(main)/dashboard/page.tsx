@@ -1008,7 +1008,7 @@ export default function DashboardPage() {
                 return (
                   <tr key={t.id} className="border-b last:border-0 transition-colors hover:bg-muted/30">
                     <td className="max-w-xs px-4 py-3">
-                      <Link href={`/function/tasks/detail?id=${t.id}`} className="group flex flex-col">
+                      <Link href={`/function/tasks/detail?id=${encodeURIComponent(String(t.id))}`} className="group flex flex-col">
                         <span className="truncate font-medium group-hover:underline">{t.description}</span>
                         <span className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground">{t.id}</span>
                       </Link>
