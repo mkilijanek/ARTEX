@@ -47,6 +47,12 @@ type Server struct {
 	jwtKey   []byte // HS256 signing key loaded from / generated into dataDir/jwt.key
 
 	scrubSecrets bool // drop ARTEX_PG_DSN and the API keys from the environment once read (binary only)
+	// ARTEX's own addresses for the WebFetch egress policy (cmd/artex -addr / -proxy).
+	listenAddr, recordingProxyAddr string
+	tpMu                           sync.Mutex // guards the captured database endpoint below
+	dbHosts                        []string   // database endpoint from the DSN, captured once at startup
+	dbPort                         uint16
+	dbCaptured                     bool
 
 	setupMu    sync.Mutex
 	setupToken string // one-time token POST /api/auth/init requires; empty when none is active
@@ -159,6 +165,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	for _, o := range opts {
 		o(s)
 	}
+	s.registerTargetPolicy() // before the secret scrub below: it reads the database DSN
 	s.initSetupToken()
 	s.initSideQuestions()
 	// Circuit-breaker thresholds/cooldowns are hot parameters on the failure path; push the global retry policy to the Registry once at startup,
@@ -3692,7 +3699,9 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.GlobalProxy != nil {
 		// Validation failure (bad scheme/host) is a client error, not a 500.
-		if err := s.m.SetGlobalProxy(*req.GlobalProxy); err != nil {
+		err := s.m.SetGlobalProxy(*req.GlobalProxy)
+		s.registerTargetPolicy() // the direct retry follows the proxy even if a later step failed
+		if err != nil {
 			writeErr(w, 400, err.Error())
 			return
 		}

@@ -97,7 +97,7 @@ func run() int {
 		skillDir = abs
 	}
 	log.Printf("[config] skill directory: %s", skillDir)
-	srv := server.New(ctx, mgr, skillDir, *dataDir, config.BaseDir(), server.WithSecretScrub())
+	srv := server.New(ctx, mgr, skillDir, *dataDir, config.BaseDir(), server.WithSecretScrub(), server.WithControlPlane(*addr, *proxy))
 	httpSrv := &http.Server{
 		Addr:              *addr,
 		Handler:           srv.Handler(),
