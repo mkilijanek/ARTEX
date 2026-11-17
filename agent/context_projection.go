@@ -157,6 +157,12 @@ func compactWorkerLaunchEnabled() bool {
 
 func workerLaunchContext(data map[string]any, intent *db.Node) map[string]any {
 	out := scopedWorkerContext(data, intent, true)
+	// The complete assigned payload is pinned in renderIntentTask's system tail.
+	// Keep lineage here without paying for the same summary in the launch turn.
+	if assignment, ok := out["intent_context"].(map[string]any); ok {
+		delete(assignment, "summary")
+		assignment["summary_in_system_intent"] = true
+	}
 	for _, key := range []string{"recent_facts", "finding_list", "awareness_recent_facts", "awareness_finding_list"} {
 		items, _ := out[key].([]any)
 		for _, item := range items {

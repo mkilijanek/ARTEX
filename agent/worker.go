@@ -328,10 +328,6 @@ func workerSystem(proxyAddr, caCert, dataDir, runDir string) string {
 	return body + workerTrafficBlock(caCert != "") + workerArtifactSpec(runDir)
 }
 
-// renderIntentTask formats the claimed intent for the worker's launch USER message:
-// the intent is the worker's whole job. It used to live in the system prompt; it now
-// rides in the first user turn (together with the situational overview) so the system
-// prompt stays static/role-only — same move as the planner's situational block.
 // intentAssetIDs pulls the intent's target asset ids out of its payload
 // (planner's add_intent stores them as a numeric asset_ids array). nil on absence
 // or malformed payload.
@@ -368,10 +364,8 @@ func renderWorkerGraphOverview(data map[string]any) string {
 	if err != nil {
 		return "" // fall back silently: the worker just won't have the global context
 	}
-	return "\n\n[Global exploration overview (read-only, helps you place your assigned intent in the bigger picture)]:\n" +
-		"Below is the task's current exploration overview. Two purposes: first, know what others have already found — don't repeat; second, let you relate this intent to the global picture while exploring it.\n" +
-		"**Digressing is good**: while exploring this intent, think deep and associate freely. The only boundary is — don't actually go execute other intents (that's other workers' business, scheduled by the planner). But whenever you associate a valuable clue (cross-asset linkage, the suspected entry of another exploit chain, a global-level suspicious point), **be sure to write it into a fact for the planner** — this is an important output of yours, not optional. Better to report one more for the planner to judge than to swallow it yourself.\n" +
-		string(b)
+	return "\n\n[Exploration context: read-only awareness]\n" +
+		"Use existing observations to avoid duplicate work. Execute only your assigned intent; record useful related clues as facts for the planner. This is a partial view: retrieve details before relying on an excerpt; omissions are not negative evidence.\n" + string(b)
 }
 
 // Execute runs one intent. hooks (the per-task Guard) gates every tool call; may
@@ -421,7 +415,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	defer cleanup()
 
 	// The intent is the worker's [sole duty, an invariant across the whole run] → it
-	// goes into the system prompt together with the launch instruction and the raw
+	// goes into the system prompt together with the launch instruction and the projected
 	// data of the intent's anchored target assets: the system prompt is rebuilt for
 	// every run and can never be compacted away, so the intent stays present in long
 	// runs, and a resumed run doesn't depend on whether the transcript kept that first

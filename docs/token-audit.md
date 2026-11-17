@@ -164,8 +164,9 @@ keys and locations. Fixed rules have an upfront cost; field substitutions are
 applied only when smaller, and reserved evidence syntax is quoted literally.
 Representative deterministic
 measurements are in [phase-b-completion.md](phase-b-completion.md). Live model
-quality/cost acceptance remains Phase E/F work; #1/#2 remain opt-in rollout work
-rather than default-on completion claims.
+quality/cost acceptance remains Phase E/F work. The subsequent milestone #1
+completion below makes only worker launch projection default-on; planner replay,
+references and trace paging remain opt-in.
 
 ## Phase C review: prompt inventory and memo acceptance
 
@@ -217,3 +218,80 @@ The built-in planner goal moves behind static rules only with
 Stored custom planner templates keep their own layout in either mode. If a custom
 template places the goal near the top, its stable prefix can remain short; no
 cache improvement is promised for that template without measurement.
+
+
+## Token Efficiency milestone completion, 2026-11-17
+
+The remaining review gaps in #1, #2 and #3 are addressed independently of the
+experimental planner/transcript features. `ARTEX_WORKER_CONTEXT` defaults to `1`
+in code, `.env.example` and Compose; `0`, `false` or `off` restores the legacy full
+worker overview and raw asset records. `ARTEX_BOUNDED_CONTEXT=0` continues to keep
+planner packets, reference substitution and trace paging off. Stored custom
+prompt bodies, operator constraints, goals, hints and credentials are unchanged.
+
+### Default launch data (#1)
+
+`workerLaunchContext` selects observations produced by the assigned intent or its
+parents represented in the source overview, plus up to three separately labelled
+awareness observations per kind. Source windows are newest-first. Each selected
+observation list has a 20-entry ceiling and explicit omitted counts. Summary
+excerpts use at most 384 encoded JSON bytes, preserving UTF-8; truncated entries
+keep IDs/provenance/state/confidence and require `node_detail(id)` before treating
+the excerpt as complete evidence. Related tasks and other optional fields share
+the existing 16 KiB soft projection budget. This is launch context, not a full
+transitive dependency closure or a new persistent summary.
+
+Full operator instructions and mandatory assignment metadata remain lossless. An
+oversize mandatory section reports `mandatory_budget_exceeded`; arbitrary operator
+text is deliberately not subject to a hard total prompt cap. Original evidence
+and stored graph records are never shortened. Omitted observations are not
+negative evidence. The rendered large-graph regression fixture enforces a 20 KiB
+launch-message ceiling and measures **7,119,318 source bytes → 9,322 rendered
+bytes**. This synthetic case stresses 2,000 long observations; production source
+windows may already be smaller. Real `Worker.Execute` tests exercise default and
+rollback paths with PostgreSQL, and call the actual `node_detail` tool to verify
+full evidence retrieval.
+
+### Default target assets (#2)
+
+The system tail now uses `projectAssets` by default: at most eight records and
+**8 KiB aggregate encoded JSON**, including omission metadata. IDs, type, exact
+URL/domain/IP, port and status are retained when they fit. A URL/domain/IP over
+1,024 bytes is omitted with a field-specific marker and `requires_asset_detail`;
+a shortened address is never offered as an executable target. The complete intent
+`asset_ids` remains pinned in the system prompt. All raw metadata is fetched using
+`list_assets(ids)` when needed; it is not interpreted as absent evidence.
+
+A 100-record escaped-string/large-metadata fixture measures **23,105,893 raw bytes
+→ 7,375 projected bytes** (seven records fit). A real Worker SDK request with one
+long page title measures about **53.2 KiB legacy → 11.2 KiB default system**. Tests
+also verify rollback, unchanged stored records, exact short targets and successful
+full retrieval through the actual `list_assets` tool.
+
+### Prompt inventory and actual reductions (#3)
+
+| Block / location | Rendering and decision |
+| --- | --- |
+| `untrustedContentInstructions`, prompt_shared.go | One shared source, included once per applicable role. Security policy is retained; source factoring alone does not save model bytes. |
+| Artifact rules, worker.go (`artifactSpec`, `workerArtifactSpec`), chat directory rules | Shared prefix; one role-specific directory tail. Each independent session still needs its storage instruction. |
+| Worker traffic note, `workerTrafficBlock` | One code-owned block, included only while recording is enabled; egress-only proxy mode does not advertise absent tools. |
+| Finding guidance, finding_workflow.go / deferred.go | Derived once from the permitted tools. Distinct ID/scope rules retained. |
+| Deferred-tool catalogue, deferred.go | One final segment for globally available tools; existing cache boundary retained. |
+| SDK trust and output framing, norma_trust.go | Separate trust contracts for runtime/summary data, retained. Provider-facing tests check each block occurs once. |
+| Settlement guidance, wrapup.go / worker.go | Budget-exhaustion guidance is supplied through SDK settlement, not copied into every ordinary launch. Role-specific writeback rules retained. |
+| Assigned intent in system and launch overview | The default launch omits its duplicate summary, marks `summary_in_system_intent`, and keeps lineage. Full payload appears once in the system tail and survives compaction. |
+| Overview introduction, renderWorkerGraphOverview | Condensed to read-only awareness, assigned-duty boundary, recording useful related clues, and evidence-retrieval/omission rules: **555 fewer rendered bytes per launch**. |
+
+`TestRenderedAgentPromptByteInventory` keeps the existing per-role template
+ceilings (worker 10,400; planner 13,500; main 4,500; chat 600 bytes).
+`TestProviderFacingPromptBudgetsWithTrafficAndDeferredTools` additionally captures
+actual Norma SDK provider requests with cache segmentation on/off, traffic
+recording on/off, deferred guidance and SDK trust framing. Enforced system
+ceilings: worker 14,000; planner 16,000; main 7,000; chat 3,500 bytes. Representative
+measurements are 11,387/12,077 worker (recording off/on), 14,212 planner, 6,004 main,
+2,420 chat. An actual worker execution checks the full assigned summary appears
+only once across the system and launch input, without duplicating safety rules.
+
+These are deterministic UTF-8 byte measurements, not provider tokenizer counts,
+live model-quality acceptance, billed-token savings or cache-hit claims. Phase E/F
+representative workloads remain separate from this milestone.

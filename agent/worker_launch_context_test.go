@@ -93,6 +93,11 @@ func TestRealWorkerUsesDefaultProjectionAndExplicitRollback(t *testing.T) {
 	if err := ts.Link(factID, db.RelDerivedFrom, intentID); err != nil {
 		t.Fatal(err)
 	}
+	tools := NewToolSet(ts, "fixture")
+	detail, err := tools.nodeDetail().Call(t.Context(), json.RawMessage(fmt.Sprintf(`{"id":%d}`, factID)), nil)
+	if err != nil || detail.IsError || !strings.Contains(detail.Flatten(), strings.Repeat("long existing observation ", 1000)) {
+		t.Fatal("full evidence not available through node_detail", err)
+	}
 	for _, flag := range []string{"", "0"} {
 		t.Run("flag="+flag, func(t *testing.T) {
 			t.Setenv("ARTEX_WORKER_CONTEXT", flag)
@@ -113,7 +118,17 @@ func TestRealWorkerUsesDefaultProjectionAndExplicitRollback(t *testing.T) {
 			if flag == "0" && !strings.Contains(input, strings.Repeat("long existing observation ", 1000)) {
 				t.Fatal("legacy rollback did not preserve raw overview")
 			}
-			if strings.Contains(strings.Join(request.System, "\n"), contextReferenceRules) {
+			system := strings.Join(request.System, "\n")
+			if flag == "" && strings.Count(system+input, "only local fixture") != 1 {
+				t.Fatal("assigned summary duplicated or lost")
+			}
+			if strings.Count(system, untrustedContentInstructions) != 1 || strings.Count(system, normaTrustRules) != 1 || strings.Count(system, artifactRulesPrefix) != 1 {
+				t.Fatal("static safety/artifact rules duplicated or lost")
+			}
+			if len(system) > 14000 {
+				t.Fatalf("actual worker system exceeds reviewed fixture budget: %d", len(system))
+			}
+			if strings.Contains(system, contextReferenceRules) {
 				t.Fatal("worker projection enabled experimental references")
 			}
 		})
@@ -175,6 +190,12 @@ func TestRealWorkerAssetProjectionDefaultAndRollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	tools := NewToolSet(ts, "fixture")
+	tools.SetAssetStore(as, as.Companies())
+	detail, err := tools.listAssets().Call(t.Context(), json.RawMessage(fmt.Sprintf(`{"ids":[%d]}`, id)), nil)
+	if err != nil || detail.IsError || !strings.Contains(detail.Flatten(), title) {
+		t.Fatal("full asset not available through list_assets", err)
+	}
 	for _, flag := range []string{"", "0"} {
 		t.Run("flag="+flag, func(t *testing.T) {
 			t.Setenv("ARTEX_WORKER_CONTEXT", flag)
@@ -201,5 +222,27 @@ func TestRealWorkerAssetProjectionDefaultAndRollback(t *testing.T) {
 			}
 			t.Logf("flag=%q actual system bytes=%d", flag, len(system))
 		})
+	}
+}
+
+func TestWorkerLaunchKeepsAssignmentInSystemAndLineageInContext(t *testing.T) {
+	summary := strings.Repeat("unique assigned summary ", 1000)
+	payload, _ := json.Marshal(map[string]any{"summary": summary, "asset_ids": []int64{91}})
+	intent := &db.Node{ID: 7, Payload: payload}
+	source := map[string]any{"running_intents": []any{map[string]any{"id": 7, "summary": summary, "parents": []int64{1}, "yields": []int64{9}, "asset_ids": []int64{91}}}}
+	view := workerLaunchContext(source, intent)
+	assignment := view["intent_context"].(map[string]any)
+	if assignment["summary"] != nil || assignment["summary_in_system_intent"] != true || assignment["parents"] == nil || assignment["yields"] == nil {
+		t.Fatal("assignment/lineage contract lost", assignment)
+	}
+	rendered := renderIntentTask(intent) + renderWorkerGraphOverview(view)
+	if strings.Count(rendered, summary) != 1 {
+		t.Fatal("full assigned summary must appear exactly once")
+	}
+	if !strings.Contains(rendered, `"asset_ids":[91]`) || !strings.Contains(rendered, "only job") {
+		t.Fatal("intent mandate/targets lost")
+	}
+	if len(renderWorkerGraphOverview(map[string]any{})) > 350 {
+		t.Fatal("overview boilerplate grew")
 	}
 }
