@@ -443,6 +443,9 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		data = workerContext(data, intent)
 	}
 	overview := renderWorkerGraphOverview(data)
+	if boundedContextEnabled() {
+		ctx = withContextFragment(ctx, overview, data, ts.ID())
+	}
 	sysBody := workerSystem(w.proxyAddr, w.proxyCACert, w.workDir, runDir) + w.lessonsBlock
 	if w.wantConstraints() {
 		sysBody += constraintBlock(ts) // inject the operation constraints (if any) into the system prompt; the worker strictly obeys them during execution

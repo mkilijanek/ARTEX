@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"sync"
@@ -22,7 +23,6 @@ import (
 // assets, judges whether the task goal is met, and emits 0..N exploration intents
 // into the frontier. It is the sole intent generator.
 type Planner struct {
-	overviewState     overviewSnapshots
 	findingRecorder   FindingRecorder
 	prov              llm.Provider
 	model             string
@@ -405,10 +405,23 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// risk). situational is spliced into input below.
 	data := tsx.graphOverviewData()
 	overview := renderGraphOverview(data)
+	var contextJournal *plannerJournal
 	if boundedContextEnabled() {
-		packet := p.overviewState.packet(ts.ID(), data)
-		b, _ := json.Marshal(packet)
-		overview = "\n\n[Self-contained projected situation: read the current base snapshot. Full evidence and scope require on-demand tools. Omitted evidence is never a negative result.]\n" + string(b)
+		journal, checkpointErr := plannerContextCheckpoint(ctx, ts, data)
+		if checkpointErr != nil {
+			if ctx.Err() != nil {
+				return false, "", ctx.Err()
+			}
+			log.Printf("[context] planner task=%d checkpoint unavailable; using current snapshot: %v", ts.ID(), checkpointErr)
+			journal, err = advancePlannerJournal(nil, data)
+			if err != nil {
+				return false, "", fmt.Errorf("planner context snapshot: %w", err)
+			}
+		}
+		overview = renderPlannerJournal(journal) + renderPlannerCredentials(data)
+		contextJournal = &journal
+		current, _ := journal.materialize()
+		ctx = withContextFragment(ctx, overview, current, ts.ID())
 	}
 	situational := renderTriggers(ts, triggers) + overview
 	// Task-level deadline / endgame mode (injected via ctx, see taskclock.go). On the
@@ -507,10 +520,20 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// pause / kill / shutdown.
 	_, _, err = captureRun(ctx, opts, input,
 		func(r db.Activity) {
+			if contextJournal != nil && r.Kind == "result" && r.InputTokens != nil {
+				log.Printf("[context] planner task=%d epoch=%s round=%d reported_input_tokens=%d reported_output_tokens=%d reported_cache_read_tokens=%d reported_cache_write_tokens=%d token_source=provider_usage", ts.ID(), contextJournal.Epoch, contextJournal.Version, *r.InputTokens, tokenValue(r.OutputTokens), tokenValue(r.CacheReadTokens), tokenValue(r.CacheWriteTokens))
+			}
 			if emit != nil {
 				r.Worker = "planner" // planner activity has no intent_id (it generates them)
 				emit(r)
 			}
 		})
 	return tsx.GoalMet, tsx.Reason, err
+}
+
+func tokenValue(value *int) int {
+	if value == nil {
+		return 0
+	}
+	return *value
 }

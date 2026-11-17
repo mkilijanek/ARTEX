@@ -31,6 +31,7 @@ func captureRun(ctx context.Context, opts agentcore.Options, input string, emit 
 	if opts.SessionID == "" {
 		opts.SessionID = transcript.SessionIDFrom(ctx)
 	}
+	opts.Provider = withContextView(ctx, opts.Provider)
 	attachModelMetrics(&opts)
 	s := agentcore.NewSession(opts)
 	defer s.Close() // release the session's background-task manager (temp dir + processes)

@@ -168,6 +168,13 @@ DROP TRIGGER IF EXISTS trg_exp_upd ON explorations;
 CREATE TRIGGER trg_exp_upd BEFORE UPDATE ON explorations
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
+-- Disposable planner read-model journal; original graph/evidence remain the
+-- source of truth. Cascade avoids orphan state when a task is deleted.
+CREATE TABLE IF NOT EXISTS planner_context_checkpoints (
+    exploration_id BIGINT PRIMARY KEY REFERENCES explorations(id) ON DELETE CASCADE,
+    checkpoint JSONB NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS exploration_nodes (
     id             BIGSERIAL PRIMARY KEY,
     exploration_id BIGINT NOT NULL REFERENCES explorations(id) ON DELETE CASCADE,
