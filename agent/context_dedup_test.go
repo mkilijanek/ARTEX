@@ -235,16 +235,70 @@ func TestContextDedupRealHarnessPrefetchToolHistoryAndResume(t *testing.T) {
 	}
 }
 
+func TestWorkerContextDedupRealToolHistory(t *testing.T) {
+	t.Setenv("ARTEX_BOUNDED_CONTEXT", "1")
+	d := testDB(t)
+	defer d.Close()
+	exp, err := d.CreateExploration("worker context fixture", "local fixture only")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec(`DELETE FROM explorations WHERE id=$1`, exp)
+	ts := d.Exploration(exp)
+	id, err := ts.AddIntent(map[string]any{"summary": "local fixture"}, 1, nil, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, err := ts.GetNode(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var factID int64
+	for range 4 {
+		fact, err := ts.AddNode(db.KindFact, map[string]any{"summary": strings.Repeat("界", 140), "detail": strings.Repeat("evidence fixture ", 200)}, 0, "confirmed", "fixture", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		factID = fact
+		if err := ts.Link(fact, db.RelDerivedFrom, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var requests []llm.CompletionRequest
+	provider := &contextToolFixtureProvider{toolName: "node_detail", input: json.RawMessage(fmt.Sprintf(`{"id":%d}`, factID)), receive: func(req llm.CompletionRequest) { requests = append(requests, req) }}
+	w := NewWorker(provider, "fixture", t.TempDir(), nil, 100000, 4)
+	w.SetNonStreaming(func() bool { return true })
+	if _, _, err := w.Execute(t.Context(), "fixture", exp, nil, ts, intent, nil, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 3 {
+		t.Fatal("worker model calls", len(requests))
+	}
+	last, _ := json.Marshal(requests[2])
+	if !strings.Contains(string(last), `$ref`) {
+		t.Fatal("worker tool/history overlap remained")
+	}
+}
+
 type contextToolFixtureProvider struct {
-	calls   int
-	receive func(llm.CompletionRequest)
+	calls    int
+	toolName string
+	input    json.RawMessage
+	receive  func(llm.CompletionRequest)
 }
 
 func (p *contextToolFixtureProvider) Complete(_ context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
 	p.receive(req)
 	p.calls++
 	if p.calls < 3 {
-		return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: fmt.Sprintf("read-%d", p.calls), Name: "list_facts", Input: json.RawMessage(`{}`)}}}, "tool_use", llm.Usage{}, nil
+		name, input := p.toolName, p.input
+		if name == "" {
+			name = "list_facts"
+		}
+		if len(input) == 0 {
+			input = json.RawMessage(`{}`)
+		}
+		return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: fmt.Sprintf("read-%d", p.calls), Name: name, Input: input}}}, "tool_use", llm.Usage{}, nil
 	}
 	return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock("fixture done")}}, "end_turn", llm.Usage{}, nil
 }
