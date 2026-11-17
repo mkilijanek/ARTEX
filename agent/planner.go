@@ -409,7 +409,14 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	if boundedContextEnabled() {
 		journal, checkpointErr := plannerContextCheckpoint(ctx, ts, data)
 		if checkpointErr != nil {
-			return false, "", fmt.Errorf("planner context checkpoint: %w", checkpointErr)
+			if ctx.Err() != nil {
+				return false, "", ctx.Err()
+			}
+			log.Printf("[context] planner task=%d checkpoint unavailable; using current snapshot: %v", ts.ID(), checkpointErr)
+			journal, err = advancePlannerJournal(nil, data)
+			if err != nil {
+				return false, "", fmt.Errorf("planner context snapshot: %w", err)
+			}
 		}
 		overview = renderPlannerJournal(journal) + renderPlannerCredentials(data)
 		contextJournal = &journal
