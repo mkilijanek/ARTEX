@@ -49,6 +49,7 @@ type Compactor struct {
 	summaryOrder                  [][32]byte
 	summaryFlights                map[[32]byte]*summaryFlight
 	summaryMemoHits, summaryCalls int
+	audit                         CompactionAudit
 	running                       map[int64]bool
 	lastRun                       map[int64]time.Time
 }
@@ -88,10 +89,12 @@ func (c *Compactor) OnPlannerRound(ctx context.Context, ts *db.ExplorationStore)
 		return
 	}
 	if !c.tryStart(ts.ID()) {
+		c.updateAudit(func(a *CompactionAudit) { a.SuppressedRuns++ })
 		return // already running, or within cooldown — the derived state is eventually consistent; compress next round
 	}
 	go func() {
 		defer c.finish(ts.ID())
+		defer c.logAudit(ts.ID())
 		bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.maxDur)
 		defer cancel()
 		// Compression is a bare provider call (compress calls prov.Complete directly) and
@@ -116,6 +119,12 @@ func (c *Compactor) OnPlannerRound(ctx context.Context, ts *db.ExplorationStore)
 // counts that drive the trigger: how many eligible-cold nodes are not yet covered
 // (minor) and how many active digests exist (major).
 func (c *Compactor) maintain(ts *db.ExplorationStore) (round int64, uncompressed, activeDigests int, err error) {
+	c.updateAudit(func(a *CompactionAudit) { a.MaintenanceRounds++ })
+	defer func() {
+		if err != nil {
+			c.updateAudit(func(a *CompactionAudit) { a.MaintenanceErrors++ })
+		}
+	}()
 	round, err = ts.BumpRound()
 	if err != nil {
 		return
@@ -156,6 +165,7 @@ func (c *Compactor) maintain(ts *db.ExplorationStore) (round int64, uncompressed
 // minor folds the not-yet-covered eligible-cold set into new digest segments
 // (tiered append, §5). Existing digests are untouched.
 func (c *Compactor) minor(ctx context.Context, ts *db.ExplorationStore) {
+	c.updateAudit(func(a *CompactionAudit) { a.MinorRuns++ })
 	round, err := ts.RoundNo()
 	if err != nil {
 		return
@@ -185,6 +195,7 @@ func (c *Compactor) minor(ctx context.Context, ts *db.ExplorationStore) {
 		}
 	}
 	blocks := g.group(uncompressed, c.params)
+	c.auditBlocks(blocks)
 	if len(blocks) == 0 {
 		return // this batch has no ≥2 connected/shared-parent block — nothing to fold (§7)
 	}
@@ -203,6 +214,7 @@ func (c *Compactor) minor(ctx context.Context, ts *db.ExplorationStore) {
 // new/changed blocks are compressed afresh. This is where tiered fragments of one
 // direction merge and where "later became connected" blocks unify (§5.2).
 func (c *Compactor) major(ctx context.Context, ts *db.ExplorationStore) {
+	c.updateAudit(func(a *CompactionAudit) { a.MajorRuns++ })
 	round, err := ts.RoundNo()
 	if err != nil {
 		return
@@ -226,6 +238,7 @@ func (c *Compactor) major(ctx context.Context, ts *db.ExplorationStore) {
 	hot := g.hotSet()
 	elig := g.eligibleCold(g.structuralCold(hot), stamps, round, c.params)
 	blocks := g.group(elig, c.params)
+	c.auditBlocks(blocks)
 
 	bySig := map[string]*db.Node{}
 	for _, d := range active {
@@ -238,6 +251,7 @@ func (c *Compactor) major(ctx context.Context, ts *db.ExplorationStore) {
 		sig := blockSignature(b, cvers)
 		desired[sig] = true
 		if _, ok := bySig[sig]; ok {
+			c.updateAudit(func(a *CompactionAudit) { a.SignatureReuses++; a.SignatureReusedMembers += int64(len(b.Members)) })
 			continue // unchanged → reuse the existing digest, skip LLM (§5.3)
 		}
 		toCreate = append(toCreate, b)
@@ -551,18 +565,23 @@ func (c *Compactor) compress(ctx context.Context, g *coldGraph, b block, nodeByI
 		c.mu.Lock()
 		c.summaryCalls++
 		c.mu.Unlock()
-		msg, stop, _, err := c.prov.Complete(llmmeta.WithCall(ctx, "graph_summary", 0), req)
+		started := time.Now()
+		msg, stop, usage, err := c.prov.Complete(llmmeta.WithCall(ctx, "graph_summary", 0), req)
+		c.auditInference(req, msg, stop, usage, err, time.Since(started))
 		if err != nil {
 			return "", err
 		}
 		if memo && ctx.Err() != nil {
+			c.updateAudit(func(a *CompactionAudit) { a.RejectedSummaries++ })
 			return "", ctx.Err()
 		}
 		body := strings.TrimSpace(msg.Text())
 		if body == "" {
+			c.updateAudit(func(a *CompactionAudit) { a.RejectedSummaries++ })
 			return "", fmt.Errorf("empty body from model")
 		}
 		if memo && (stop == "max_tokens" || stop == "length") {
+			c.updateAudit(func(a *CompactionAudit) { a.RejectedSummaries++ })
 			return "", fmt.Errorf("incomplete summary (stop reason %q)", stop)
 		}
 		return body, nil
@@ -598,11 +617,13 @@ func (c *Compactor) memoSummary(ctx context.Context, key [32]byte, compute func(
 	if body, ok := c.summaryMemo[key]; ok {
 		touch()
 		c.summaryMemoHits++
+		c.audit.CacheHits++
 		c.mu.Unlock()
 		return body, nil
 	}
 	if pending := c.summaryFlights[key]; pending != nil {
 		pending.waiters++
+		c.audit.JoinedFlights++
 		c.mu.Unlock()
 		select {
 		case <-ctx.Done():
@@ -611,6 +632,7 @@ func (c *Compactor) memoSummary(ctx context.Context, key [32]byte, compute func(
 			if pending.err == nil {
 				c.mu.Lock()
 				c.summaryMemoHits++
+				c.audit.SharedReturns++
 				c.mu.Unlock()
 			}
 			if pending.err != nil && ctx.Err() == nil && (errors.Is(pending.err, context.Canceled) || errors.Is(pending.err, context.DeadlineExceeded)) {
@@ -652,8 +674,9 @@ func (c *Compactor) memoSummary(ctx context.Context, key [32]byte, compute func(
 	return body, err
 }
 
-// SummaryStats separates real inference calls from successful source-identical
-// memo hits; it resets with the Compactor and is not a second token ledger.
+// SummaryStats separates provider Complete invocations from successful memo/shared
+// returns. A routed invocation may contain several backend attempts; this is not
+// a physical-attempt billing ledger. It resets with the Compactor.
 func (c *Compactor) SummaryStats() (calls, hits int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

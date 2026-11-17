@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"github.com/Autumn-27/norma/agentcore"
 	"os"
 	"regexp"
 	"strings"
@@ -32,4 +33,17 @@ func cachePrefix(system []string, boundary int) ([]string, int) {
 		return out, boundary + 1
 	}
 	return out, 1
+}
+
+// Preserve the existing end-of-guidance breakpoint and add an earlier stable
+// prefix breakpoint. Otherwise a volatile task/date invalidates the entire
+// deferred-tools prompt, even though cachePrefix already split its first part.
+func attachPrefixCache(opts *agentcore.Options) {
+	if os.Getenv("ARTEX_CACHE_PREFIX") != "1" || opts.DynamicBoundary <= 1 || len(opts.SystemPrompt) < 2 {
+		return
+	}
+	if volatilePrompt.MatchString(opts.SystemPrompt[0]) || !volatilePrompt.MatchString(opts.SystemPrompt[1]) {
+		return
+	}
+	opts.SystemCacheBreakpoints = append(append([]int(nil), opts.SystemCacheBreakpoints...), 1)
 }

@@ -47,7 +47,7 @@ reapply the listed patches, review changed contracts, and run both nested SDK
 and ARTEX integration/race checks. See `docs/norma-sdk-audit.md` in ARTEX for
 version decisions, scope, accounting exclusions and validation evidence.
 
-Snapshot identity: `v0.4.8+artex.1` (upstream base remains `v0.4.8` in go.mod).
+Snapshot identity: `v0.4.8+artex.2` (upstream base remains `v0.4.8` in go.mod).
 `SOURCE.json` pins the exact patched and extra file contents, including tests.
 The local contract test rejects unlisted files; `scripts/verify-norma-source.py`
 checks original hashes against the Go checksum database verified module download in CI.
@@ -58,3 +58,19 @@ Changing a local patch requires reviewing and updating its content hash.
 `upstream_test_sha256` records original copied tests separately from locally
 adapted/pinned fixtures. The verifier compares the complete upstream production
 Go inventory and these original test hashes with the checksum-verified download.
+
+
+Phase C cache-prefix extension (`v0.4.8+artex.2`): optional
+`Options.SystemCacheBreakpoints` → `QueryInput.CacheBreakpoints` →
+`CompletionRequest.CacheBreakpoints` preserves earlier prefix endpoints in the
+Anthropic system serializer. The existing DynamicBoundary remains the final
+endpoint; at most three earlier endpoints are accepted (four total), invalid or
+duplicate endpoints are ignored, and the full text/order is preserved. Empty
+hints and non-Anthropic adapters retain their previous behavior. ARTEX supplies
+one extra endpoint only with ARTEX_CACHE_PREFIX=1 after a safe host-side split;
+this keeps deferred guidance cached while exposing a separately reusable static
+prefix. Tests cover actual host→SDK→HTTP serialization as well as endpoint bounds.
+
+API reference: https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+(explicit cache breakpoints; model-dependent minimum length/actual hit acceptance
+remain provider-side, not established by local wire tests).
