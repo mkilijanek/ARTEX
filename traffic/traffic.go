@@ -679,18 +679,28 @@ func sanitize(s string) string {
 	return out
 }
 
+// storeDirs are the store's own directories directly under the traffic root.
+// They are never host trees, whatever a host happens to be called.
+var storeDirs = []string{"_index", "_blobs", "_ca", "_delete_staging"}
+
 // legacyHostDir maps a host to the directory the pre-SQLite layout used for it.
 // A host is request-controlled (API input or a recorded Host value), and the
 // directory it names is later renamed away and removed, so the result must be a
 // direct child of the store that is not one of the store's own directories:
-// sanitize keeps "." and "..", and a host literally named "_index", "_blobs",
-// "_ca" or "_delete_staging" would otherwise select the index, the blob store,
-// the CA or the staging area for deletion. Underscore-prefixed names are never
-// host trees (see allHostTrees). ok=false means "no legacy directory".
+// sanitize keeps "." and "..", and a host literally named like a store directory
+// would otherwise select the index, the blob store, the CA or the staging area
+// for deletion. The comparison ignores case because the filesystem may. Any
+// other name, including an underscore-prefixed host, keeps its tree so that an
+// exact delete still removes it. ok=false means "no legacy directory".
 func (t *Traffic) legacyHostDir(host string) (dir string, ok bool) {
 	name := sanitize(host)
-	if name == "." || name == ".." || strings.HasPrefix(name, "_") {
+	if name == "." || name == ".." {
 		return "", false
+	}
+	for _, reserved := range storeDirs {
+		if strings.EqualFold(name, reserved) {
+			return "", false
+		}
 	}
 	root := filepath.Clean(t.dir)
 	dir = filepath.Join(root, name)

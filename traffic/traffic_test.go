@@ -423,8 +423,8 @@ func TestDeleteHostsNeverTouchesStoreDirectories(t *testing.T) {
 	if err := os.WriteFile(marker, []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	reserved := []string{"_blobs", "_ca", "_index", "_delete_staging", "..", "."}
-	for i, h := range append([]string{"victim.example.com"}, reserved...) {
+	reserved := []string{"_blobs", "_ca", "_index", "_delete_staging", "..", ".", "_BLOBS"}
+	for i, h := range append([]string{"victim.example.com", "_internal.example.com"}, reserved...) {
 		id := fmt.Sprintf("1-%04d", i+1)
 		if _, err := tr.DB().Exec(`INSERT INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path)
 VALUES(?,?,?,?,?,?,?,?,?,?,?)`, id, i+1, h, "GET", "/", "http://x/", 200, "text/html", 0, 0, "x/GET/"+id); err != nil {
@@ -432,8 +432,11 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?)`, id, i+1, h, "GET", "/", "http://x/", 200, "text/
 		}
 	}
 	hostTree := filepath.Join(dir, "victim.example.com")
-	if err := os.MkdirAll(hostTree, 0o755); err != nil {
-		t.Fatal(err)
+	underscoreTree := filepath.Join(dir, "_internal.example.com")
+	for _, tree := range []string{hostTree, underscoreTree} {
+		if err := os.MkdirAll(tree, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 	intact := func(step string) {
 		t.Helper()
@@ -455,6 +458,14 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?)`, id, i+1, h, "GET", "/", "http://x/", 200, "text/
 		t.Fatalf("exact delete of reserved names: n=%d err=%v", n, err)
 	}
 	intact("DeleteHostsExact")
+	// An underscore-prefixed host is still a host: its tree goes with an exact delete.
+	if _, err := tr.DeleteHostsExact([]string{"_internal.example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(underscoreTree); !os.IsNotExist(err) {
+		t.Fatalf("underscore-prefixed host tree should be removed, stat err=%v", err)
+	}
+	intact("DeleteHostsExact of an underscore host")
 	// Substring path resolves directories from recorded hosts.
 	if _, err := tr.DeleteHost("_"); err != nil {
 		t.Fatal(err)
