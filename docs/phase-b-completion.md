@@ -82,10 +82,10 @@ All request byte counts include JSON escaping and reference interpretation rules
 
 | Scenario / round | Projected snapshot bytes | Journal replay bytes | Latest update bytes | Request before refs | Request after refs |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Steady / 1 | 5523 | 5741 | 5741 | 17710 | 13810 |
-| Steady / 4 | 5523 | 5831 | 38 | 17814 | 13914 |
-| Count changes / 4 | 5523 | 5861 | 48 | 17850 | 13950 |
-| Evidence state changes / 3 | 5522 | 11090 | 5336 | 23187 | 16394 |
+| Steady / 1 | 5523 | 5697 | 5697 | 17666 | 13766 |
+| Steady / 4 | 5523 | 5787 | 38 | 17770 | 13870 |
+| Count changes / 4 | 5523 | 5817 | 48 | 17806 | 13906 |
+| Evidence state changes / 3 | 5522 | 11046 | 5336 | 23143 | 16350 |
 
 References reduced these complete fixture requests by about 22–29%, relative to
 the same journal request without references. This is **not** a comparison against
