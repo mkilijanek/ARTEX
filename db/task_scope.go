@@ -416,6 +416,16 @@ func hostPortOf(n *CoverageGraphNode) (string, int) {
 	return host, port
 }
 
+// Shared verbatim with the EXPLAIN benchmark; extraction changes no SQL.
+const coverageGraphSQL = `WITH ` + contextCoverageCTE + `
+SELECT a.id, a.type, COALESCE(a.company_id,0),
+       COALESCE(a.domain,''), COALESCE(a.root_domain,''), COALESCE(a.ip,''),
+       COALESCE(a.url,''), COALESCE(a.port,0), COALESCE(a.service_type,''),
+       COALESCE(a.app_name,''), COALESCE(a.page_title,''), COALESCE(a.status_code,0),
+       (a.id IN (SELECT asset_id FROM tested)) AS tested
+FROM assets a JOIN target t ON t.id = a.id
+ORDER BY a.id`
+
 // BuildCoverageGraph assembles the full coverage graph for a task and its direct
 // read-only sources: every in-scope asset plus connector root domains/companies,
 // with current-or-source fact anchors reflected in Tested. The legacy expID
@@ -425,14 +435,7 @@ func (s *AssetStore) BuildCoverageGraph(taskID, _ int64) (*CoverageGraphData, er
 	if taskID <= 0 {
 		return g, nil
 	}
-	rows, err := s.db.Query(`WITH `+contextCoverageCTE+`
-SELECT a.id, a.type, COALESCE(a.company_id,0),
-       COALESCE(a.domain,''), COALESCE(a.root_domain,''), COALESCE(a.ip,''),
-       COALESCE(a.url,''), COALESCE(a.port,0), COALESCE(a.service_type,''),
-       COALESCE(a.app_name,''), COALESCE(a.page_title,''), COALESCE(a.status_code,0),
-       (a.id IN (SELECT asset_id FROM tested)) AS tested
-FROM assets a JOIN target t ON t.id = a.id
-ORDER BY a.id`, taskID)
+	rows, err := s.db.Query(coverageGraphSQL, taskID)
 	if err != nil {
 		return nil, err
 	}
