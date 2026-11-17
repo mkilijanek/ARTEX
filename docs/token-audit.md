@@ -92,7 +92,8 @@ constraints and full intent text are unchanged. Projection never changes stored
 graphs, evidence or permissions; omitted evidence cannot establish a negative.
 
 Planner context uses a durable PostgreSQL checkpoint: one immutable base plus
-versioned replace/remove deltas, replayed in each fresh SDK session. Restart
+versioned replace/remove deltas, replayed and materialized on the server. Fresh
+SDK sessions receive only the current projected snapshot. Restart
 retains the epoch/version; corrupt checkpoints rebuild from the source graph in a
 new epoch. Resync occurs every eight updates or before replay exceeds 40 KiB.
 Optional projection targets 16 KiB; mandatory instructions/signals remain lossless
@@ -141,8 +142,9 @@ fields carry per-path omission metadata. The 16 KiB target is a **soft** budget:
 mandatory data may exceed it, explicitly marked `mandatory_budget_exceeded`;
 correctness takes precedence over savings. Do not claim a hard bound on all prompts.
 
-Planner packets replay a persisted base plus ordered deltas; a fresh session
-never receives a standalone delta. Logs distinguish source/replay/update bytes,
+Planner checkpoint recovery replays a persisted base plus ordered deltas; the
+model receives a materialized snapshot, not a delta chain. A checkpoint error
+falls back to a one-off snapshot unless cancelled. Logs distinguish source/replay/update bytes,
 explicit UTF-8/4 token estimates and provider-reported input/output/cache usage.
 They do not assert model-cost savings. Dependency filtering precedes optional
 trimming and uses producing intent IDs; direct fact/finding parents are retained
@@ -156,9 +158,11 @@ have an aggregate 16 KiB encoded budget with continuation offsets.
 and `agent/context_dedup.go`: durable replay plus request-local, versioned field
 references across registered prefetch and known graph read tools/history. Source,
 node ID, kind, state, confidence and exact content determine identity. Full
-transcripts/evidence stay unchanged; after compaction, missing definitions become
-full data again. Transformations are retained only when the complete request,
-including protocol instructions, is smaller. Representative deterministic
+transcripts/evidence stay unchanged; after compaction, missing source values become
+full data again. First occurrences stay unchanged; later references use natural
+keys and locations. Fixed rules have an upfront cost; field substitutions are
+applied only when smaller, and reserved evidence syntax is quoted literally.
+Representative deterministic
 measurements are in [phase-b-completion.md](phase-b-completion.md). Live model
 quality/cost acceptance remains Phase E/F work; #1/#2 remain opt-in rollout work
 rather than default-on completion claims.
