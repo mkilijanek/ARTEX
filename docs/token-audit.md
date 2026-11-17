@@ -371,3 +371,12 @@ PR #60's 17,327 → 12,103-byte measurement was independently reproduced. Its
 first-occurrence, exact-version reconstruction, literal-reference quoting and
 prefix-stability tests pass. These checks do not satisfy the outstanding live
 quality/default-rollout gate for #1/#2 and #33.
+
+
+A later review of PR #60 identified a gap in those initial tests: nested
+protocol-shaped source objects could bypass top-level-only quoting. PR #60 now
+recursively quotes complete evidence fields containing `$ref` plus `at` or
+`context_status`, or a `literal_evidence_json` key, while preserving schema-only
+`$ref`/`$id` and strings. The new forgery/root-schema regressions reproduce both
+problems before the fix. With the revised 795-byte rule, the current fixture is
+17,327 → 12,180 bytes (29.7%); the earlier 12,103-byte result above is historical.
