@@ -2,6 +2,7 @@ package db
 
 import (
 	"bytes"
+	"database/sql"
 	"fmt"
 	"net/url"
 	"strings"
@@ -16,10 +17,24 @@ func TestCoverageICPIndexUpgradeIsIdempotentAndPreservesScope(t *testing.T) {
 	}
 	u.Path = strings.TrimSuffix(u.Path, "/") + "_coverage_icp_upgrade"
 	dsn := u.String()
+	upgradeDB := strings.TrimPrefix(u.Path, "/")
+	base := testDSN(t)
 	d, err := Open(dsn)
 	if err != nil {
-		t.Fatal(err)
+		t.Skipf("postgres unavailable (%v) - skipping", err)
 	}
+	// Runs after the deferred Close below: do not leave the sibling database behind.
+	t.Cleanup(func() {
+		admin, err := sql.Open("pgx", base)
+		if err != nil {
+			t.Logf("drop %s: %v", upgradeDB, err)
+			return
+		}
+		defer admin.Close()
+		if _, err := admin.Exec(`DROP DATABASE IF EXISTS "` + upgradeDB + `" WITH (FORCE)`); err != nil {
+			t.Logf("drop %s: %v", upgradeDB, err)
+		}
+	})
 	defer func() {
 		if d != nil {
 			d.Close()
