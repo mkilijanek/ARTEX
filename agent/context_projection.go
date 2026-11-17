@@ -15,6 +15,10 @@ const overviewBudget = 16 * 1024
 const plannerPacketBudget = 40 * 1024
 const workerAssetBudget = 8 * 1024
 
+// workerDependencyCap bounds how many dependency observations are loaded by id
+// for one launch; the remainder is reported, never silently dropped.
+const workerDependencyCap = 40
+
 // Projection only changes launch context. Original graph/evidence and mandatory
 // system constraints remain intact. Omitted observations are never negatives.
 func projectOverview(data map[string]any) map[string]any {
@@ -39,6 +43,7 @@ func projectOverview(data map[string]any) map[string]any {
 		mandatory["recent_facts_filtered_unrelated"], mandatory["finding_list_filtered_unrelated"] = true, true
 		mandatory["recent_facts_omitted_items"], mandatory["finding_list_omitted_items"] = true, true
 		mandatory["retrieval"] = true
+		mandatory["dependency_evidence_omitted"], mandatory["dependency_evidence_unavailable"] = true, true
 	}
 	out := map[string]any{"projection": true, "detail_required": true,
 		"retrieval": "graph_overview, node_detail(id), list_facts, list_assets; omitted evidence is not negative evidence"}
@@ -148,11 +153,119 @@ func workerContext(data map[string]any, intent *db.Node) map[string]any {
 	return projectOverview(scopedWorkerContext(data, intent, false))
 }
 
-// The default worker launch projection is independent of experimental planner,
-// transcript-reference and trace-paging features. Explicit off restores legacy
-// launch data for rollback without changing any stored graph or scope policy.
+// The compact worker launch projection is independent of experimental planner,
+// transcript-reference and trace-paging features. It is opt-in: it changes what a
+// worker knows about other intents' results, so the default stays off until a
+// live comparison supports changing it. Unset, empty or unrecognised values keep
+// the legacy launch.
 func compactWorkerLaunchEnabled() bool {
-	return !isFalsy(strings.TrimSpace(os.Getenv("ARTEX_WORKER_CONTEXT")))
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("ARTEX_WORKER_CONTEXT"))) {
+	case "1", "true", "on", "yes":
+		return true
+	}
+	return false
+}
+
+// addWorkerDependencyEvidence loads, by id, the facts and findings the assigned
+// intent depends on: its direct parents and everything it or a parent intent
+// yielded. The overview's recent_facts/finding_list are task-wide newest-first
+// windows, so on a busy task dependency evidence is often older than the window;
+// without this step the compact launch would select from whatever happened to be
+// recent. Entries use the overview's shape and are merged newest first.
+func (t *ToolSet) addWorkerDependencyEvidence(data map[string]any, intentID int64) {
+	unavailable := func() { data["dependency_evidence_unavailable"] = "lookup failed; use list_facts / list_findings" }
+	own, err := t.ts.EdgesTouching([]int64{intentID})
+	if err != nil {
+		unavailable()
+		return
+	}
+	producers := []int64{intentID}
+	from := map[int64]int64{}
+	wanted := map[int64]bool{}
+	for _, e := range own {
+		switch {
+		case (e.Rel == db.RelDerivedFrom || e.Rel == db.RelSpawns) && e.To == intentID:
+			producers = append(producers, e.From)
+			wanted[e.From] = true
+		case e.Rel == db.RelYields && e.From == intentID:
+			wanted[e.To], from[e.To] = true, intentID
+		}
+	}
+	if len(producers) > 1 {
+		edges, err := t.ts.EdgesTouching(producers[1:])
+		if err != nil {
+			unavailable()
+			return
+		}
+		parent := map[int64]bool{}
+		for _, id := range producers[1:] {
+			parent[id] = true
+		}
+		for _, e := range edges {
+			if e.Rel == db.RelYields && parent[e.From] {
+				wanted[e.To], from[e.To] = true, e.From
+			}
+		}
+	}
+	present := map[string]bool{}
+	for _, key := range []string{"recent_facts", "finding_list"} {
+		items, _ := data[key].([]map[string]any)
+		for _, m := range items {
+			present[fmt.Sprint(m["id"])] = true
+		}
+	}
+	ids := []int64{}
+	for id := range wanted {
+		if !present[fmt.Sprint(id)] {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] > ids[j] })
+	if len(ids) > workerDependencyCap {
+		data["dependency_evidence_omitted"] = len(ids) - workerDependencyCap
+		ids = ids[:workerDependencyCap]
+	}
+	nodes, err := t.ts.NodesByIDs(ids)
+	if err != nil {
+		unavailable()
+		return
+	}
+	facts, _ := data["recent_facts"].([]map[string]any)
+	findings, _ := data["finding_list"].([]map[string]any)
+	for _, n := range nodes {
+		var payload map[string]any
+		_ = json.Unmarshal(n.Payload, &payload)
+		switch n.Kind {
+		case db.KindFact:
+			m := compactNode(n)
+			if c, ok := payload["confidence"].(string); ok && c != "" {
+				m["confidence"] = c
+			}
+			if from[n.ID] > 0 {
+				m["from_intent"] = from[n.ID]
+			}
+			facts = append(facts, m)
+		case db.KindFinding:
+			m := map[string]any{"id": n.ID, "summary": payload["summary"]}
+			if from[n.ID] > 0 {
+				m["from_intent"] = from[n.ID]
+			}
+			findings = append(findings, m)
+		}
+	}
+	newest := func(items []map[string]any) {
+		sort.SliceStable(items, func(i, j int) bool {
+			a, _ := items[i]["id"].(int64)
+			b, _ := items[j]["id"].(int64)
+			return a > b
+		})
+	}
+	newest(facts)
+	newest(findings)
+	data["recent_facts"], data["finding_list"] = facts, findings
 }
 
 func workerLaunchContext(data map[string]any, intent *db.Node) map[string]any {
@@ -219,13 +332,20 @@ func scopedWorkerContext(data map[string]any, intent *db.Node, awareness bool) m
 		selected := []any{}
 		other := []any{}
 		filtered := 0
+		// Findings are the task's highest-value output and the source window is
+		// small (newest ten), so every unrelated one stays visible: a worker that
+		// cannot see a finding may report it again. Facts keep three samples.
+		awarenessCap := 3
+		if key == "finding_list" {
+			awarenessCap = len(items)
+		}
 		for _, v := range items {
 			m, _ := v.(map[string]any)
 			if deps[fmt.Sprint(m["from_intent"])] || deps[fmt.Sprint(m["id"])] {
 				selected = append(selected, v)
 			} else {
 				filtered++
-				if awareness && len(other) < 3 {
+				if awareness && len(other) < awarenessCap {
 					other = append(other, v)
 				}
 			}

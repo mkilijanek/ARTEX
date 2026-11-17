@@ -353,7 +353,12 @@ func renderIntentTask(intent *db.Node) string {
 // must NOT widen the worker's job — it still does only its assigned intent. Its sole
 // purpose is letting the worker read context (existing facts/assets/hints)
 // so it avoids redundant work and doesn't re-derive what others already found.
-func renderWorkerGraphOverview(data map[string]any) string {
+//
+// compact selects the introduction that matches the data: the short one describes
+// a partial, projected view and is only true for the compact launch; the legacy
+// one accompanies the full overview, so switching the projection off restores the
+// whole launch message and not just its JSON.
+func renderWorkerGraphOverview(data map[string]any, compact bool) string {
 	// coverage is a signal for the planner to judge "which class is under-tested /
 	// whether to widen the scope" — it conflicts with the worker's boundary of "do
 	// only the assigned intent, don't chase uncovered points" → drop it from the
@@ -363,6 +368,12 @@ func renderWorkerGraphOverview(data map[string]any) string {
 	b, err := json.Marshal(data)
 	if err != nil {
 		return "" // fall back silently: the worker just won't have the global context
+	}
+	if !compact {
+		return "\n\n[Global exploration overview (read-only, helps you place your assigned intent in the bigger picture)]:\n" +
+			"Below is the task's current exploration overview. Two purposes: first, know what others have already found — don't repeat; second, let you relate this intent to the global picture while exploring it.\n" +
+			"**Digressing is good**: while exploring this intent, think deep and associate freely. The only boundary is — don't actually go execute other intents (that's other workers' business, scheduled by the planner). But whenever you associate a valuable clue (cross-asset linkage, the suspected entry of another exploit chain, a global-level suspicious point), **be sure to write it into a fact for the planner** — this is an important output of yours, not optional. Better to report one more for the planner to judge than to swallow it yourself.\n" +
+			string(b)
 	}
 	return "\n\n[Exploration context: read-only awareness]\n" +
 		"Use existing observations to avoid duplicate work. Execute only your assigned intent; record useful related clues as facts for the planner. This is a partial view: retrieve details before relying on an excerpt; omissions are not negative evidence.\n" + string(b)
@@ -433,10 +444,18 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// inherit a parent run's background into the action reviewer.
 	ctx = intercept.WithReviewContext(ctx, runDir, intercept.ReviewBackground{})
 	data := tsx.graphOverviewData()
-	if compactWorkerLaunchEnabled() {
+	// The compact launch is opt-in. With it off, ARTEX_BOUNDED_CONTEXT keeps the
+	// projection it always had, so no flag combination sends the full overview
+	// through reference substitution.
+	compact := compactWorkerLaunchEnabled()
+	switch {
+	case compact:
+		tsx.addWorkerDependencyEvidence(data, intent.ID)
 		data = workerLaunchContext(data, intent)
+	case boundedContextEnabled():
+		data = workerContext(data, intent)
 	}
-	overview := renderWorkerGraphOverview(data)
+	overview := renderWorkerGraphOverview(data, compact)
 	if boundedContextEnabled() {
 		ctx = withContextFragment(ctx, overview, data, ts.ID())
 	}
@@ -451,7 +470,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		if ids := intentAssetIDs(intent); len(ids) > 0 {
 			if assets, err := as.GetByIDs(ids); err == nil && len(assets) > 0 {
 				assetView := any(assets)
-				if compactWorkerLaunchEnabled() {
+				if compact || boundedContextEnabled() {
 					assetView = projectAssets(assets)
 				}
 				if b, err := json.Marshal(assetView); err == nil {

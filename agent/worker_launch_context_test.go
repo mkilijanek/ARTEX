@@ -10,16 +10,19 @@ import (
 	"github.com/Autumn-27/norma/llm"
 )
 
-func TestWorkerLaunchProjectionIsDefaultAndIndependentOfExperiments(t *testing.T) {
-	t.Setenv("ARTEX_WORKER_CONTEXT", "")
-	t.Setenv("ARTEX_BOUNDED_CONTEXT", "0")
-	if !compactWorkerLaunchEnabled() || boundedContextEnabled() {
-		t.Fatal("worker default changed experimental flag")
-	}
-	for _, value := range []string{"0", "false", "off"} {
+func TestWorkerLaunchProjectionIsOptInAndIndependentOfExperiments(t *testing.T) {
+	t.Setenv("ARTEX_BOUNDED_CONTEXT", "1")
+	for _, value := range []string{"", "0", "false", "off", "no", "unknown"} {
 		t.Setenv("ARTEX_WORKER_CONTEXT", value)
 		if compactWorkerLaunchEnabled() {
-			t.Fatal("rollback ignored", value)
+			t.Fatalf("compact launch enabled without opt-in: %q", value)
+		}
+	}
+	t.Setenv("ARTEX_BOUNDED_CONTEXT", "0")
+	for _, value := range []string{"1", "true", "on", " YES "} {
+		t.Setenv("ARTEX_WORKER_CONTEXT", value)
+		if !compactWorkerLaunchEnabled() || boundedContextEnabled() {
+			t.Fatalf("opt-in ignored or coupled to experimental flag: %q", value)
 		}
 	}
 }
@@ -32,7 +35,7 @@ func TestRenderedWorkerLaunchLargeTaskBudgetAndEvidenceRetrieval(t *testing.T) {
 	data := map[string]any{"task": map[string]any{"goal": "preserve full operator goal"}, "hints": []any{"preserve the operator hint"}, "running_intents": []any{map[string]any{"id": 7, "parents": []int64{1}, "summary": "assigned fixture"}}, "recent_facts": facts, "facts": len(facts), "related_tasks": []any{map[string]any{"body": strings.Repeat("unrelated data ", 10000)}}}
 	before, _ := json.Marshal(data)
 	view := workerLaunchContext(data, &db.Node{ID: 7})
-	rendered := renderWorkerGraphOverview(view)
+	rendered := renderWorkerGraphOverview(view, true)
 	if len(rendered) > 20*1024 {
 		t.Fatalf("rendered launch exceeds documented budget: %d", len(rendered))
 	}
@@ -68,7 +71,7 @@ func TestWorkerDefaultProjectionKeepsDependencyAndAwarenessDistinct(t *testing.T
 	}
 }
 
-func TestRealWorkerUsesDefaultProjectionAndExplicitRollback(t *testing.T) {
+func TestRealWorkerUsesLegacyLaunchByDefaultAndProjectionOnOptIn(t *testing.T) {
 	t.Setenv("ARTEX_BOUNDED_CONTEXT", "0")
 	d := testDB(t)
 	defer d.Close()
@@ -98,7 +101,7 @@ func TestRealWorkerUsesDefaultProjectionAndExplicitRollback(t *testing.T) {
 	if err != nil || detail.IsError || !strings.Contains(detail.Flatten(), strings.Repeat("long existing observation ", 1000)) {
 		t.Fatal("full evidence not available through node_detail", err)
 	}
-	for _, flag := range []string{"", "0"} {
+	for _, flag := range []string{"1", "", "0"} {
 		t.Run("flag="+flag, func(t *testing.T) {
 			t.Setenv("ARTEX_WORKER_CONTEXT", flag)
 			var request llm.CompletionRequest
@@ -112,14 +115,14 @@ func TestRealWorkerUsesDefaultProjectionAndExplicitRollback(t *testing.T) {
 			for _, message := range request.Messages {
 				input += message.Text()
 			}
-			if flag == "" && (!strings.Contains(input, `"summary_truncated":true`) || len(input) > 20*1024) {
-				t.Fatal("default worker bypassed projection", len(input))
+			if flag == "1" && (!strings.Contains(input, `"summary_truncated":true`) || !strings.Contains(input, "This is a partial view") || len(input) > 20*1024) {
+				t.Fatal("opted-in worker bypassed projection", len(input))
 			}
-			if flag == "0" && !strings.Contains(input, strings.Repeat("long existing observation ", 1000)) {
-				t.Fatal("legacy rollback did not preserve raw overview")
+			if flag != "1" && (!strings.Contains(input, strings.Repeat("long existing observation ", 1000)) || strings.Contains(input, "partial view") || !strings.Contains(input, "[Global exploration overview") || strings.Contains(input, `"projection":true`)) {
+				t.Fatal("legacy launch did not preserve raw overview and its introduction")
 			}
 			system := strings.Join(request.System, "\n")
-			if flag == "" && strings.Count(system+input, "only local fixture") != 1 {
+			if flag == "1" && strings.Count(system+input, "only local fixture") != 1 {
 				t.Fatal("assigned summary duplicated or lost")
 			}
 			if strings.Count(system, untrustedContentInstructions) != 1 || strings.Count(system, normaTrustRules) != 1 || strings.Count(system, artifactRulesPrefix) != 1 {
@@ -164,7 +167,7 @@ func TestWorkerAssetProjectionEncodedBudgetAndExactTargets(t *testing.T) {
 	t.Logf("raw assets=%d compact assets=%d selected=%d", len(before), len(encoded), len(selected))
 }
 
-func TestRealWorkerAssetProjectionDefaultAndRollback(t *testing.T) {
+func TestRealWorkerAssetProjectionOptInAndLegacyDefault(t *testing.T) {
 	t.Setenv("ARTEX_BOUNDED_CONTEXT", "0")
 	d := testDB(t)
 	defer d.Close()
@@ -196,7 +199,7 @@ func TestRealWorkerAssetProjectionDefaultAndRollback(t *testing.T) {
 	if err != nil || detail.IsError || !strings.Contains(detail.Flatten(), title) {
 		t.Fatal("full asset not available through list_assets", err)
 	}
-	for _, flag := range []string{"", "0"} {
+	for _, flag := range []string{"1", "", "0"} {
 		t.Run("flag="+flag, func(t *testing.T) {
 			t.Setenv("ARTEX_WORKER_CONTEXT", flag)
 			var request llm.CompletionRequest
@@ -210,10 +213,10 @@ func TestRealWorkerAssetProjectionDefaultAndRollback(t *testing.T) {
 			if !strings.Contains(system, target) || !strings.Contains(system, string(intent.Payload)) {
 				t.Fatal("target/intent asset identity lost")
 			}
-			if flag == "" && (strings.Contains(system, title) || !strings.Contains(system, `"omitted_fields"`)) {
-				t.Fatal("default system contains raw assets")
+			if flag == "1" && (strings.Contains(system, title) || !strings.Contains(system, `"omitted_fields"`)) {
+				t.Fatal("opted-in system contains raw assets")
 			}
-			if flag == "0" && !strings.Contains(system, title) {
+			if flag != "1" && !strings.Contains(system, title) {
 				t.Fatal("rollback did not preserve raw assets")
 			}
 			stored, err := as.GetByIDs([]int64{id})
@@ -235,14 +238,154 @@ func TestWorkerLaunchKeepsAssignmentInSystemAndLineageInContext(t *testing.T) {
 	if assignment["summary"] != nil || assignment["summary_in_system_intent"] != true || assignment["parents"] == nil || assignment["yields"] == nil {
 		t.Fatal("assignment/lineage contract lost", assignment)
 	}
-	rendered := renderIntentTask(intent) + renderWorkerGraphOverview(view)
+	rendered := renderIntentTask(intent) + renderWorkerGraphOverview(view, true)
 	if strings.Count(rendered, summary) != 1 {
 		t.Fatal("full assigned summary must appear exactly once")
 	}
 	if !strings.Contains(rendered, `"asset_ids":[91]`) || !strings.Contains(rendered, "only job") {
 		t.Fatal("intent mandate/targets lost")
 	}
-	if len(renderWorkerGraphOverview(map[string]any{})) > 350 {
+	if len(renderWorkerGraphOverview(map[string]any{}, true)) > 350 {
 		t.Fatal("overview boilerplate grew")
+	}
+	legacy := renderWorkerGraphOverview(map[string]any{}, false)
+	if strings.Contains(legacy, "partial view") || !strings.Contains(legacy, "Global exploration overview") || !strings.Contains(legacy, "be sure to write it into a fact for the planner") {
+		t.Fatal("legacy launch must keep its own introduction", legacy)
+	}
+}
+
+func TestWorkerLaunchKeepsEveryWindowFindingVisible(t *testing.T) {
+	findings, facts := []any{}, []any{}
+	for i := range 6 {
+		findings = append(findings, map[string]any{"id": 200 + i, "from_intent": 2, "summary": fmt.Sprintf("finding %d", i)})
+		facts = append(facts, map[string]any{"id": 300 + i, "from_intent": 2, "summary": fmt.Sprintf("fact %d", i)})
+	}
+	data := map[string]any{"running_intents": []any{map[string]any{"id": 7}}, "finding_list": findings, "recent_facts": facts}
+	view := workerLaunchContext(data, &db.Node{ID: 7})
+	if got := len(view["awareness_finding_list"].([]any)); got != 6 {
+		t.Fatal("a worker must see every finding in the window to avoid re-reporting", got)
+	}
+	if got := len(view["awareness_recent_facts"].([]any)); got != 3 || fmt.Sprint(view["awareness_recent_facts_total"]) != "6" {
+		t.Fatal("fact awareness sample changed", got, view["awareness_recent_facts_total"])
+	}
+}
+
+func TestWorkerLaunchLoadsDependencyEvidenceOutsideOverviewWindow(t *testing.T) {
+	d := testDB(t)
+	defer d.Close()
+	exp, err := d.CreateExploration("dependency evidence fixture", "busy task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec(`DELETE FROM explorations WHERE id=$1`, exp)
+	ts := d.Exploration(exp)
+	must := func(id int64, err error) int64 {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	link := func(from int64, rel string, to int64) {
+		t.Helper()
+		if err := ts.Link(from, rel, to); err != nil {
+			t.Fatal(err)
+		}
+	}
+	parent := must(ts.AddIntent(map[string]any{"summary": "parent direction"}, 1, nil, "fixture"))
+	yielded := must(ts.AddNode(db.KindFact, map[string]any{"summary": "old fact yielded by parent", "confidence": "observed"}, 0, "confirmed", "fixture", nil))
+	link(parent, db.RelYields, yielded)
+	finding := must(ts.AddNode(db.KindFinding, map[string]any{"summary": "old finding yielded by parent"}, 0, "confirmed", "fixture", nil))
+	link(parent, db.RelYields, finding)
+	direct := must(ts.AddNode(db.KindFact, map[string]any{"summary": "old direct parent fact"}, 0, "confirmed", "fixture", nil))
+	for i := range 25 {
+		must(ts.AddNode(db.KindFact, map[string]any{"summary": fmt.Sprintf("newer unrelated fact %d", i)}, 0, "confirmed", "fixture", nil))
+	}
+	for i := range 12 {
+		must(ts.AddNode(db.KindFinding, map[string]any{"summary": fmt.Sprintf("newer unrelated finding %d", i)}, 0, "confirmed", "fixture", nil))
+	}
+	child := must(ts.AddIntent(map[string]any{"summary": "dependent direction"}, 1, nil, "fixture"))
+	link(parent, db.RelDerivedFrom, child)
+	link(direct, db.RelDerivedFrom, child)
+
+	tools := NewToolSet(ts, "fixture")
+	ids := func(view map[string]any, key string) map[string]map[string]any {
+		out := map[string]map[string]any{}
+		raw, _ := json.Marshal(view[key])
+		var items []map[string]any
+		_ = json.Unmarshal(raw, &items)
+		for _, m := range items {
+			out[fmt.Sprint(m["id"])] = m
+		}
+		return out
+	}
+	window := tools.graphOverviewData()
+	without := workerLaunchContext(window, &db.Node{ID: child})
+	if len(ids(without, "recent_facts")) != 0 || len(ids(without, "finding_list")) != 0 {
+		t.Fatal("fixture must push dependency evidence out of the overview windows", without["recent_facts"], without["finding_list"])
+	}
+	data := tools.graphOverviewData()
+	tools.addWorkerDependencyEvidence(data, child)
+	view := workerLaunchContext(data, &db.Node{ID: child})
+	facts, findings := ids(view, "recent_facts"), ids(view, "finding_list")
+	if len(facts) != 2 || len(findings) != 1 {
+		t.Fatal("dependency evidence not selected by id", view["recent_facts"], view["finding_list"])
+	}
+	got := facts[fmt.Sprint(yielded)]
+	if got == nil || fmt.Sprint(got["from_intent"]) != fmt.Sprint(parent) || got["confidence"] != "observed" || got["summary"] != "old fact yielded by parent" {
+		t.Fatal("yielded fact lost provenance", got)
+	}
+	if facts[fmt.Sprint(direct)] == nil || fmt.Sprint(findings[fmt.Sprint(finding)]["from_intent"]) != fmt.Sprint(parent) {
+		t.Fatal("direct parent fact or parent finding missing", facts, findings)
+	}
+	// Loading is idempotent and never duplicates entries already in the window.
+	tools.addWorkerDependencyEvidence(data, child)
+	if len(data["recent_facts"].([]map[string]any)) != 22 {
+		t.Fatal("dependency evidence duplicated", len(data["recent_facts"].([]map[string]any)))
+	}
+}
+
+func TestRealWorkerFlagCombinationsKeepProjectionUnderReferences(t *testing.T) {
+	d := testDB(t)
+	defer d.Close()
+	exp, err := d.CreateExploration("flag combination fixture", "keep assigned scope")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec(`DELETE FROM explorations WHERE id=$1`, exp)
+	ts := d.Exploration(exp)
+	intentID, err := ts.AddIntent(map[string]any{"summary": "combination fixture"}, 1, nil, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, err := ts.GetNode(intentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		bounded, worker string
+		compactIntro    bool
+	}{{"1", "", false}, {"1", "1", true}} {
+		t.Run("bounded="+c.bounded+",worker="+c.worker, func(t *testing.T) {
+			t.Setenv("ARTEX_BOUNDED_CONTEXT", c.bounded)
+			t.Setenv("ARTEX_WORKER_CONTEXT", c.worker)
+			var request llm.CompletionRequest
+			provider := &plannerContextFixtureProvider{receive: func(req llm.CompletionRequest) { request = req }}
+			w := NewWorker(provider, "fixture", t.TempDir(), nil, 100000, 1)
+			w.SetNonStreaming(func() bool { return true })
+			if _, _, err := w.Execute(t.Context(), "fixture", 0, nil, ts, intent, nil, nil, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			input := ""
+			for _, message := range request.Messages {
+				input += message.Text()
+			}
+			if !strings.Contains(input, `"projection":true`) {
+				t.Fatal("experimental references must never run over the unprojected overview")
+			}
+			if strings.Contains(input, "This is a partial view") != c.compactIntro || strings.Contains(input, "[Global exploration overview") == c.compactIntro {
+				t.Fatal("introduction does not match the selected launch mode")
+			}
+		})
 	}
 }

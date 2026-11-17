@@ -88,7 +88,7 @@ per-tool token precision. Security and context changes remain later phases.
 
 `ARTEX_BOUNDED_CONTEXT=1` opts into planner context, transcript references and
 trace slices; its default remains zero. Worker launch projection now has its own
-default-on `ARTEX_WORKER_CONTEXT` switch (see milestone completion below). Mandatory system
+opt-in `ARTEX_WORKER_CONTEXT` switch (see milestone completion below). Mandatory system
 constraints and full intent text are unchanged. Projection never changes stored
 graphs, evidence or permissions; omitted evidence cannot establish a negative.
 
@@ -167,8 +167,8 @@ applied only when smaller, and reserved evidence syntax is quoted literally.
 Representative deterministic
 measurements are in [phase-b-completion.md](phase-b-completion.md). Live model
 quality/cost acceptance remains Phase E/F work. The subsequent milestone #1
-completion below makes only worker launch projection default-on; planner replay,
-references and trace paging remain opt-in.
+completion below gives worker launch projection its own switch; it, planner replay,
+references and trace paging all remain opt-in.
 
 ## Phase C review: prompt inventory and memo acceptance
 
@@ -225,17 +225,26 @@ cache improvement is promised for that template without measurement.
 ## Token Efficiency milestone completion, 2026-11-17
 
 The remaining review gaps in #1, #2 and #3 are addressed independently of the
-experimental planner/transcript features. `ARTEX_WORKER_CONTEXT` defaults to `1`
-in code, `.env.example` and Compose; `0`, `false` or `off` restores the legacy full
-worker overview and raw asset records. `ARTEX_BOUNDED_CONTEXT=0` continues to keep
+experimental planner/transcript features. `ARTEX_WORKER_CONTEXT` defaults to `0`
+in code, `.env.example` and Compose; `1`, `true`, `on` or `yes` selects the compact
+launch described below, and any other value keeps the legacy full worker overview,
+its original introduction and raw asset records. The default stays off because the
+compact launch changes what a worker knows about other intents' results and only
+byte counts have been measured (see "Review corrections" below).
+`ARTEX_BOUNDED_CONTEXT=0` continues to keep
 planner packets, reference substitution and trace paging off. Stored custom
 prompt bodies, operator constraints, goals, hints and credentials are unchanged.
 
-### Default launch data (#1)
+### Compact launch data (#1)
 
-`workerLaunchContext` selects observations produced by the assigned intent or its
-parents represented in the source overview, plus up to three separately labelled
-awareness observations per kind. Source windows are newest-first. Each selected
+With `ARTEX_WORKER_CONTEXT=1`, `workerLaunchContext` selects observations produced
+by the assigned intent or its parents, plus separately labelled awareness
+observations: up to three unrelated facts and every unrelated finding in the
+overview's finding window (newest ten). Dependency facts and findings are loaded
+by id (`addWorkerDependencyEvidence`: direct parents and everything the intent or
+a parent intent yielded, newest 40, remainder reported as
+`dependency_evidence_omitted`), so they no longer depend on the task-wide
+20-entry `recent_facts` window. Each selected
 observation list has a 20-entry ceiling and explicit omitted counts. Summary
 excerpts use at most 384 encoded JSON bytes, preserving UTF-8; truncated entries
 keep IDs/provenance/state/confidence and require `node_detail(id)` before treating
@@ -250,13 +259,13 @@ and stored graph records are never shortened. Omitted observations are not
 negative evidence. The rendered large-graph regression fixture enforces a 20 KiB
 launch-message ceiling and measures **7,119,318 source bytes → 9,322 rendered
 bytes**. This synthetic case stresses 2,000 long observations; production source
-windows may already be smaller. Real `Worker.Execute` tests exercise default and
-rollback paths with PostgreSQL, and call the actual `node_detail` tool to verify
+windows may already be smaller. Real `Worker.Execute` tests exercise opt-in and
+legacy paths with PostgreSQL, and call the actual `node_detail` tool to verify
 full evidence retrieval.
 
-### Default target assets (#2)
+### Compact target assets (#2)
 
-The system tail now uses `projectAssets` by default: at most eight records and
+With the switch on, the system tail uses `projectAssets`: at most eight records and
 **8 KiB aggregate encoded JSON**, including omission metadata. IDs, type, exact
 URL/domain/IP, port and status are retained when they fit. A URL/domain/IP over
 1,024 bytes is omitted with a field-specific marker and `requires_asset_detail`;
@@ -266,8 +275,8 @@ a shortened address is never offered as an executable target. The complete inten
 
 A 100-record escaped-string/large-metadata fixture measures **23,105,893 raw bytes
 → 7,375 projected bytes** (seven records fit). A real Worker SDK request with one
-long page title measures about **53.2 kB legacy → 11.2 kB default system**. Tests
-also verify rollback, unchanged stored records, exact short targets and successful
+long page title measures about **53.2 kB legacy → 11.2 kB compact system**. Tests
+also verify the legacy path, unchanged stored records, exact short targets and successful
 full retrieval through the actual `list_assets` tool.
 
 ### Prompt inventory and actual reductions (#3)
@@ -281,8 +290,8 @@ full retrieval through the actual `list_assets` tool.
 | Deferred-tool catalogue, deferred.go | One final segment for globally available tools; existing cache boundary retained. |
 | SDK trust and output framing, norma_trust.go | Separate trust contracts for runtime/summary data, retained. Provider-facing tests check each block occurs once. |
 | Settlement guidance, wrapup.go / worker.go | Budget-exhaustion guidance is supplied through SDK settlement, not copied into every ordinary launch. Role-specific writeback rules retained. |
-| Assigned intent in system and launch overview | The default launch omits its duplicate summary, marks `summary_in_system_intent`, and keeps lineage. Full payload appears once in the system tail and survives compaction. |
-| Overview introduction, renderWorkerGraphOverview | Condensed to read-only awareness, assigned-duty boundary, recording useful related clues, and evidence-retrieval/omission rules: **555 fewer rendered bytes per launch**. |
+| Assigned intent in system and launch overview | The compact launch omits its duplicate summary, marks `summary_in_system_intent`, and keeps lineage. Full payload appears once in the system tail and survives compaction. |
+| Overview introduction, renderWorkerGraphOverview | Condensed to read-only awareness, assigned-duty boundary, recording useful related clues, and evidence-retrieval/omission rules: **555 fewer rendered bytes per launch**, compact launch only. The legacy launch keeps its original introduction, which describes the full overview. |
 
 `TestRenderedAgentPromptByteInventory` keeps the existing per-role template
 ceilings (worker 10,400; planner 13,500; main 4,500; chat 600 bytes).
@@ -310,6 +319,31 @@ Validation on Go 1.26.10 and disposable PostgreSQL 16 databases:
 - `go build ./...`, `go vet ./...` and `python3 scripts/verify-norma-source.py` pass.
 - No new skips; DB-backed default/rollback and full read-tool tests ran against
   PostgreSQL. Local JSON logs are retained in the external validation workspace.
+
+### Review corrections (PR #58)
+
+- **Default off.** The compact launch removes other intents and most unrelated
+  observations from a worker's view. No live run has compared duplicate findings,
+  facts recorded or turns per intent between the two modes, so the switch is
+  opt-in. Changing the default requires that comparison (Phase E/F), not further
+  byte measurements.
+- **Findings stay visible.** Every finding in the overview window is kept in
+  `awareness_finding_list` (excerpted to 384 bytes), so a worker can still see
+  what was already reported. Other intents are not listed in the compact view;
+  that is the remaining difference the comparison has to judge.
+- **Dependency evidence by id.** A DB-backed test pushes a parent's fact and
+  finding out of the overview windows with newer unrelated nodes and checks they
+  still reach the worker with provenance. A failed lookup is reported as
+  `dependency_evidence_unavailable`; it never looks like "no dependencies".
+- **Legacy launch is complete.** With the switch off the worker receives the
+  original introduction as well as the original data.
+- **Flag combinations.** `ARTEX_BOUNDED_CONTEXT=1` with the worker switch off keeps
+  the projection it had before this milestone (`workerContext`), so reference
+  substitution never runs over the unprojected overview. Both combinations with
+  the experimental flag on are exercised through `Worker.Execute`.
+
+The event counts in the validation list above were recorded before these
+corrections; the commands were re-run afterwards (see the pull request).
 
 GitHub Actions currently rejects dispatch with “Actions has been disabled for
 this repository” and CodeQL remains queued. The checks above are local validation,
