@@ -117,7 +117,18 @@ rate, billing reduction or live task quality. Those rollout gates remain #33.
 
 ## Validation
 
-Focused scheduler/memo/failure and physical HTTP/SDK endpoint tests pass. Full
-repository, nested SDK and race results are recorded in the delivery PR after the
-complete checks finish. No new skipped test or weakened security check is used
-to claim coverage.
+Validation at implementation head `00e4b3a` with Go 1.26.10 and PostgreSQL 16:
+
+- Build, vet and audited SDK provenance checks pass.
+- Full repository: **1166 passing test/subtest events, zero failures, five existing skips**.
+- Complete CI race package set: **836 passing events, zero failures, three existing skips**.
+- Nested SDK: **442 passing events, zero failures, three existing skips**.
+- Focused SDK cache-boundary/protocol races pass in llm, harness and agentcore.
+- Default-off compatibility, actual HTTP serialization, source preservation,
+  changed-source invalidation, cooldown, memo/shared-call failures and numeric
+  audit reporting are covered. No new skipped test or weakened check is used.
+
+The logs are retained in the external `phase-c-completion-validation` workspace.
+GitHub Actions currently supplies no remote checks; these are local results.
+The implementation and repeatable audit cover #21/#22. Live production model
+quality, hit rates and billed savings remain explicitly unmeasured under #33.
