@@ -338,6 +338,17 @@ func TestWorkerLaunchLoadsDependencyEvidenceOutsideOverviewWindow(t *testing.T) 
 	if facts[fmt.Sprint(direct)] == nil || fmt.Sprint(findings[fmt.Sprint(finding)]["from_intent"]) != fmt.Sprint(parent) {
 		t.Fatal("direct parent fact or parent finding missing", facts, findings)
 	}
+	// The assigned intent itself can also be absent from bounded intent windows.
+	// Dependency selection must use the edges just loaded, not that optional row.
+	missingIntent := tools.graphOverviewData()
+	delete(missingIntent, "open_intents")
+	delete(missingIntent, "running_intents")
+	delete(missingIntent, "recent_done_intents")
+	tools.addWorkerDependencyEvidence(missingIntent, child)
+	missingView := workerLaunchContext(missingIntent, &db.Node{ID: child})
+	if len(ids(missingView, "recent_facts")) != 2 || len(ids(missingView, "finding_list")) != 1 {
+		t.Fatal("dependencies lost without overview intent row", missingView["recent_facts"], missingView["finding_list"])
+	}
 	// Loading is idempotent and never duplicates entries already in the window.
 	tools.addWorkerDependencyEvidence(data, child)
 	if len(data["recent_facts"].([]map[string]any)) != 22 {

@@ -173,7 +173,9 @@ func compactWorkerLaunchEnabled() bool {
 // without this step the compact launch would select from whatever happened to be
 // recent. Entries use the overview's shape and are merged newest first.
 func (t *ToolSet) addWorkerDependencyEvidence(data map[string]any, intentID int64) {
-	unavailable := func() { data["dependency_evidence_unavailable"] = "lookup failed; use list_facts / list_findings" }
+	unavailable := func() {
+		data["dependency_evidence_unavailable"] = "lookup failed; evidence is incomplete; use node_detail(id) for known dependency IDs"
+	}
 	own, err := t.ts.EdgesTouching([]int64{intentID})
 	if err != nil {
 		unavailable()
@@ -207,6 +209,10 @@ func (t *ToolSet) addWorkerDependencyEvidence(data map[string]any, intentID int6
 			}
 		}
 	}
+	// Keep the edge-derived parent IDs even when the assigned intent itself is
+	// outside the overview's intent windows. The projection must not discard
+	// evidence we just fetched simply because that optional row is missing.
+	data["intent_context"] = map[string]any{"id": intentID, "parents": producers[1:]}
 	present := map[string]bool{}
 	for _, key := range []string{"recent_facts", "finding_list"} {
 		items, _ := data[key].([]map[string]any)
@@ -312,17 +318,23 @@ func scopedWorkerContext(data map[string]any, intent *db.Node, awareness bool) m
 	_ = dec.Decode(&out)
 	delete(out, "coverage") // worker render omits coverage; do not spend its budget
 	deps := map[string]bool{fmt.Sprint(intent.ID): true}
+	includeParents := func(m map[string]any) {
+		if ps, ok := m["parents"].([]any); ok {
+			for _, id := range ps {
+				deps[fmt.Sprint(id)] = true
+			}
+		}
+	}
+	if assignment, ok := out["intent_context"].(map[string]any); ok && fmt.Sprint(assignment["id"]) == fmt.Sprint(intent.ID) {
+		includeParents(assignment)
+	}
 	for _, key := range []string{"open_intents", "running_intents", "recent_done_intents"} {
 		items, _ := out[key].([]any)
 		for _, v := range items {
 			m, _ := v.(map[string]any)
 			if fmt.Sprint(m["id"]) == fmt.Sprint(intent.ID) {
 				out["intent_context"] = m
-				if ps, ok := m["parents"].([]any); ok {
-					for _, id := range ps {
-						deps[fmt.Sprint(id)] = true
-					}
-				}
+				includeParents(m)
 			}
 		}
 		delete(out, key)
