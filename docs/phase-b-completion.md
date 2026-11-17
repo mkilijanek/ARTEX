@@ -109,7 +109,10 @@ Checkpoint bytes below are **storage only**, never sent to the model.
 | Evidence state changes / 3 | 5522 | 11046 | 5336 | 17324 | 12100 |
 
 References reduced these complete repeated-read fixture requests by about 30.1%,
-including a 720-byte fixed protocol cost. A prefetch-only request adds that cost
+including the complete serialized protocol overhead. The fixed rule itself is
+718 UTF-8 bytes; its serialized cost depends on the surrounding system array
+(the measurement fixture adds 718 bytes; requests with an existing nonempty
+system array add 721). A prefetch-only request pays that overhead
 without replacement savings. Stored replay can grow after changes, but the sent
 snapshot does not grow with it. No user-message cache breakpoint or model-side
 patch application is needed. Tests compare every sent snapshot with the exact
