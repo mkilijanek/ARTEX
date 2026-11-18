@@ -44,7 +44,7 @@ func TestRenderedAgentPromptByteInventory(t *testing.T) {
 		if strings.Join(parts, "\n\n") != prompt {
 			t.Fatalf("%s changed instructions", role)
 		}
-		budgets := map[string]int{"worker": 10400, "planner": 13500, "mainagent": 4500, "chat": 600}
+		budgets := map[string]int{"worker": 10400, "planner": 13500, "mainagent": 4500, "chat": 1500} // chat 600 -> 1500: the code-owned untrusted-content tail (D4) is now appended to the chat prompt
 		if len(prompt) > budgets[role] {
 			t.Fatalf("%s prompt grew beyond reviewed byte ceiling: %d > %d", role, len(prompt), budgets[role])
 		}

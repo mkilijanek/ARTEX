@@ -513,9 +513,50 @@ func (s *Server) seedOrchestrationTools() {
 	s.upgradeReporterTriggerMessage() // backfill migration for old DBs: makes the reporter send evidence_version back (one-time)
 	s.seedFindingTrafficTools()       // adds optional evidence params and read-only evidence tools, preserving user config
 	s.seedFindingWorkflowTools()
+	s.seedFactSourceSchema() // source enum on record_fact, added once per DB without touching operator text
 	// Note: pentest's default tool bindings need no migration — BuiltinToolSeeds already seeds
 	// list_assets/insert_assets/report_finding/list_findings/list_companies together with
 	// pentest at fresh initialization (no old DBs exist in this project, so no migration).
+}
+
+// seedFactSourceSchema adds the source property (closed enum, no operator_input) to the
+// record_fact schema of existing databases: SeedTool is first-insert only and ToolResolve
+// serves the stored schema, so without this the model would never see the enum. It is a
+// dedicated additive seeder, independent of the one-time refresh flags (which overwrite
+// operator text): the property is added only when the stored schema lacks it, so a second
+// run matches no row and changes nothing, and the description and every other property
+// stay as the operator left them.
+func (s *Server) seedFactSourceSchema() {
+	for _, seed := range agent.BuiltinToolSeeds() {
+		if seed.Key != "record_fact" {
+			continue
+		}
+		raw, err := json.Marshal(seed.Schema)
+		if err != nil {
+			log.Printf("[facts] record_fact schema: %v", err)
+			return
+		}
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &obj); err != nil {
+			log.Printf("[facts] record_fact schema: %v", err)
+			return
+		}
+		var properties map[string]json.RawMessage
+		if err := json.Unmarshal(obj["properties"], &properties); err != nil {
+			log.Printf("[facts] record_fact schema properties: %v", err)
+			return
+		}
+		if len(properties["source"]) == 0 {
+			log.Printf("[facts] record_fact seed has no source property")
+			return
+		}
+		_, err = s.m.pg.Exec(`UPDATE tools SET schema=jsonb_set(schema,ARRAY['properties','source'],$1::jsonb,true),updated_at=now()
+WHERE key='record_fact' AND system AND jsonb_typeof(schema->'properties')='object' AND NOT(schema->'properties' ? 'source')`, string(properties["source"]))
+		if err != nil {
+			log.Printf("[facts] upgrade record_fact.source: %v", err)
+		}
+		return
+	}
 }
 
 // refreshBuiltinToolSchemas propagates code schema/description changes on the

@@ -98,13 +98,11 @@ const mainAgentDefaultTmpl = `You are the "main agent" of an authorized penetrat
 
 Current task goal: {{.Goal}}
 
-Do not fabricate findings; answer only from real data returned by tools.
-
-` + untrustedContentInstructions + ``
+Do not fabricate findings; answer only from real data returned by tools.`
 
 func mainAgentSystem(goal, dataDir, workDir string) string {
 	body := renderSystem("mainagent", mainAgentDefaultTmpl, MainVars{Goal: goal, DataDir: dataDir, Now: nowStr()})
-	return body + artifactSpec(workDir)
+	return addStaticTail(body, untrustedContentTail(body)) + artifactSpec(workDir)
 }
 
 // Chat handles one human message and returns the assistant reply. emit, if
