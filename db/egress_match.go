@@ -4,6 +4,7 @@ import (
 	"net/netip"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 
 	"golang.org/x/net/idna"
@@ -26,21 +27,143 @@ type EgressDecision struct {
 	AllowedIPs []netip.Addr
 }
 
-// NormalizeEgressHost returns the canonical form egress rules and the dial pin compare
-// on: trimmed, trailing dots stripped, lower case, IDNA to ASCII (the same Lookup
-// profile net/http applies before dialling). A name IDNA rejects keeps its lower-case
-// spelling, so it can only ever equal itself. IP literals are canonicalised
-// (v4-mapped unmapped, zone dropped).
-func NormalizeEgressHost(host string) string {
+// CanonicalEgressHost returns the form egress rules, the dial pin and the request itself
+// use: trimmed, IDNA to ASCII (the Lookup profile net/http applies to a host that is not
+// plain ASCII), lower case, trailing dots stripped AFTER the mapping (U+3002 and friends
+// map to "."). A name that maps to an IP literal is returned as that address (v4-mapped
+// unmapped, zone dropped). ok is false when the name cannot be canonicalised (IDNA
+// rejects it, it maps to a delimiter, or it is empty); the returned text is then only
+// the lower-case spelling and callers must refuse the destination.
+func CanonicalEgressHost(host string) (canonical string, ok bool) {
 	host = strings.TrimSpace(host)
-	if ip, err := netip.ParseAddr(host); err == nil {
-		return ip.WithZone("").Unmap().String()
+	canon := func(h string) (string, bool) {
+		if ip, err := netip.ParseAddr(h); err == nil {
+			return ip.WithZone("").Unmap().String(), true
+		}
+		return h, false
 	}
-	host = strings.ToLower(strings.TrimRight(host, "."))
-	if ascii, err := idna.Lookup.ToASCII(host); err == nil {
+	if c, isIP := canon(host); isIP {
+		return c, true
+	}
+	ok = true
+	if !isASCII(host) {
+		ascii, err := idna.Lookup.ToASCII(host)
+		if err != nil {
+			return strings.ToLower(strings.TrimRight(host, ".")), false
+		}
 		host = ascii
 	}
-	return strings.ToLower(host)
+	host = strings.ToLower(strings.TrimRight(host, "."))
+	if c, isIP := canon(host); isIP {
+		return c, true
+	}
+	if endsInNumber(host) {
+		// A host whose last label is a number is an IPv4 address to getaddrinfo (and to the
+		// WHATWG URL parser): "2130706433", "0x7f.1", "127.1" and "0177.0.0.1" are 127.0.0.1.
+		// A resolver behind a proxy would dial it, so it is judged and dialled as that address.
+		if ip, ok := parseLegacyIPv4(host); ok {
+			return ip.String(), true
+		}
+		return host, false
+	}
+	if host == "" || strings.ContainsAny(host, "/\\?#@[]% \t\r\n") {
+		ok = false
+	}
+	return host, ok
+}
+
+// endsInNumber reports whether the last label of host is all decimal digits or 0x followed
+// by hex digits (possibly none).
+func endsInNumber(host string) bool {
+	last := host[strings.LastIndexByte(host, '.')+1:]
+	if last == "" {
+		return false
+	}
+	if strings.HasPrefix(last, "0x") {
+		return strings.Trim(last[2:], "0123456789abcdef") == ""
+	}
+	return strings.Trim(last, "0123456789") == ""
+}
+
+// parseLegacyIPv4 parses 1 to 4 dot-separated numbers (decimal, octal with a leading 0, hex
+// with 0x) as inet_aton does: every part but the last is one byte, the last fills the
+// remaining bytes. Out-of-range or non-numeric parts fail.
+func parseLegacyIPv4(host string) (netip.Addr, bool) {
+	parts := strings.Split(host, ".")
+	if len(parts) > 4 {
+		return netip.Addr{}, false
+	}
+	var acc uint64
+	for i, p := range parts {
+		base := 10
+		switch {
+		case strings.HasPrefix(p, "0x"):
+			base, p = 16, p[2:]
+		case len(p) > 1 && p[0] == '0':
+			base, p = 8, p[1:]
+		}
+		n := uint64(0)
+		if p != "" || base != 16 {
+			var err error
+			if n, err = strconv.ParseUint(p, base, 32); err != nil {
+				return netip.Addr{}, false
+			}
+		}
+		if i < len(parts)-1 {
+			if n > 255 {
+				return netip.Addr{}, false
+			}
+			acc |= n << (8 * (3 - i))
+		} else {
+			if n >= 1<<(8*(4-i)) {
+				return netip.Addr{}, false
+			}
+			acc |= n
+		}
+	}
+	return netip.AddrFrom4([4]byte{byte(acc >> 24), byte(acc >> 16), byte(acc >> 8), byte(acc)}), true
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// NormalizeEgressHost is CanonicalEgressHost without the verdict: a name that cannot be
+// canonicalised keeps its lower-case spelling, so a rule pattern can only ever equal
+// itself. Destinations must go through CanonicalEgressHost and be refused when !ok.
+func NormalizeEgressHost(host string) string {
+	c, _ := CanonicalEgressHost(host)
+	return c
+}
+
+// CanonicalEgressPort returns the decimal port of u without leading zeros, the scheme's
+// default when none is given ("" for a scheme without one). ok is false when the port is
+// not a number in 0..65535: such a destination must be refused and a rule that names such
+// a port matches nothing.
+func CanonicalEgressPort(u *url.URL) (port string, ok bool) {
+	return canonicalPortText(u.Port(), u.Scheme)
+}
+
+func canonicalPortText(p, scheme string) (string, bool) {
+	if p == "" {
+		switch strings.ToLower(scheme) {
+		case "http":
+			return "80", true
+		case "https":
+			return "443", true
+		}
+		return "", true
+	}
+	n, err := strconv.ParseUint(p, 10, 16)
+	if err != nil {
+		return "", false
+	}
+	return strconv.FormatUint(n, 10), true
 }
 
 // EgressIPForms returns the address itself (v4-mapped unmapped, zone dropped) followed
@@ -93,6 +216,9 @@ func EvaluateEgress(block, allow []AssetInterceptRule, u *url.URL, ips []netip.A
 	if u == nil {
 		return EgressDecision{Code: EgressBlocked, Reason: "no destination url"}
 	}
+	if _, ok := CanonicalEgressPort(u); !ok {
+		return EgressDecision{Code: EgressBlocked, Reason: "destination port is invalid"}
+	}
 	host := NormalizeEgressHost(u.Hostname())
 	var blockIPs, allowIPs []netip.Addr
 	add := func(ip netip.Addr) {
@@ -102,7 +228,7 @@ func EvaluateEgress(block, allow []AssetInterceptRule, u *url.URL, ips []netip.A
 		blockIPs = append(blockIPs, EgressIPForms(ip)...)
 		allowIPs = append(allowIPs, ip.WithZone("").Unmap())
 	}
-	if lit, err := netip.ParseAddr(u.Hostname()); err == nil {
+	if lit, err := netip.ParseAddr(host); err == nil { // also a name that maps to a literal
 		add(lit)
 	}
 	for _, ip := range ips {
@@ -167,7 +293,18 @@ func egressRuleMatches(r AssetInterceptRule, host string, u *url.URL, ips []neti
 		return host != "" && NormalizeEgressHost(p) == host
 	case "fuzzy_domain":
 		rule := NormalizeEgressHost(strings.TrimLeft(p, "."))
-		return host != "" && rule != "" && (host == rule || strings.HasSuffix(host, "."+rule))
+		if host == "" || rule == "" {
+			return false
+		}
+		if host == rule || strings.HasSuffix(host, "."+rule) {
+			return true
+		}
+		// A pattern ending in a number is normalised to an address ("0.1" is 0.0.0.1). A
+		// block rule keeps blocking what its text suffix blocked; an allow rule does not.
+		if raw := strings.ToLower(strings.Trim(p, ".")); fold && raw != "" && raw != rule {
+			return host == raw || strings.HasSuffix(host, "."+raw)
+		}
+		return false
 	case "exact_ip":
 		want, err := netip.ParseAddr(p)
 		if err != nil {
@@ -273,8 +410,11 @@ func egressHostMatches(hostPart string, u *url.URL) bool {
 	if h == "" || strings.ContainsAny(h, "=?&") {
 		return false
 	}
-	if port != "" && port != egressPort(u) {
-		return false
+	if port != "" {
+		want, ok := canonicalPortText(port, "")
+		if have, hok := CanonicalEgressPort(u); !ok || !hok || want != have {
+			return false
+		}
 	}
 	uh := NormalizeEgressHost(u.Hostname())
 	if uh == h {
@@ -301,24 +441,13 @@ func egressURLMatches(pattern string, u *url.URL, fold bool) bool {
 	if NormalizeEgressHost(ru.Hostname()) != NormalizeEgressHost(u.Hostname()) {
 		return false
 	}
-	if egressPort(ru) != egressPort(u) {
+	rport, rok := CanonicalEgressPort(ru)
+	uport, uok := CanonicalEgressPort(u)
+	if !rok || !uok || rport != uport {
 		return false
 	}
 	rp, up := egressPath(ru.Path, fold), egressPath(u.Path, fold)
 	return rp == "/" || up == rp || strings.HasPrefix(up, rp+"/")
-}
-
-func egressPort(u *url.URL) string {
-	if p := u.Port(); p != "" {
-		return p
-	}
-	switch strings.ToLower(u.Scheme) {
-	case "http":
-		return "80"
-	case "https":
-		return "443"
-	}
-	return ""
 }
 
 // egressPath resolves dot segments and doubled slashes, so /public/../admin and

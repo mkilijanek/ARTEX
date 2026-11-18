@@ -21,15 +21,15 @@ func (s *Server) registerTargetPolicy() {
 	s.tpMu.Lock()
 	if !s.dbCaptured {
 		if dsn, _, err := db.DSN(); err == nil {
-			if hosts, port, err := agent.DatabaseEndpoint(dsn); err != nil {
+			if eps, err := agent.DatabaseEndpoint(dsn); err != nil {
 				// Not fatal: the denylist then reads the DSN again when a fetch starts.
 				log.Printf("[webfetch-policy] database endpoint unavailable: %v", err)
 			} else {
-				s.dbHosts, s.dbPort, s.dbCaptured = hosts, port, true
+				s.dbEndpoints, s.dbCaptured = eps, true
 			}
 		}
 	}
-	cp.DBHosts, cp.DBPort = s.dbHosts, s.dbPort
+	cp.DBEndpoints, cp.DBCaptured = s.dbEndpoints, s.dbCaptured
 	s.tpMu.Unlock()
 	m := s.m
 	loader := func(_ context.Context, taskID int64) (block, allow []db.AssetInterceptRule, err error) {

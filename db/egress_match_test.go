@@ -171,3 +171,175 @@ func TestEgressAllowedIPsFollowTheMatchingRule(t *testing.T) {
 		})
 	}
 }
+
+// Review finding 1: the policy compares the ASCII host the transport puts on the wire. A
+// compatibility spelling (ideographic full stop, full-width dot or letters, half-width
+// ideographic full stop) maps to the same name, trailing dot included.
+func TestEgressMatchCompatibilityHostSpellings(t *testing.T) {
+	block := []AssetInterceptRule{egressRule("exact_domain", "blocked.example")}
+	for _, host := range []string{
+		"blocked.example\u3002",       // ideographic full stop as the trailing dot
+		"blocked\u3002example",        // ... and as a label separator
+		"blocked\uff0eexample",        // full-width full stop
+		"blocked\uff61example\uff61",  // half-width ideographic full stop, trailing
+		"\uff42locked.example",        // full-width b
+		"BLOCKED.EXAMPLE\u3002\u3002", // several mapped trailing dots
+		"blocked.example.",
+	} {
+		t.Run(host, func(t *testing.T) {
+			u, err := url.Parse("http://" + host + "/x")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := EvaluateEgress(block, nil, u, nil); got.Allowed || got.Code != EgressBlocked {
+				t.Fatalf("host %q passed the block rule: %+v", host, got)
+			}
+			if got, ok := CanonicalEgressHost(u.Hostname()); !ok || got != "blocked.example" {
+				t.Fatalf("CanonicalEgressHost(%q) = %q, %v; want blocked.example", host, got, ok)
+			}
+		})
+	}
+	t.Run("mapped ip literal is an ip", func(t *testing.T) {
+		u, _ := url.Parse("http://\uff11\uff10.0.0.1/")
+		if got := EvaluateEgress([]AssetInterceptRule{egressRule("exact_ip", "10.0.0.1")}, nil, u, nil); got.Allowed {
+			t.Fatalf("full-width digits slipped past an ip rule: %+v", got)
+		}
+	})
+	t.Run("a host that cannot be canonicalised is reported", func(t *testing.T) {
+		for _, host := range []string{"a\uff1ab", "bad host\u3002example", "\u3002"} {
+			if got, ok := CanonicalEgressHost(host); ok && got != "" {
+				t.Errorf("CanonicalEgressHost(%q) = %q, true; want refusal", host, got)
+			}
+		}
+	})
+	t.Run("ascii names net/http dials as written are kept", func(t *testing.T) {
+		if got, ok := CanonicalEgressHost("My_Host.Example."); !ok || got != "my_host.example" {
+			t.Fatalf("got %q, %v", got, ok)
+		}
+	})
+}
+
+// Review finding 2: ports compare numerically; a leading zero is not a different port, and
+// a port that is not a port matches nothing.
+func TestEgressMatchPortsAreNumeric(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		block       []AssetInterceptRule
+		rawURL      string
+		wantAllowed bool
+	}{
+		{"exact_url :8443 vs :08443", []AssetInterceptRule{egressRule("exact_url", "http://lab.example:8443/private")}, "http://lab.example:08443/private", false},
+		{"exact_url :08443 vs :8443", []AssetInterceptRule{egressRule("exact_url", "http://lab.example:08443/private")}, "http://lab.example:8443/private", false},
+		{"exact_url default vs :080", []AssetInterceptRule{egressRule("exact_url", "http://lab.example/private")}, "http://lab.example:080/private", false},
+		{"exact_url :80 vs :0080", []AssetInterceptRule{egressRule("exact_url", "http://lab.example:80/private")}, "http://lab.example:0080/private", false},
+		{"exact_url https default vs :00443", []AssetInterceptRule{egressRule("exact_url", "https://lab.example/private")}, "https://lab.example:00443/private", false},
+		{"exact_url different number stays allowed", []AssetInterceptRule{egressRule("exact_url", "http://lab.example:8443/private")}, "http://lab.example:08444/private", true},
+		{"exact_url rule with a non-numeric port matches nothing", []AssetInterceptRule{egressRule("exact_url", "http://lab.example:80a/private")}, "http://lab.example/private", true},
+		{"exact_url rule with an out-of-range port matches nothing", []AssetInterceptRule{egressRule("exact_url", "http://lab.example:99999/private")}, "http://lab.example:80/private", true},
+		{"host:port rule :8443 vs :08443", []AssetInterceptRule{egressRule("fuzzy_url", "lab.example:8443")}, "http://lab.example:08443/", false},
+		{"host:port rule :08443 vs :8443", []AssetInterceptRule{egressRule("fuzzy_url", "lab.example:08443")}, "http://lab.example:8443/", false},
+		{"host:port rule :80 vs implied default", []AssetInterceptRule{egressRule("fuzzy_url", "lab.example:80")}, "http://lab.example/", false},
+		{"host:port rule :080 vs implied default", []AssetInterceptRule{egressRule("fuzzy_url", "lab.example:080")}, "http://lab.example/", false},
+		{"host:port rule with a non-numeric port matches nothing", []AssetInterceptRule{egressRule("fuzzy_url", "lab.example:http")}, "http://lab.example/", true},
+		{"host:port rule with an out-of-range port matches nothing", []AssetInterceptRule{egressRule("fuzzy_url", "lab.example:65536/x")}, "http://lab.example/x", true},
+		{"bracketed ipv6 :8080 vs :08080", []AssetInterceptRule{egressRule("fuzzy_url", "[::1]:8080")}, "http://[::1]:08080/", false},
+		{"domain rule ignores the port", []AssetInterceptRule{egressRule("exact_domain", "lab.example")}, "http://lab.example:08443/", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u, err := url.Parse(tc.rawURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := EvaluateEgress(tc.block, nil, u, nil); got.Allowed != tc.wantAllowed {
+				t.Fatalf("EvaluateEgress(%s) allowed=%v (%+v), want %v", tc.rawURL, got.Allowed, got, tc.wantAllowed)
+			}
+		})
+	}
+	t.Run("a destination with an unparsable port is refused", func(t *testing.T) {
+		for _, raw := range []string{"http://lab.example:99999/", "http://lab.example:65536/"} {
+			u, err := url.Parse(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := EvaluateEgress(nil, nil, u, nil); got.Allowed {
+				t.Fatalf("%s was allowed: %+v", raw, got)
+			}
+		}
+	})
+}
+
+// Security re-check item 1: a host whose last label is a number is an IPv4 address in the
+// inet_aton / WHATWG sense (1 to 4 parts, decimal, octal or hex, the last part filling the
+// remaining bytes). The resolver behind a proxy turns these into addresses, so the
+// canonical host is the dotted form; a numeric-looking name that does not parse is refused.
+func TestEgressMatchNumericIPv4Spellings(t *testing.T) {
+	for host, want := range map[string]string{
+		"2130706433":                      "127.0.0.1",
+		"0x7f.1":                          "127.0.0.1",
+		"127.1":                           "127.0.0.1",
+		"0177.0.0.1":                      "127.0.0.1",
+		"\uff10\uff58\uff17\uff46.\uff11": "127.0.0.1", // full-width 0x7f.1
+		"127.0.0.01":                      "127.0.0.1",
+		"0xa9fea9fe":                      "169.254.169.254",
+		"0x7f.0.0.1.":                     "127.0.0.1",
+		"10.1.513":                        "10.1.2.1",
+		"0x0":                             "0.0.0.0",
+		"1.2.3.0x":                        "1.2.3.0",
+		"127.0.0.1":                       "127.0.0.1",
+	} {
+		t.Run(host, func(t *testing.T) {
+			got, ok := CanonicalEgressHost(host)
+			if !ok || got != want {
+				t.Fatalf("CanonicalEgressHost(%q) = %q, %v; want %q", host, got, ok, want)
+			}
+		})
+	}
+	for _, host := range []string{"foo.123", "1.2.3.4.5", "256.1.1.1", "4294967296", "0x100000000", "example.0x", "09.1", "1..2"} {
+		t.Run("invalid "+host, func(t *testing.T) {
+			if got, ok := CanonicalEgressHost(host); ok {
+				t.Fatalf("CanonicalEgressHost(%q) = %q, true; want refusal", host, got)
+			}
+		})
+	}
+	for _, host := range []string{"example.123abc", "1.example.com", "0x7f.example", "a1", "1a", "123abc"} {
+		t.Run("name "+host, func(t *testing.T) {
+			if got, ok := CanonicalEgressHost(host); !ok || got != host {
+				t.Fatalf("CanonicalEgressHost(%q) = %q, %v; want the name unchanged", host, got, ok)
+			}
+		})
+	}
+	t.Run("rules see the address", func(t *testing.T) {
+		for _, h := range []string{"2130706433", "0x7f.1", "127.1", "0177.0.0.1", "\uff10\uff58\uff17\uff46.\uff11"} {
+			u, err := url.Parse("http://" + h + ":8080/x")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, r := range []AssetInterceptRule{egressRule("exact_ip", "127.0.0.1"), egressRule("cidr", "127.0.0.0/8"), egressRule("fuzzy_ip", "127.0"), egressRule("exact_domain", "127.0.0.1")} {
+				if got := EvaluateEgress([]AssetInterceptRule{r}, nil, u, nil); got.Allowed {
+					t.Errorf("%s passed block rule %s %s", h, r.Kind, r.Pattern)
+				}
+			}
+		}
+	})
+}
+
+// A fuzzy_domain block rule that ends in a number is read as an address by the numeric
+// IPv4 parsing ("0.1" is 0.0.0.1). It must still block what its text suffix blocked
+// before; an allow rule of that shape compares the address only and never widens.
+func TestEgressMatchFuzzyDomainNumericSuffixStillBlocks(t *testing.T) {
+	u, err := url.Parse("http://10.0.0.1/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pat := range []string{"0.1", ".0.1", "1", "foo.1"} {
+		block := []AssetInterceptRule{egressRule("fuzzy_domain", pat)}
+		want := pat != "foo.1" // "foo.1" was never a suffix of 10.0.0.1
+		if got := !EvaluateEgress(block, nil, u, nil).Allowed; got != want {
+			t.Errorf("fuzzy_domain block %q vs 10.0.0.1: blocked=%v, want %v", pat, got, want)
+		}
+		allow := []AssetInterceptRule{egressRule("fuzzy_domain", pat)}
+		if EvaluateEgress(nil, allow, u, nil).Allowed {
+			t.Errorf("fuzzy_domain allow %q admitted 10.0.0.1 by text suffix", pat)
+		}
+	}
+}

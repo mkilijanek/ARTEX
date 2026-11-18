@@ -65,18 +65,36 @@ All notable changes to this project are documented in this file. The format is b
   connections dial only the checked addresses. This is always on; there is no flag.
   New refusal codes:
   - `TARGET_CONTROL_PLANE`: cloud metadata and link-local ranges; ARTEX's listen,
-    recording-proxy and database ports on local addresses; the DSN database host;
+    recording-proxy and database ports on local addresses; each DSN database host on
+    its own port;
     also in embedded IPv4 forms.
   - `TARGET_BLOCKED`: an enabled global or task block rule matches.
   - `TARGET_NOT_ALLOWED`: the task has allow rules and none matches.
   - `TARGET_POLICY_UNAVAILABLE`: the rules cannot be read (fails closed).
   - `TARGET_UNRESOLVED`: the name does not resolve locally and no global or
     environment proxy is set.
+  - `TARGET_INVALID`: the host or port cannot be read, or the scheme is unsupported.
   Refusals log `[webfetch-policy] decision=<code> hop=<n> task=<id>`, without URL or
   host. Chat sessions apply the global block rules and the denylist only. This covers
   WebFetch and the custom http tool only; Bash, shell, `command`/`script` custom tools,
   MCP tools and WebSearch queries are not checked, and requests through a proxy are
   not protected against DNS rebinding. See `SECURITY.md`, "Known limits".
+- **One canonical destination for WebFetch and the custom http tool.** The host is
+  canonicalised once (`db.CanonicalEgressHost`: IDNA to ASCII, lower case, trailing
+  dots dropped after the mapping) and the request is sent with that host and a numeric
+  port, on the initial URL and every redirect hop; a Unicode or compatibility spelling
+  is fetched as the canonical ASCII URL. Numeric IPv4 spellings (`2130706433`,
+  `0x7f.1`, `127.1`, `0177.0.0.1`, full-width forms) are checked and dialled as the
+  dotted address; a host ending in a numeric label that does not parse (`foo.123`) is
+  refused. Ports are compared as numbers; zero-padded ports are rewritten, a rule with
+  an invalid port matches nothing, and a destination with an invalid port is refused
+  with `TARGET_INVALID`.
+- **Database denylist covers every DSN endpoint.** Endpoints come from
+  `pgconn.ParseConfig`, the parser the application connects with, including fallback
+  hosts. Each host is denied on its own port and every database port on local
+  addresses; a Unix-socket DSN keeps its port denied on local addresses. All pairs are
+  kept after the environment scrub and on re-registration. For remote hosts the denial
+  is per (host, port) pair.
 - **Rule matching for these checks is URL-aware.** Domain rules match the parsed,
   normalised host; fuzzy domain rules match on a label boundary. URL rules with a
   scheme match scheme, host, port and path prefix; userinfo and query text no longer

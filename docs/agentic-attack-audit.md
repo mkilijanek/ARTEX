@@ -29,9 +29,9 @@ PR 2 (prompt envelope and fact labels) will update the rows marked PENDING PR 2.
 | C5 | Plan hijacking | GAP | Nothing | T-PLAN-1 (PR 2) | PENDING PR 2 |
 | C6 | Goal drift | PARTIAL | Nothing | T-PLAN-3 (PR 2) | PENDING PR 2 (anchor). `goal_met` without evidence: RESIDUAL (Q6) |
 | C7 | Tool abuse | PARTIAL | `insert_assets` fails closed: if the asset intercept rules cannot be read, the whole call is refused and nothing is inserted (`agent/tools_insert.go`). | T-INS-1 `TestInsertAssetsGateFailsClosed` | FIXED in PR 1 (`insert_assets`). Guard hooks on planner and main sessions: DEFERRED (D.2, Q4). `task_scope` is still not enforced. |
-| C8 | WebFetch SSRF and scope | GAP | Destination policy for WebFetch in every role, and for the custom http tool: control-plane denylist, operator block and allow rules, URL-aware matcher, pinned direct dials, fail closed (`agent/webfetch_policy.go`, `db/egress_match.go`, `server/target_policy.go`). | T-MATCH-1 `TestEgressMatchParsedHostOnly`; `TestEgressAllowedIPsFollowTheMatchingRule`; T-WF-1 `TestWebFetchPolicyBlockRule`; T-WF-3 `TestWebFetchPolicyAllowList`; T-WF-4 `TestWebFetchPolicyControlPlaneAndMetadata`; T-WF-5 `TestWebFetchPolicyFailsClosed`; T-WF-9 `TestWebFetchDialPinnedAgainstRebinding` (with its re-executed helper `TestWebFetchEnvProxyChild`, which skips when run on its own); `TestWebFetchResolvesNormalisedNameOnEveryPath`; `TestWebFetchIPAllowRuleDialsOnlyMatchingAddress`; `TestWebFetchPolicyUnavailableHidesStoreError`; `TestWebFetchToolSetPerRole`; `TestRunInfoReachesToolContext`; `TestTargetPolicyKeepsDBEndpointOnReRegistration` | FIXED in PR 1 for WebFetch and the custom http tool. Proxied paths: RESIDUAL (see below). |
-| C9 | Redirects | GAP | Every hop passes the same policy. The 10-hop cap is re-implemented in `CheckRedirect`. | T-WF-2 `TestWebFetchPolicyRedirectHopBlocked`; T-WF-8 `TestWebFetchRedirectHopCap` | FIXED in PR 1 |
-| C10 | Credential leakage | GAP (custom http tool); HELD (provider, WebSearch, WebFetch) | Custom http tool: origin pinning (`ORIGIN_MISMATCH`); templated host with operator headers needs a task allow rule (`TEMPLATED_ORIGIN_NOT_ALLOWED`); sticky stripping of operator headers, `Authorization` and `Cookie` after a cross-origin hop; cross-origin 307/308 body replay refused (`REDIRECT_BODY_REFUSED`); pinned dial; keep-alives off; content-free transport errors. | T-CRED-1 `TestCustomHTTPOriginPinned`; T-CRED-2 `TestCustomHTTPCrossOriginStripsHeaders` (its https-to-http case runs in the re-executed helper `TestCustomHTTPSchemeChild`, which skips when run on its own); T-CRED-3 `TestCustomHTTP307BodyRefused`; T-CRED-4 `TestCustomHTTPInitialURLPolicy`; T-CRED-5 `TestCustomHTTPTemplatedAuthorityHeaders`; `TestCustomHTTPChainStaysStripped`; `TestCustomHTTPOddPlaceholderNames`; `TestCustomHTTPErrorTextIsContentFree`; `TestCustomHTTPRecordingProxyPath` | FIXED in PR 1 (custom http tool). Provider and WebSearch redirects: HELD (existing tests, see below). |
+| C8 | WebFetch SSRF and scope | GAP | Destination policy for WebFetch in every role, and for the custom http tool: control-plane denylist, operator block and allow rules, URL-aware matcher, pinned direct dials, fail closed (`agent/webfetch_policy.go`, `db/egress_match.go`, `server/target_policy.go`). | T-MATCH-1 `TestEgressMatchParsedHostOnly`; `TestEgressAllowedIPsFollowTheMatchingRule`; T-WF-1 `TestWebFetchPolicyBlockRule`; T-WF-3 `TestWebFetchPolicyAllowList`; T-WF-4 `TestWebFetchPolicyControlPlaneAndMetadata`; T-WF-5 `TestWebFetchPolicyFailsClosed`; T-WF-9 `TestWebFetchDialPinnedAgainstRebinding` (with its re-executed helper `TestWebFetchEnvProxyChild`, which skips when run on its own); `TestWebFetchResolvesNormalisedNameOnEveryPath`; `TestWebFetchIPAllowRuleDialsOnlyMatchingAddress`; `TestWebFetchPolicyUnavailableHidesStoreError`; `TestWebFetchToolSetPerRole`; `TestRunInfoReachesToolContext`; `TestTargetPolicyKeepsDBEndpointOnReRegistration`; `TestTargetPolicyKeepsEveryDBEndpointOnReRegistration`; `TestDatabaseEndpoint`; `TestWebFetchPolicyUsesCapturedDatabaseEndpoints`; `TestWebFetchPolicyDeniesEveryDatabaseEndpoint`; `TestWebFetchPolicyUnresolvedDatabaseHostsStayDenied`; `TestWebFetchPolicySocketDatabaseHostKeepsItsLocalPortDenied`; `TestWebFetchCompatibilityHostSpellingIsBlocked`; `TestWebFetchCompatibilityHostSpellingGoesOutCanonical`; `TestWebFetchZeroPaddedPortKeepsPolicy`; `TestWebFetchPolicyInvalidDestinationIsRefusedAndLogged`; `TestWebFetchNumericIPv4SpellingsAreCheckedAsAddresses` | FIXED in PR 1 for WebFetch and the custom http tool. Proxied paths: RESIDUAL (see below). |
+| C9 | Redirects | GAP | Every hop passes the same policy. The 10-hop cap is re-implemented in `CheckRedirect`. | T-WF-2 `TestWebFetchPolicyRedirectHopBlocked`; T-WF-8 `TestWebFetchRedirectHopCap`; `TestWebFetchCompatibilityHostSpellingOnRedirectHop` | FIXED in PR 1 |
+| C10 | Credential leakage | GAP (custom http tool); HELD (provider, WebSearch, WebFetch) | Custom http tool: origin pinning (`ORIGIN_MISMATCH`); templated host with operator headers needs a task allow rule (`TEMPLATED_ORIGIN_NOT_ALLOWED`); sticky stripping of operator headers, `Authorization` and `Cookie` after a cross-origin hop; cross-origin 307/308 body replay refused (`REDIRECT_BODY_REFUSED`); pinned dial; keep-alives off; content-free transport errors. | T-CRED-1 `TestCustomHTTPOriginPinned`; T-CRED-2 `TestCustomHTTPCrossOriginStripsHeaders` (its https-to-http case runs in the re-executed helper `TestCustomHTTPSchemeChild`, which skips when run on its own); T-CRED-3 `TestCustomHTTP307BodyRefused`; T-CRED-4 `TestCustomHTTPInitialURLPolicy`; T-CRED-5 `TestCustomHTTPTemplatedAuthorityHeaders`; `TestCustomHTTPChainStaysStripped`; `TestCustomHTTPOddPlaceholderNames`; `TestCustomHTTPErrorTextIsContentFree`; `TestCustomHTTPRecordingProxyPath`; `TestCustomHTTPCompatibilityHostSpellingIsBlocked`; `TestCustomHTTPCompatibilityHostSpellingGoesOutCanonical`; `TestCustomHTTPZeroPaddedPortKeepsPolicy`; `TestCustomHTTPNumericIPv4SpellingsAreCheckedAsAddresses` | FIXED in PR 1 (custom http tool). Provider and WebSearch redirects: HELD (existing tests, see below). |
 | C11 | Direct retry bypasses proxies | GAP | WebFetch's direct retry is off whenever a global egress proxy is configured, in either capture mode. With capture on and no global proxy, it stays and is logged. | T-WF-6 `TestWebFetchNoDirectRetryWithGlobalProxy`; T-WF-7 `TestWebFetchDirectRetryLogged` | FIXED in PR 1. The retry with capture on and no global proxy is kept by decision (Q3). |
 | C12 | Cold-digest laundering | GAP | Nothing | T-DIGEST-1 (PR 2) | PENDING PR 2 |
 | C13 | NOA summaries | UNKNOWN | Nothing | audit (PR 2) | PENDING PR 2 (still UNKNOWN) |
@@ -93,7 +93,7 @@ PR 1 recorded these protections as already in place. Nothing was changed for the
   `TEMPLATED_ORIGIN_NOT_ALLOWED`. The same template without operator headers runs
   under the destination checks alone.
 - **Refusal codes.** `TARGET_BLOCKED`, `TARGET_NOT_ALLOWED`, `TARGET_CONTROL_PLANE`,
-  `TARGET_POLICY_UNAVAILABLE`, `TARGET_UNRESOLVED` (WebFetch and the custom http tool),
+  `TARGET_POLICY_UNAVAILABLE`, `TARGET_UNRESOLVED`, `TARGET_INVALID` (WebFetch and the custom http tool),
   and `ORIGIN_MISMATCH`, `TEMPLATED_ORIGIN_NOT_ALLOWED`, `REDIRECT_BODY_REFUSED`
   (custom http tool only). The matcher semantics are in
   [adr/0001-webfetch-destination-policy.md](adr/0001-webfetch-destination-policy.md).
@@ -104,10 +104,19 @@ PR 1 recorded these protections as already in place. Nothing was changed for the
     refusal. A refusal by the shared policy therefore logs both lines.
   - `[webfetch] direct_retry task=<id>`: once per fetch that dials directly while a
     proxy is configured.
-  - `[webfetch-policy] db_host_unresolved task=<id>`: the DSN host did not resolve
-    when the denylist was built. The name and the local-address pair stay denied.
+  - `[webfetch-policy] db_host_unresolved task=<id>`: a DSN host did not resolve
+    when the denylist was built. Its name on its port and the local-address pairs
+    stay denied.
   - `[assets] gate_unavailable task=<id>`: `insert_assets` refused because the rules
     could not be read.
+
+- **Canonical destination.** Both tools send the canonical ASCII host and numeric port
+  they checked, on every hop (`db.CanonicalEgressHost`, `canonicalizeURL` in
+  `agent/webfetch_policy.go`). `TARGET_INVALID` is logged as
+  `[webfetch-policy] decision=TARGET_INVALID hop=<n> task=<id>`.
+- **Database endpoints.** `agent.DatabaseEndpoint` parses the DSN with
+  `pgconn.ParseConfig` and returns every (host, port) pair; for remote hosts the
+  denial is per pair.
 
 ## Residuals
 

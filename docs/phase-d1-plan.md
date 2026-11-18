@@ -489,8 +489,24 @@ authoritative.
   the global proxy changes.
 - **IP allow rules.** When only IP or CIDR allow rules admit a destination, only the
   addresses those rules name are dialled.
+- **Review fixes (2026-11-18).** After an external review and a security review, six
+  findings were fixed: one canonical host (`db.CanonicalEgressHost`) and numeric port
+  are checked and sent on every hop by both tools; numeric IPv4 spellings are read
+  with inet_aton/WHATWG rules and unparseable numeric hosts are refused; ports compare
+  as numbers; new code `TARGET_INVALID`; database endpoints come from
+  `pgconn.ParseConfig` with every (host, port) pair, fallback hosts included, denied
+  per pair. See ADR 0001.
 
 Verification evidence for PR 1:
+
+Review fixes (2026-11-18): local run of the tree with the fixes applied on `cdebb19`, same
+method (Go 1.26.11, fresh PostgreSQL 16 for each command set): `gofmt -l` on changed Go files
+no output; `go build ./...` 0; `go vet ./...` 0; `go test -p 1 -count=1 -v ./...` 0 with 1494
+passing results, no failures, 7 skips; `go test -race -p 1 -count=1 ./...` 0;
+`go test ./...` in `third_party/norma` 0; `python3 scripts/verify-norma-source.py` 0. Each
+fix had a regression test that failed first. A domain block rule ending in a number keeps
+its text-suffix match (`TestEgressMatchFuzzyDomainNumericSuffixStillBlocks`). The run
+below predates the fixes.
 
 Local run on 2026-11-18 of the tree committed as `1d88411` (on `main` `43208e5`), Go 1.26.11 in a
 `golang:1.26` container with a fresh PostgreSQL 16 for each command set:

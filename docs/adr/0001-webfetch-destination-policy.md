@@ -33,8 +33,13 @@ There were two candidate rule sources:
 2. **Own matcher.** `db.EvaluateEgress` (`db/egress_match.go`) is a new URL-aware
    matcher. `EvaluateAssetGate` and `insert_assets` keep their existing semantics.
 3. **Built-in denylist.** Cloud metadata and link-local ranges, ARTEX's own listen,
-   recording-proxy and database ports on local addresses, and the DSN database host on
-   the database port are always refused (`TARGET_CONTROL_PLANE`). Other loopback and
+   recording-proxy and every database port on local addresses, and each DSN database
+   host (name and resolved addresses) on that host's own port are always refused
+   (`TARGET_CONTROL_PLANE`). The database endpoints are every (host, port) pair that
+   `pgconn.ParseConfig`, the parser `db.Open` connects with, returns for the DSN,
+   fallback hosts included. They are captured at startup, before the environment
+   scrub, and kept on re-registration. A Unix-socket DSN keeps its port denied on
+   local addresses; an unset DSN protects nothing. Other loopback and
    private destinations stay reachable for lab targets.
 4. **Host-side hooks, not an SDK patch.** `agent/webfetch_policy.go` replaces the
    SDK-appended WebFetch with the same SDK tool, built with ARTEX's `CheckRedirect` and
@@ -56,6 +61,10 @@ There were two candidate rule sources:
 ### Order of checks
 
 For the initial URL and each redirect hop (at most 10):
+0. Canonicalise the host once (`db.CanonicalEgressHost`) and the port, and rewrite the
+   URL to that form: the request is sent with the canonical ASCII host and a numeric
+   port, so the string checked is the string sent. An invalid host, an invalid port, or
+   a scheme other than `http`/`https`, with or without a port: `TARGET_INVALID`.
 1. Resolve the normalised name locally (IP literals are used as they are). If it does
    not resolve and no global or environment proxy is set: `TARGET_UNRESOLVED`. With
    such a proxy, only the name checks below apply.
@@ -70,8 +79,19 @@ A task session that has an exploration id but no task id is refused before step 
 
 ### Matcher semantics (`db.EvaluateEgress`)
 
-Hosts are normalised: whitespace trimmed, trailing dots dropped, lowercased, IDNA to
-ASCII. IP literals are canonicalised (IPv4-mapped unmapped, zone dropped).
+Hosts are canonicalised by `db.CanonicalEgressHost`: whitespace trimmed, IDNA to ASCII
+for a non-ASCII host, lower case, trailing dots dropped after the mapping (so U+3002
+counts as a dot). IP literals are canonicalised (IPv4-mapped unmapped, zone dropped). A
+host whose last label is numeric is read as IPv4 with inet_aton/WHATWG rules
+(`2130706433`, `0x7f.1`, `127.1`, `0177.0.0.1` and their full-width forms are
+127.0.0.1) and is checked and dialled as the dotted address; if it does not parse
+(`foo.123`) the destination is refused (`TARGET_INVALID`). Domain patterns and the host
+of URL patterns go through the same function, so an `exact_domain` pattern `127.1`
+means 127.0.0.1. `exact_ip` and `cidr` patterns are parsed as standard addresses only
+(`127.1` there matches nothing), and `fuzzy_ip` stays a text prefix.
+
+Ports are compared as numbers (URL rules, `host:port` block patterns, the 80/443
+defaults). A rule with an invalid port matches nothing.
 
 | Rule kind | Matches |
 |---|---|
@@ -134,7 +154,11 @@ Further rules:
   that an enabled task allow rule matches; those hosts are targets.
 - In chat sessions, a custom http tool with a templated host and operator headers is
   always refused.
-- A lab target on the database's exact address and port cannot be reached.
+- A lab target on a database host's address and that host's port cannot be reached.
+  For remote database hosts the denial is per (host, port) pair; the same address on
+  another port stays reachable.
+- A model that sends a Unicode or compatibility spelling of a host gets the canonical
+  ASCII URL fetched, not the spelling it sent.
 - When the global proxy changes, the policy is registered again. Agents pick up the
   new direct-retry setting when they are next built.
 

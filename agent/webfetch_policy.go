@@ -18,6 +18,7 @@ import (
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/norma/agentcore"
 	actool "github.com/Autumn-27/norma/tool"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Egress policy for WebFetch and the custom http tool (Phase D.1, design D1/D6).
@@ -36,6 +37,7 @@ const (
 	TargetControlPlane = "TARGET_CONTROL_PLANE" // built-in denylist: metadata ranges, ARTEX's own ports
 	TargetUnavailable  = "TARGET_POLICY_UNAVAILABLE"
 	TargetUnresolved   = "TARGET_UNRESOLVED" // the name does not resolve locally and no remote-resolving proxy is configured
+	TargetInvalid      = "TARGET_INVALID"    // the host, port or scheme cannot be read: refused, never guessed
 )
 
 const maxRedirectHops = 10 // net/http's default cap, re-implemented in CheckRedirect
@@ -51,11 +53,12 @@ type TargetRuleLoader func(ctx context.Context, taskID int64) (block, allow []db
 type ControlPlane struct {
 	ListenAddr         string // ARTEX listen address (cmd/artex -addr), e.g. ":8787"
 	RecordingProxyAddr string // recording proxy address (cmd/artex -proxy); empty when capture is off
-	// DBHosts and DBPort name the database from the DSN as read at startup (see
-	// DatabaseEndpoint). The server captures them because it scrubs ARTEX_PG_DSN from the
-	// environment after startup. DBPort 0 means "read the DSN when a fetch starts".
-	DBHosts        []string
-	DBPort         uint16
+	// DBEndpoints lists every (host, port) the database driver may connect to, from the DSN as
+	// read at startup (see DatabaseEndpoint). The server captures them because it scrubs
+	// ARTEX_PG_DSN from the environment after startup. DBCaptured false means "read the DSN
+	// when a fetch starts"; true means DBEndpoints is final (it may be empty: a socket-only DSN).
+	DBEndpoints    []DBEndpoint
+	DBCaptured     bool
 	Resolver       func(ctx context.Context, host string) ([]netip.Addr, error)
 	InterfaceAddrs func() ([]netip.Addr, error)
 }
@@ -89,7 +92,7 @@ func currentTargetPolicy() targetPolicy {
 }
 
 // TargetError is a policy refusal. Code is one of db.EgressBlocked, db.EgressNotAllowed,
-// TargetControlPlane, TargetUnavailable or TargetUnresolved. Its text carries the code and a reason, never
+// TargetControlPlane, TargetUnavailable, TargetUnresolved or TargetInvalid. Its text carries the code and a reason, never
 // the operator's rule list.
 type TargetError struct {
 	Code   string
@@ -120,12 +123,10 @@ const denyReason = "destination is an ARTEX control-plane address or a cloud met
 // (local address, ARTEX port) pairs and the database. Built once per fetch so
 // interface and DSN lookups are not repeated per hop.
 type denylist struct {
-	ports   map[uint16]bool // ARTEX listen, recording proxy and database ports, denied on local addresses
-	local   []netip.Addr    // interface addresses
-	pairs   map[netip.AddrPort]bool
-	dbPort  uint16
-	dbIPs   []netip.Addr    // resolved DSN host(s)
-	dbHosts map[string]bool // normalised DSN host name(s)
+	ports   map[uint16]bool            // ARTEX listen, recording proxy and every database port, denied on local addresses
+	local   []netip.Addr               // interface addresses
+	pairs   map[netip.AddrPort]bool    // listener literals and each database host's addresses on its own port
+	dbNames map[string]map[uint16]bool // normalised database host name -> its port(s)
 }
 
 func (d *denylist) isLocal(ip netip.Addr) bool {
@@ -154,20 +155,14 @@ func (d *denylist) check(ip netip.Addr, port uint16) bool {
 		if d.pairs[netip.AddrPortFrom(f, port)] {
 			return true
 		}
-		if d.dbPort != 0 && port == d.dbPort {
-			for _, a := range d.dbIPs {
-				if a == f {
-					return true
-				}
-			}
-		}
 	}
 	return false
 }
 
-// checkName covers a destination named like the DSN host even when it does not resolve.
+// checkName covers a destination named like a DSN host on that host's port even when it
+// does not resolve.
 func (d *denylist) checkName(host string, port uint16) bool {
-	return d.dbPort != 0 && port == d.dbPort && d.dbHosts[host]
+	return d.dbNames[host][port]
 }
 
 func splitHostPortLoose(addr string) (host string, port uint16, ok bool) {
@@ -211,51 +206,65 @@ func systemResolver(ctx context.Context, host string) ([]netip.Addr, error) {
 	return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 }
 
-// DatabaseEndpoint returns the database host names and port of a postgres:// DSN
-// (host and port query parameters included; the port defaults to 5432).
-func DatabaseEndpoint(dsn string) (hosts []string, port uint16, err error) {
-	u, perr := url.Parse(dsn)
-	if perr != nil {
-		return nil, 0, errors.New("database dsn is not a parseable url")
-	}
-	port = 5432
-	if p := u.Port(); p != "" {
-		n, perr := strconv.ParseUint(p, 10, 16)
-		if perr != nil {
-			return nil, 0, errors.New("database dsn port is not a number")
-		}
-		port = uint16(n)
-	}
-	if p := u.Query().Get("port"); p != "" {
-		if n, perr := strconv.ParseUint(p, 10, 16); perr == nil {
-			port = uint16(n)
-		}
-	}
-	if h := u.Hostname(); h != "" {
-		hosts = append(hosts, h)
-	}
-	if h := u.Query().Get("host"); h != "" && !strings.HasPrefix(h, "/") {
-		hosts = append(hosts, h)
-	}
-	return hosts, port, nil
+// DBEndpoint is one address the database driver may connect to.
+type DBEndpoint struct {
+	Host string // name or address literal as the DSN spells it, or a unix-socket path
+	Port uint16
 }
 
-// dsnEndpoints returns the database endpoint the denylist protects: the one captured in
+// DatabaseEndpoint returns every (host, port) the application's driver would try for dsn:
+// the primary and each fallback host, with the port that belongs to it. A unix-socket host
+// (a path) stays in the list: it is no network endpoint, but the database then runs on this
+// host and usually listens on TCP loopback as well, so its port is denied on local addresses. It parses the DSN
+// with pgconn.ParseConfig, the parser db.Open connects with, so URL and keyword/value
+// forms, comma-separated host and port lists and the PG* environment defaults mean the
+// same thing here and there. Duplicates (pgx's TLS fallback repeats the host) are merged.
+// The error text never carries the DSN.
+func DatabaseEndpoint(dsn string) ([]DBEndpoint, error) {
+	cfg, err := pgconn.ParseConfig(dsn)
+	if err != nil {
+		return nil, errors.New("database dsn is not parseable")
+	}
+	all := []DBEndpoint{{cfg.Host, cfg.Port}}
+	for _, fb := range cfg.Fallbacks {
+		all = append(all, DBEndpoint{fb.Host, fb.Port})
+	}
+	var out []DBEndpoint
+	seen := map[DBEndpoint]bool{}
+	for _, e := range all {
+		if e.Host == "" || e.Port == 0 {
+			continue
+		}
+		k := DBEndpoint{e.Host, e.Port}
+		if !isSocketHost(e.Host) {
+			k.Host = db.NormalizeEgressHost(e.Host)
+		}
+		if !seen[k] {
+			seen[k] = true
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
+// dsnEndpoints returns the database endpoints the denylist protects: the ones captured in
 // the control plane at startup, else the DSN as resolved now. An unset DSN yields
 // nothing (there is no database to protect).
-func dsnEndpoints(cp ControlPlane) (hosts []string, port uint16, err error) {
-	if cp.DBPort != 0 {
-		return cp.DBHosts, cp.DBPort, nil
+func isSocketHost(h string) bool { return strings.HasPrefix(h, "/") || strings.HasPrefix(h, "@") }
+
+func dsnEndpoints(cp ControlPlane) ([]DBEndpoint, error) {
+	if cp.DBCaptured {
+		return cp.DBEndpoints, nil
 	}
 	dsn, _, derr := db.DSN()
 	if derr != nil || strings.TrimSpace(dsn) == "" {
-		return nil, 0, nil
+		return nil, nil
 	}
 	return DatabaseEndpoint(dsn)
 }
 
 func buildDenylist(ctx context.Context, cp ControlPlane, ri RunInfo) (*denylist, error) {
-	d := &denylist{ports: map[uint16]bool{}, pairs: map[netip.AddrPort]bool{}, dbHosts: map[string]bool{}}
+	d := &denylist{ports: map[uint16]bool{}, pairs: map[netip.AddrPort]bool{}, dbNames: map[string]map[uint16]bool{}}
 	ifaces := cp.InterfaceAddrs
 	if ifaces == nil {
 		ifaces = systemInterfaceAddrs
@@ -277,32 +286,41 @@ func buildDenylist(ctx context.Context, cp ControlPlane, ri RunInfo) (*denylist,
 			d.pairs[netip.AddrPortFrom(ip.WithZone("").Unmap(), port)] = true
 		}
 	}
-	hosts, dbPort, err := dsnEndpoints(cp)
+	endpoints, err := dsnEndpoints(cp)
 	if err != nil {
 		return nil, err
 	}
-	if dbPort != 0 {
-		d.dbPort = dbPort
-		d.ports[dbPort] = true
-		resolve := cp.Resolver
-		if resolve == nil {
-			resolve = systemResolver
+	resolve := cp.Resolver
+	if resolve == nil {
+		resolve = systemResolver
+	}
+	resolved := map[string][]netip.Addr{} // one lookup per host name, whatever its ports
+	for _, e := range endpoints {
+		d.ports[e.Port] = true // every database port is denied on local addresses
+		if isSocketHost(e.Host) {
+			continue // no network name or address behind a socket path
 		}
-		for _, h := range hosts {
-			d.dbHosts[db.NormalizeEgressHost(h)] = true
-			if ip, err := netip.ParseAddr(h); err == nil {
-				d.dbIPs = append(d.dbIPs, ip.WithZone("").Unmap())
-				continue
-			}
-			ips, err := resolve(ctx, db.NormalizeEgressHost(h))
-			if err != nil {
-				// Without the address only the name and the local-address pair remain denied.
+		name := db.NormalizeEgressHost(e.Host)
+		if d.dbNames[name] == nil {
+			d.dbNames[name] = map[uint16]bool{}
+		}
+		d.dbNames[name][e.Port] = true
+		ips, seen := resolved[name]
+		if !seen {
+			if ip, err := netip.ParseAddr(name); err == nil {
+				ips = []netip.Addr{ip.WithZone("").Unmap()}
+			} else if rs, err := resolve(ctx, name); err == nil {
+				for _, ip := range rs {
+					ips = append(ips, ip.WithZone("").Unmap())
+				}
+			} else {
+				// Without the address only the name and the local-address pairs remain denied.
 				log.Printf("[webfetch-policy] db_host_unresolved task=%d", ri.TaskID)
-				continue
 			}
-			for _, ip := range ips {
-				d.dbIPs = append(d.dbIPs, ip.WithZone("").Unmap())
-			}
+			resolved[name] = ips
+		}
+		for _, ip := range ips {
+			d.pairs[netip.AddrPortFrom(ip, e.Port)] = true
 		}
 	}
 	return d, nil
@@ -359,6 +377,8 @@ func proxyDialKey(pu *url.URL) string {
 	port := pu.Port()
 	if port == "" {
 		port = proxyDefaultPorts[strings.ToLower(pu.Scheme)]
+	} else if n, err := strconv.ParseUint(port, 10, 16); err == nil {
+		port = strconv.FormatUint(n, 10) // the dial key carries the number, not its spelling
 	}
 	return db.NormalizeEgressHost(pu.Hostname()) + ":" + port
 }
@@ -369,8 +389,9 @@ func stateFrom(ctx context.Context) *fetchState {
 }
 
 // Check applies the policy to the initial URL and returns a context that carries the
-// policy state to the redirect and dial hooks. Use that context for the request. A
-// refusal is a *TargetError; any other error means the destination could not be
+// policy state to the redirect and dial hooks. Use that context for the request. Check
+// rewrites u to its canonical authority (ASCII host, numeric port): send u, not the text it
+// was parsed from. A refusal is a *TargetError; any other error means the destination could not be
 // examined (bad URL, unresolvable name).
 func (g *TargetGuard) Check(ctx context.Context, u *url.URL) (context.Context, error) {
 	pol := currentTargetPolicy()
@@ -423,21 +444,58 @@ func (st *fetchState) loadRules(ctx context.Context) error {
 }
 
 func targetPort(u *url.URL) (uint16, error) {
+	def := uint16(0)
+	switch strings.ToLower(u.Scheme) {
+	case "http":
+		def = 80
+	case "https":
+		def = 443
+	default:
+		// With or without an explicit port: only http and https are fetched.
+		return 0, errUnsupportedScheme
+	}
 	p := u.Port()
 	if p == "" {
-		switch strings.ToLower(u.Scheme) {
-		case "http":
-			return 80, nil
-		case "https":
-			return 443, nil
-		}
-		return 0, fmt.Errorf("unsupported url scheme %q", u.Scheme)
+		return def, nil
 	}
 	n, err := strconv.ParseUint(p, 10, 16)
 	if err != nil {
-		return 0, fmt.Errorf("invalid port %q", p)
+		return 0, errInvalidPort
 	}
 	return uint16(n), nil
+}
+
+// Fixed reasons of TargetInvalid: they reach the model, so they carry no destination content.
+var (
+	errInvalidHost       = errors.New("the destination host is not valid")
+	errInvalidPort       = errors.New("the destination port is not valid")
+	errUnsupportedScheme = errors.New("the destination url scheme is not supported")
+)
+
+// canonicalizeURL rewrites u's authority to the one form the check, the dial key and the
+// wire share: ASCII lower-case host without trailing dots (db.CanonicalEgressHost) and a
+// port without leading zeros. net/http would otherwise serialise a Unicode or
+// compatibility spelling its own way (IDNA applied again, per path), and the policy would
+// have judged a different string than the one sent. A host that cannot be canonicalised
+// and a port that is not a number are refused. The caller must send the rewritten u.
+func canonicalizeURL(u *url.URL) error {
+	host, ok := db.CanonicalEgressHost(u.Hostname())
+	if !ok || host == "" {
+		return errInvalidHost
+	}
+	port, err := targetPort(u)
+	if err != nil {
+		return err
+	}
+	authority := host
+	if strings.Contains(host, ":") { // IPv6 literal
+		authority = "[" + host + "]"
+	}
+	if u.Port() != "" {
+		authority += ":" + strconv.Itoa(int(port))
+	}
+	u.Host = authority
+	return nil
 }
 
 func (g *TargetGuard) envProxyFor(u *url.URL) string {
@@ -452,22 +510,24 @@ func (g *TargetGuard) envProxyFor(u *url.URL) string {
 }
 
 // checkURL runs denylist, block rules and allow rules for one URL (initial request or
-// redirect hop) and records the addresses the dial may use for it.
+// redirect hop) and records the addresses the dial may use for it. It rewrites u to its
+// canonical authority first (see canonicalizeURL), so everything below judges the string
+// the request will carry.
 func (g *TargetGuard) checkURL(ctx context.Context, st *fetchState, u *url.URL, hop int) error {
-	host := db.NormalizeEgressHost(u.Hostname())
-	if host == "" {
-		return fmt.Errorf("url has no host")
+	if err := canonicalizeURL(u); err != nil {
+		return st.refuse(hop, TargetInvalid, err.Error())
 	}
+	host := u.Hostname()
 	port, err := targetPort(u)
 	if err != nil {
-		return err
+		return st.refuse(hop, TargetInvalid, err.Error())
 	}
 	envKey := g.envProxyFor(u)
 
-	// Resolve the name net/http will put on the wire (normalised: IDNA, no trailing dot)
+	// Resolve the name net/http will put on the wire (canonical, see canonicalizeURL)
 	// on every path, and check what it resolves to.
 	var ips []netip.Addr
-	if lit, perr := netip.ParseAddr(u.Hostname()); perr == nil {
+	if lit, perr := netip.ParseAddr(host); perr == nil {
 		ips = []netip.Addr{lit.WithZone("").Unmap()}
 	} else {
 		resolved, rerr := st.resolve(ctx, host)
@@ -549,7 +609,7 @@ func (g *TargetGuard) TaskAllowMatches(ctx context.Context, u *url.URL) bool {
 }
 
 // CheckRedirect is the http.Client CheckRedirect: net/http's 10-hop cap, then the
-// policy on the hop's URL. Clients that need more (header stripping) call it first.
+// policy on the hop's URL, which it rewrites to the canonical authority. Clients that need more (header stripping) call it first.
 func (g *TargetGuard) CheckRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) >= maxRedirectHops {
 		return errors.New("stopped after 10 redirects")
@@ -558,7 +618,13 @@ func (g *TargetGuard) CheckRedirect(req *http.Request, via []*http.Request) erro
 	if st == nil {
 		return &TargetError{Code: TargetUnavailable, Reason: "redirect without policy state", Hop: len(via)}
 	}
-	return g.checkURL(req.Context(), st, req.URL, len(via))
+	if err := g.checkURL(req.Context(), st, req.URL, len(via)); err != nil {
+		return err
+	}
+	if req.Host != "" { // the wire Host header wins over URL.Host: keep it the canonical form
+		req.Host = req.URL.Host
+	}
+	return nil
 }
 
 // DialContext dials exactly the addresses Check or CheckRedirect compared for addr, never
@@ -672,6 +738,17 @@ func (w *policyWebFetch) Call(ctx context.Context, input json.RawMessage, tc *ac
 			return actool.Errorf(te.Error()), nil
 		}
 		return actool.Errorf("Error fetching URL: " + err.Error()), nil
+	}
+	// The tool must fetch the URL the policy judged: u now carries the canonical authority.
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(input, &fields); err != nil {
+		return actool.Errorf("Error fetching URL: invalid input"), nil
+	}
+	if fields["url"], err = json.Marshal(u.String()); err != nil {
+		return actool.Errorf("Error fetching URL: invalid input"), nil
+	}
+	if input, err = json.Marshal(fields); err != nil {
+		return actool.Errorf("Error fetching URL: invalid input"), nil
 	}
 	return w.CoreTool.Call(ctx, input, tc)
 }

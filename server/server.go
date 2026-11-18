@@ -49,9 +49,8 @@ type Server struct {
 	scrubSecrets bool // drop ARTEX_PG_DSN and the API keys from the environment once read (binary only)
 	// ARTEX's own addresses for the WebFetch egress policy (cmd/artex -addr / -proxy).
 	listenAddr, recordingProxyAddr string
-	tpMu                           sync.Mutex // guards the captured database endpoint below
-	dbHosts                        []string   // database endpoint from the DSN, captured once at startup
-	dbPort                         uint16
+	tpMu                           sync.Mutex         // guards the captured database endpoint below
+	dbEndpoints                    []agent.DBEndpoint // every database endpoint from the DSN, captured once at startup
 	dbCaptured                     bool
 
 	setupMu    sync.Mutex

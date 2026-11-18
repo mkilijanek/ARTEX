@@ -74,8 +74,11 @@ are unchanged. Before any connection, the initial URL and every redirect hop (at
    - ARTEX's listen port (`-addr`), the recording-proxy port (`-proxy`) and the
      database port, on local addresses: `127.0.0.0/8`, `::1`, `0.0.0.0/8`, `::` and
      every local interface address;
-   - the database host from the DSN, by name and by resolved address, on the
-     database port. The database endpoint is read once at startup.
+   - every database (host, port) pair from the DSN, fallback hosts included, parsed
+     with `pgconn.ParseConfig` as the application connects: each host by name and
+     by resolved address on that host's own port, and every database port on local
+     addresses (a Unix-socket DSN keeps its port denied there). The endpoints are
+     read once at startup; an unset DSN protects nothing.
    Addresses are also checked in their embedded IPv4 forms (IPv4-mapped, NAT64
    `64:ff9b::/96`, 6to4 `2002::/16`, IPv4-compatible `::a.b.c.d`).
 2. **Operator block rules**, global and task (`TARGET_BLOCKED`). They come from the
@@ -89,6 +92,9 @@ The built-in global block rules shipped with ARTEX (`.gov`, `.gov.cn`, `.edu`,
 http tool refuse those domains in every role until an operator disables the rules.
 
 Other refusals:
+- `TARGET_INVALID`: the host or port cannot be read, a host ending in a numeric
+  label is not a valid IPv4 address (`foo.123`), or the URL has a
+  scheme other than `http`/`https`. The reason is fixed and carries no destination text.
 - `TARGET_POLICY_UNAVAILABLE`: the rules cannot be read, no rule loader is
   registered, the local address list cannot be built, or a task session has no
   task id. The check fails closed, and the
@@ -100,8 +106,13 @@ On a direct connection, ARTEX dials only the addresses it checked, so a second D
 answer cannot change the destination. When IP or CIDR allow rules alone admit a
 destination, only the addresses those rules name are dialled.
 
-The rule matcher is URL-aware. Domain rules compare the parsed host after lowercasing,
-dropping a trailing dot and IDNA conversion. A fuzzy domain rule matches the domain
+The host is canonicalised once (IDNA to ASCII, lower case, trailing dots dropped) and
+the request is sent with that host and a numeric port, on the initial URL and every
+redirect hop, so the checked string is the sent string. Numeric IPv4 spellings
+(`2130706433`, `0x7f.1`, `127.1`, `0177.0.0.1`) are checked and dialled as the dotted
+address. Ports are compared as numbers; a rule with an invalid port matches nothing.
+
+The rule matcher is URL-aware. Domain rules compare the canonical host. A fuzzy domain rule matches the domain
 and its subdomains, on a label boundary. URL rules compare scheme, host, port and
 path prefix after resolving dot segments. For domain rules and for URL rules written with a
 scheme, text in userinfo, query or fragment does not satisfy a rule. A URL-type block

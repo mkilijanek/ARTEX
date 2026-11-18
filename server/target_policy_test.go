@@ -20,10 +20,11 @@ func TestTargetPolicyKeepsDBEndpointOnReRegistration(t *testing.T) {
 		t.Skip("ARTEX_PG_DSN not set")
 	}
 	t.Setenv("ARTEX_PG_DSN", dsn) // restored after the scrub below
-	_, port, err := agent.DatabaseEndpoint(dsn)
-	if err != nil {
-		t.Fatal(err)
+	eps, err := agent.DatabaseEndpoint(dsn)
+	if err != nil || len(eps) == 0 {
+		t.Fatalf("fixture: no network endpoint in the DSN: %v", err)
 	}
+	port := eps[0].Port
 	m, err := NewManager(t.TempDir(), "")
 	if err != nil {
 		t.Skipf("no manager: %v", err)
@@ -127,4 +128,41 @@ func mustParseURL(t *testing.T, raw string) *url.URL {
 		t.Fatal(err)
 	}
 	return u
+}
+
+// Review finding 3: a DSN may name several hosts and ports (pgx tries them in turn). Every
+// (host, port) pair stays denied after the scrub and after re-registration, and every
+// database port is denied on local addresses.
+func TestTargetPolicyKeepsEveryDBEndpointOnReRegistration(t *testing.T) {
+	for _, k := range []string{"PGHOST", "PGPORT", "PGSERVICE", "PGSERVICEFILE", "PGSSLMODE", "PGSSLROOTCERT", "PGSSLCERT", "PGSSLKEY", "PGPASSFILE"} {
+		t.Setenv(k, "")
+	}
+	t.Setenv("ARTEX_PG_DSN", "postgres://artex:pw@10.77.0.9:5432,10.77.0.10:6432/artex?sslmode=disable")
+	s := &Server{listenAddr: ":1"} // no manager: only the control-plane part of the policy is exercised
+	s.registerTargetPolicy()
+	t.Cleanup(func() { agent.SetTargetPolicy(nil, agent.ControlPlane{}, false) })
+	t.Setenv("ARTEX_PG_DSN", "") // what ScrubSecretEnv leaves behind
+
+	denied := func(when, dest string) {
+		t.Helper()
+		_, err := agent.NewTargetGuard("", false).Check(agent.WithRunInfo(t.Context(), agent.RunInfo{TaskID: 7, ExplorationID: 1}), mustParseURL(t, dest))
+		var te *agent.TargetError
+		if !errors.As(err, &te) || te.Code != agent.TargetControlPlane {
+			t.Errorf("%s: %s is not refused as control plane, got %v", when, dest, err)
+		}
+	}
+	check := func(when string) {
+		for _, dest := range []string{
+			"http://10.77.0.9:5432/",  // first host on its port
+			"http://10.77.0.10:6432/", // fallback host on its port
+			"http://127.0.0.1:5432/",  // local address on every database port
+			"http://127.0.0.1:6432/",
+			"http://127.0.0.1:06432/",
+		} {
+			denied(when, dest)
+		}
+	}
+	check("after startup")
+	s.registerTargetPolicy() // what the global-proxy settings handler does
+	check("after re-registration")
 }
