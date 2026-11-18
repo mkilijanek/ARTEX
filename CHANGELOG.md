@@ -6,6 +6,15 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
+- Analyst comments on findings: `GET`/`POST /api/exploration/findings/{id}/comments`
+  and a "Comments" panel in the vulnerability details. Plain text, append-only,
+  at most 10000 code points and 2000 comments per finding, attributed to the
+  verified operator account. Comments never reach agents or exports. The
+  `finding_comments` table is created automatically. Task archives now carry
+  comments (package format stays 3). Rollback: `pg_dump` the table first; an
+  older binary drops comments when archiving and silently skips them when
+  restoring a newer package. See `docs/finding-comments.md`.
+- Web CI job runs `npm test` (unit tests in `web/src/lib/*.test.mjs`).
 - **`ARTEX_DATA_ENVELOPE`** (default on). `0`, `false`, `off` or `no` switches off the
   data envelope and the planner goal anchor; the code-owned prompt rules stay. Design:
   `docs/adr/0002-data-envelope-and-code-owned-rules.md`.

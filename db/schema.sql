@@ -1214,6 +1214,22 @@ CREATE TABLE IF NOT EXISTS finding_traffic_bindings (
 CREATE INDEX IF NOT EXISTS idx_finding_traffic_order ON finding_traffic_bindings(finding_id, position, id);
 CREATE INDEX IF NOT EXISTS idx_finding_traffic_snapshot ON finding_traffic_bindings(snapshot_id);
 
+-- Analyst comments on a finding (issue #65). Append-only annotations: never an edit of the
+-- finding, never read by agents or exports. Removed with the finding (CASCADE); carried
+-- through task archive/restore explicitly (task_archives.go).
+CREATE TABLE IF NOT EXISTS finding_comments (
+    id             BIGSERIAL PRIMARY KEY,
+    finding_id     BIGINT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+    body           TEXT NOT NULL CHECK (btrim(body, E' \t\r\n') <> '' AND char_length(body) <= 10000),
+    -- Who wrote it, from the verified session only. kind 'operator' = the shared built-in
+    -- account (subject = JWT sub, "ARTEX"). Values are validated server-side, no CHECK,
+    -- so named users can be added later without a constraint migration.
+    author_kind    TEXT NOT NULL DEFAULT 'operator',
+    author_subject TEXT NOT NULL CHECK (author_subject <> '' AND char_length(author_subject) <= 200),
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+);
+CREATE INDEX IF NOT EXISTS idx_finding_comments_page ON finding_comments(finding_id, id);
+
 -- =====================================================================
 -- M. Backend log persistence
 -- =====================================================================

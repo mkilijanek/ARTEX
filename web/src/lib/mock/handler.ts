@@ -17,6 +17,7 @@ import type {
   CompanyScopeRule,
   Conversation,
   EvidenceBodyPreview,
+  FindingComment,
   FindingRetest,
   FindingTraffic,
   FindingTrafficBinding,
@@ -49,6 +50,51 @@ const mockTaskTemplates = structuredClone(D.taskTemplates);
 const mockTaskCategories = structuredClone(D.taskCategories);
 const mockConversations = structuredClone(D.conversations);
 const mockRetests: FindingRetest[] = [];
+
+// ── finding comments (issue #65) ───────────────────────────────────────────────────────────
+// In-memory list per finding id; ids are global and increase like the real BIGSERIAL.
+// Demo states: f-1 has a hostile-markup sample (must render as literal text); f-2 has 60 comments
+// (exercises "Load more" at the default page size of 50); every other finding starts empty.
+// Error states: a comment whose body starts with "/mock-error <status>" fails POST with that status;
+// GET with ?context_task=mock-load-error fails; f-1 with ?context_task=t-acme-api is inherited (POST 403).
+const MOCK_COMMENT_MAX_RUNES = 10000;
+const mockCommentAuthor = { kind: "operator", subject: "ARTEX" };
+const mockComments: Record<string, FindingComment[]> = {};
+let mockCommentSeq = 0;
+function mockAddComment(findingID: string, body: string, createdAt = new Date().toISOString()): FindingComment {
+  const comment: FindingComment = {
+    id: ++mockCommentSeq,
+    finding_id: D.findings.findIndex((item) => item.id === findingID) + 1,
+    body,
+    author: { ...mockCommentAuthor },
+    created_at: createdAt,
+  };
+  const list = mockComments[findingID] ?? [];
+  list.push(comment);
+  mockComments[findingID] = list;
+  return comment;
+}
+mockAddComment("f-1", "Confirmed by hand against staging.\nSecond line of the note.", "2026-11-17T09:00:00.000000Z");
+mockAddComment(
+  "f-1",
+  "<script>alert(1)</script><img src=x onerror=alert(1)>[x](javascript:alert(1)) **not bold** https://example.com/",
+  "2026-11-17T09:05:00.000000Z",
+);
+for (let i = 1; i <= 60; i++) mockAddComment("f-2", `Mock comment ${i}`, `2026-11-17T10:${String(i % 60).padStart(2, "0")}:00.000000Z`);
+const mockCommentErrors: Record<number, string> = {
+  400: "comment contains a character that is not allowed",
+  403: "findings from an inherited task are read-only",
+  404: "finding not found",
+  409: "comment limit reached for this finding",
+  413: "request body too large",
+  415: "Content-Type must be application/json",
+  500: "failed to save comment",
+};
+function mockFindingInherited(findingID: string, q: URLSearchParams): boolean {
+  const finding = mockFindings.find((item) => item.id === findingID);
+  const contextTask = mockTasks.find((item) => item.id === q.get("context_task"));
+  return !!(finding?.task_id && contextTask && finding.task_id !== contextTask.id && contextTask.source_task_ids?.includes(finding.task_id));
+}
 const mockRetestMessages: Record<number, Activity[]> = {};
 
 // ── related traffic evidence (finding traffic) ─────────────────────────────────────────────
@@ -1929,6 +1975,36 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
           status: item.status,
         })),
     };
+  }
+  if (seg[0] === "exploration" && seg[1] === "findings" && seg[3] === "comments" && seg.length === 4) {
+    const findingID = seg[2];
+    if (!mockFindings.some((item) => item.id === findingID)) throw new Error("finding not found");
+    const list = mockComments[findingID] ?? [];
+    if (m === "GET") {
+      if (q.get("context_task") === "mock-load-error") throw new Error("failed to load comments");
+      const limit = Math.min(200, Math.max(1, Number(q.get("limit")) || 50));
+      const cursor = q.get("cursor") ?? "";
+      let after = 0;
+      if (cursor) {
+        after = Number(cursor.replace(/^c/, ""));
+        if (!Number.isInteger(after) || after < 0) throw new Error("invalid cursor");
+      }
+      const rest = list.filter((item) => item.id > after);
+      const page = rest.slice(0, limit);
+      return {
+        comments: structuredClone(page),
+        next_cursor: rest.length > limit ? `c${page[page.length - 1].id}` : "",
+        max_body_runes: MOCK_COMMENT_MAX_RUNES,
+      };
+    }
+    if (m === "POST") {
+      if (mockFindingInherited(findingID, q)) throw new Error(mockCommentErrors[403]);
+      const text = typeof b.body === "string" ? b.body.replace(/\r\n/g, "\n").trim() : "";
+      if (!text) throw new Error(mockCommentErrors[400]);
+      const forced = /^\/mock-error (\d{3})\b/.exec(text);
+      if (forced) throw new Error(mockCommentErrors[Number(forced[1])] ?? `POST ${path}: ${forced[1]}`);
+      return { comment: structuredClone(mockAddComment(findingID, text)) };
+    }
   }
   if (seg[0] === "exploration" && seg[1] === "findings" && seg[3] === "retests") {
     const finding = mockFindings.find((item) => item.id === seg[2]);

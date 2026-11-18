@@ -46,6 +46,8 @@ import type {
   FindingStats,
   FindingStatus,
   FindingsPage,
+  FindingComment,
+  FindingCommentsPage,
   FindingTraffic,
   FindingTrafficDetail,
   IntentAsset,
@@ -604,6 +606,19 @@ export const api = {
   findingTraffic: (id: string, contextTask?: string) =>
     get<FindingTraffic>(
       `/exploration/findings/${id}/traffic${contextTask ? `?context_task=${encodeURIComponent(contextTask)}` : ""}`,
+    ),
+  findingComments: (id: string, opts: { cursor?: string; limit?: number; contextTask?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.limit) q.set("limit", String(opts.limit));
+    if (opts.cursor) q.set("cursor", opts.cursor);
+    if (opts.contextTask) q.set("context_task", opts.contextTask);
+    const qs = q.toString();
+    return get<FindingCommentsPage>(`/exploration/findings/${encodeURIComponent(id)}/comments${qs ? `?${qs}` : ""}`);
+  },
+  addFindingComment: (id: string, body: string, contextTask?: string) =>
+    post<{ comment: FindingComment }>(
+      `/exploration/findings/${encodeURIComponent(id)}/comments${contextTask ? `?context_task=${encodeURIComponent(contextTask)}` : ""}`,
+      { body },
     ),
   bindFindingTraffic: (id: string, traffic_refs: TrafficEvidenceRef[], contextTask?: string) =>
     post<FindingTraffic>(

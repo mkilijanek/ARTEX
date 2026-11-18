@@ -9,6 +9,7 @@ import { ArrowLeftIcon, ArrowUpRightIcon, ShieldAlertIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { CopyButton } from "@/components/copy-button";
+import { FindingCommentsPanel } from "@/components/finding-comments-panel";
 import { FindingRetestPanel } from "@/components/finding-retest-panel";
 import { FindingTrafficPanel } from "@/components/finding-traffic-panel";
 import { Markdown } from "@/components/markdown";
@@ -163,7 +164,7 @@ function FindingDetailInner() {
         <TabsContent value="overview" className="mt-0">
           <div className="grid gap-4 lg:grid-cols-3">
             {/* Left column */}
-            <div className="flex flex-col gap-4 lg:col-span-2">
+            <div className="flex min-w-0 flex-col gap-4 lg:col-span-2">
               <Card>
                 <CardHeader>
                   <CardTitle className="text-sm">Digest</CardTitle>
@@ -213,6 +214,12 @@ function FindingDetailInner() {
                   )}
                 </CardContent>
               </Card>
+              <FindingCommentsPanel
+                key={id}
+                findingId={id}
+                contextTask={contextTaskId || undefined}
+                readOnly={finding.inherited}
+              />
             </div>
 
             {/* Right column: status panel */}

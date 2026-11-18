@@ -735,6 +735,20 @@ export interface FindingRetest {
   finished_at: string | null;
 }
 
+export interface FindingComment {
+  id: number;
+  finding_id: number;
+  body: string;
+  author: { kind: string; subject: string };
+  created_at: string; // RFC 3339, UTC
+}
+
+export interface FindingCommentsPage {
+  comments: FindingComment[];
+  next_cursor: string; // empty on the last page
+  max_body_runes: number;
+}
+
 export interface Conversation {
   id: number;
   running?: boolean; // live server state, returned with the conversation list
