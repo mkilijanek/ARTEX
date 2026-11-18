@@ -393,3 +393,20 @@ limitation is superseded. Original prompt text/order and default-off behavior
 remain unchanged. The replay finds zero incremental memo hits because signature
 reuse already prevents repeated inference; real model/cache/billing acceptance
 is still a Phase E/F gate, not inferred from fixture bytes or example tariffs.
+
+
+## Phase D.1 PR 1: WebFetch tool order
+
+WebFetch is now added by ARTEX instead of by the SDK, so the destination policy can
+wrap it (see [adr/0001-webfetch-destination-policy.md](adr/0001-webfetch-destination-policy.md)).
+`attachWebFetchPolicy` (`agent/webfetch_policy.go`) clears `EnableWebFetch` and appends
+the wrapped tool to the end of the host tool list. Before, the SDK appended WebFetch
+after the host tools and the plan, memory and skill tools (`third_party/norma/agentcore/agentcore.go`).
+WebFetch now comes before the tools the SDK appends.
+
+- Name, input schema and description are unchanged. Only the position in the tool list
+  changes. `TestWebFetchToolSetPerRole` checks for planner, worker, main agent and chat
+  that each tool name appears exactly once.
+- The tool list is part of the cached request prefix. The new order is fixed, so the
+  prefix changes once when this version is deployed and is stable after that.
+- No token or cache measurement was made for this change, and none is claimed.

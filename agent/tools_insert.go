@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"net/url"
 	"strconv"
@@ -233,16 +234,26 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 			var results []result
 			var errs []errEntry
 
-			// Asset gate rules are loaded once; on read failure the check is skipped
-			// (insertion not blocked).
+			// Asset gate rules are loaded once. Fail closed: if they cannot be read, nothing
+			// in this call is inserted (the gate must not be skipped).
+			// The store error stays out of the result (it can carry host or credential text).
+			gateUnavailable := func(error) (actool.Result, error) {
+				log.Printf("[assets] gate_unavailable task=%d", taskID)
+				return actool.Errorf("insert_assets refused, nothing inserted: asset intercept rules unavailable"), nil
+			}
 			// Interception rules = global ∪ task-level block; allow rules = task-level allow.
-			blockRules, _ := t.as.ListAssetInterceptRules()
+			blockRules, err := t.as.ListAssetInterceptRules()
+			if err != nil {
+				return gateUnavailable(err)
+			}
 			var allowRules []db.AssetInterceptRule
-			if t.taskID > 0 {
-				if tb, ta, err := t.as.TaskInterceptRulesSplit(t.taskID); err == nil {
-					blockRules = append(blockRules, tb...)
-					allowRules = ta
+			if taskID > 0 {
+				tb, ta, err := t.as.TaskInterceptRulesSplit(taskID)
+				if err != nil {
+					return gateUnavailable(err)
 				}
+				blockRules = append(blockRules, tb...)
+				allowRules = ta
 			}
 
 			for i, item := range a.Assets {

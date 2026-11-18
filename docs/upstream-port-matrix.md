@@ -48,4 +48,29 @@ including merges. Triage is not a claim that every deferred feature was tested.
 | Norma v0.4.8, callbacks, replay, trust boundaries | #47 | #40–43 build/provenance/session/decorator review fixes |
 | Custom User-Agent (`13dde2d`, `4acdf3b`) and full URL mode | #47 | Covered by SDK endpoint and credential tests; no longer deferred |
 | Runtime/system message translation | #39, prerequisite of #47 | Docker build correction |
-| Target gate, migrations runner, budgets, Tool RAG and independent features | Not delivered by #34–37/#47 | Separate dependency review; not part of SDK-only milestone |
+| Target gate, migrations runner, budgets, Tool RAG and independent features | Not delivered by #34–37/#47 | Separate dependency review; not part of SDK-only milestone. Target gate: partially adapted in Phase D.1 PR 1 (see below) |
+
+## Phase D.1 PR 1 delivery (2026-11-17)
+
+Branch `phase-d/untrusted-boundary-audit`; plan [phase-d1-plan.md](phase-d1-plan.md);
+decision [adr/0001-webfetch-destination-policy.md](adr/0001-webfetch-destination-policy.md).
+
+| Change | Delivery in this fork | Remaining acceptance |
+| --- | --- | --- |
+| `f6b29b8`, `1c3a5f4` target checks: WebFetch | **Partial adaptation, not a port.** The intent is kept, but none of the upstream files are copied. Host-side hooks in `agent/webfetch_policy.go` install `CheckRedirect` and a pinned `DialContext` on the SDK's WebFetch in every role, with an initial-URL check. The fork has its own URL-aware matcher (`db/egress_match.go`) over the existing asset intercept rules, plus a built-in control-plane denylist. There is no `intercept/target_*.go`, no scope-schema change and no `mvdan.cc/sh/v3`. No SDK patch. | Proxied paths re-resolve names (residual). The PR 1 test evidence is added at the TEST gate |
+| `f6b29b8`, `1c3a5f4` target checks: custom http tool | **Partial adaptation.** `server/customtool.go` uses the same guard, plus origin pinning, a task-allow-rule requirement for templated hosts with operator headers, sticky header stripping after a cross-origin hop, and refusal of cross-origin 307/308 body replays. | As above |
+| `f6b29b8`, `1c3a5f4` target checks: shell and guard target gate | **Not delivered.** Bash, shell, `command`/`script` custom tools, MCP tools and WebSearch queries are not destination-checked. Plan decision Q1: a go-mitmproxy addon spike first (D.2); the upstream shell target gate only if that route fails. | D.2 |
+
+Corrected citations. These corrections apply to the historical selection table above,
+which is not rewritten:
+- Rows `8c3bae4`/`c73e287`, `975f634` and `f6b29b8`/`1c3a5f4` are marked PORT. Only
+  the untrusted boundary was delivered (#47). `975f634` is planned for Phase D.1 PR 2,
+  and `f6b29b8`/`1c3a5f4` are partially adapted as described above.
+- In [upstream-commit-inventory.tsv](upstream-commit-inventory.tsv), `975f634`,
+  `1c3a5f4`, `f6b29b8`, `c73e287`, `8c3bae4`, `8acf1be`, `09ef702` and `62c9b4a` are
+  triaged `dependency-review`, and `bc33db2` is `defer-independent`.
+- The row "ADAPT `46e81f5` (v0.4.7), `f6b29b8` (v0.4.8)" refers to the Norma SDK
+  dependency, not to the target checks.
+- `8acf1be` and `09ef702` (code-owned untrusted-content tails and the planner goal
+  anchor) appear only in the inventory. They
+  are planned for Phase D.1 PR 2.
