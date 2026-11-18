@@ -20,11 +20,11 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
+	"github.com/mkilijanek/artex/db"
 )
 
 // Adversarial lab (Phase D.1, S1-net). Everything here stays on loopback: lab targets

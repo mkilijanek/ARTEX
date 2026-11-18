@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/db"
+	"github.com/mkilijanek/artex/agent"
+	"github.com/mkilijanek/artex/db"
 )
 
 // With no configuration at all, the resolved result must be all zeros — i.e. the

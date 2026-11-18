@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/db"
+	"github.com/mkilijanek/artex/agent"
+	"github.com/mkilijanek/artex/db"
 )
 
 // Task-level timeout coordinator (see docs/task-timeout-and-settle-design.md §4/§8.5).

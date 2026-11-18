@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Autumn-27/artex/config"
 	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib" // pgx database/sql driver ("pgx")
+	"github.com/mkilijanek/artex/config"
 )
 
 //go:embed schema.sql

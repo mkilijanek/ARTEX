@@ -12,8 +12,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/Autumn-27/artex/db"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/mkilijanek/artex/db"
 )
 
 // Analyst comments on findings (issue #65). Comments are a sub-resource of a

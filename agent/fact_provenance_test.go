@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Autumn-27/artex/db"
 	actool "github.com/Autumn-27/norma/tool"
+	"github.com/mkilijanek/artex/db"
 )
 
 // Phase D.1, S3 red tests for fact provenance (D5, AC17), on PostgreSQL. They never touch

@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/Autumn-27/artex/agent"
+	"github.com/mkilijanek/artex/agent"
 )
 
 // Finding 5: ScrubSecretEnv removes ARTEX_PG_DSN after startup, so a re-registration of

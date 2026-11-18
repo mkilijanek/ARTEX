@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Autumn-27/artex/db"
+	"github.com/mkilijanek/artex/db"
 )
 
 // Review findings 1 and 2 (PR 1): the policy is enforced against the authority the

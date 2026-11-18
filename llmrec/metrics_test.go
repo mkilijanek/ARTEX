@@ -9,11 +9,11 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/llmmeta"
-	"github.com/Autumn-27/artex/llmpool"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/transcript"
+	"github.com/mkilijanek/artex/db"
+	"github.com/mkilijanek/artex/llmmeta"
+	"github.com/mkilijanek/artex/llmpool"
 )
 
 type telemetryProvider struct {

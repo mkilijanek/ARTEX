@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Autumn-27/artex/db"
+	"github.com/mkilijanek/artex/db"
 )
 
 const maxWorkerMessageBytes = 64 << 10

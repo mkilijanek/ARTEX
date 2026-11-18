@@ -15,10 +15,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/norma/agentcore"
 	actool "github.com/Autumn-27/norma/tool"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/mkilijanek/artex/db"
 )
 
 // Egress policy for WebFetch and the custom http tool (Phase D.1, design D1/D6).

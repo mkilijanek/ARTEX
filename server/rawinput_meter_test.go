@@ -3,7 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"github.com/Autumn-27/artex/agent"
+	"github.com/mkilijanek/artex/agent"
 	"iter"
 	"testing"
 

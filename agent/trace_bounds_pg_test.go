@@ -2,7 +2,7 @@ package agent
 
 import (
 	"encoding/json"
-	"github.com/Autumn-27/artex/db"
+	"github.com/mkilijanek/artex/db"
 	"strings"
 	"testing"
 )

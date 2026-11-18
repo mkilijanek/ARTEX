@@ -3,14 +3,14 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"github.com/Autumn-27/artex/llmmeta"
+	"github.com/mkilijanek/artex/llmmeta"
 	"iter"
 	"strings"
 	"testing"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/intercept"
 	"github.com/Autumn-27/norma/llm"
+	"github.com/mkilijanek/artex/db"
+	"github.com/mkilijanek/artex/intercept"
 )
 
 type reviewCaptureProvider struct {

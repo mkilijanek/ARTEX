@@ -9,12 +9,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/llmmeta"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/llm"
 	actool "github.com/Autumn-27/norma/tool"
 	"github.com/Autumn-27/norma/transcript"
+	"github.com/mkilijanek/artex/db"
+	"github.com/mkilijanek/artex/llmmeta"
 )
 
 func contextFixtureRequest(t *testing.T, change bool) (context.Context, llm.CompletionRequest) {

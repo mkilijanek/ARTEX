@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/notify"
+	"github.com/mkilijanek/artex/db"
+	"github.com/mkilijanek/artex/notify"
 )
 
 // Global setting keys (stored in the settings key-value table, no dedicated table needed).

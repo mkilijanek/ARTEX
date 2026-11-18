@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/db"
+	"github.com/mkilijanek/artex/agent"
+	"github.com/mkilijanek/artex/db"
 )
 
 // Review findings 1 and 2 (PR 1) for the custom http tool: the policy judges the authority

@@ -1,8 +1,8 @@
 package agent
 
 import (
-	"github.com/Autumn-27/artex/llmmeta"
 	"github.com/Autumn-27/norma/agentcore"
+	"github.com/mkilijanek/artex/llmmeta"
 )
 
 func attachModelMetrics(opts *agentcore.Options) {
