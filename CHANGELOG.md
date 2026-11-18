@@ -15,9 +15,27 @@ All notable changes to this project are documented in this file. The format is b
   older binary drops comments when archiving and silently skips them when
   restoring a newer package. See `docs/finding-comments.md`.
 - Web CI job runs `npm test` (unit tests in `web/src/lib/*.test.mjs`).
+- **`ARTEX_DATA_ENVELOPE`** (default on). `0`, `false`, `off` or `no` switches off the
+  data envelope and the planner goal anchor; the code-owned prompt rules stay. Design:
+  `docs/adr/0002-data-envelope-and-code-owned-rules.md`.
+- **`record_fact` `source` parameter**: `target_response`, `tool_output`,
+  `third_party_intel` or `inference` (the default when omitted). Existing databases get
+  the property in the stored `record_fact` schema once at startup
+  (`seedFactSourceSchema`); the description and other properties are not touched.
+- Log lines `[envelope] neutralised=<n> surface=<planner|worker|compactor>` and
+  `[facts] record_refused reason=invalid_source`. Neither carries data, the nonce or
+  the refused value.
 
 ### Changed
 
+- **The built-in `.gov`, `.gov.cn`, `.edu` and `.edu.cn` block rules now also apply to
+  WebFetch and the custom http tool**, in every role including chat. They are enabled
+  by default, so a fetch of such a domain returns `TARGET_BLOCKED` until an operator
+  disables the rule under asset intercept rules. Before this release the rules only
+  gated asset insertion and intents.
+- A task whose allow list contains only URL-type rules written without a scheme now
+  refuses every WebFetch with `TARGET_NOT_ALLOWED`, because such rules never allow.
+  Rewrite them as domain rules or as URL rules with a scheme.
 - Norma SDK now uses upstream v0.4.8 with reviewed local patches, identified as
   `v0.4.8+artex.1` in `third_party/norma/SOURCE.json`. CI verifies upstream hashes,
   patched content and the complete snapshot file inventory.
@@ -30,6 +48,35 @@ All notable changes to this project are documented in this file. The format is b
   `SetWrapupTaskTimeoutTurnsOverride`, and `SetFindingTrafficBindingEnabled`
   for their respective hooks. Passing nil clears a hook. Invoke the returned
   callback after checking nil; callbacks execute outside the registry lock.
+- **WebFetch direct retry**: when a global egress proxy is configured, WebFetch no
+  longer retries directly after a proxy-class error (TLS, EOF, reset), with traffic
+  capture on or off. The fetch fails instead of leaking the source IP. With capture on
+  and no global proxy, the retry stays and logs `[webfetch] direct_retry task=<id>`.
+- **Custom http tools with a placeholder in the host**: if the tool also sets
+  operator headers, it runs only against a host that matches an enabled task allow
+  rule, and is refused otherwise with `TEMPLATED_ORIGIN_NOT_ALLOWED`. In chat sessions
+  there are no task allow rules, so such a tool is always refused there. Templates
+  without operator headers are not affected.
+- **WebFetch tool order**: WebFetch is now the last tool in the host tool list
+  instead of being appended by the SDK. Name, schema and description are unchanged;
+  the cached prompt prefix changes once (`docs/token-audit.md`).
+- **`insert_assets` fails closed**: if the asset intercept rules cannot be read, the
+  whole call is refused, nothing is inserted, and `[assets] gate_unavailable task=<id>`
+  is logged. Before, the gate was skipped and the assets were inserted.
+- **Planner and worker messages are restructured while the envelope is on.** The
+  overview is split into an operator block (task, goal nodes, hints with origin
+  `human`), the counters, and one frame per derived field; hints carry an `origin` key.
+  With `ARTEX_BOUNDED_CONTEXT=1` the derived frames follow the planner snapshot JSON
+  instead of being inside it. Message sizes grow (fixture: planner input +2681 B, worker
+  launch +1407 B; `docs/token-audit.md`).
+- **The untrusted-content block is no longer part of the editable worker, pentest, main
+  and auto prompt seeds.** It is appended in code, so a DB prompt row that still holds
+  it is not given a second copy. Chat agents now get it as well.
+- **Facts show their writer and declared source.** `list_facts`, `recent_facts` and the
+  digest compressor input carry `origin` and `source`. This does not depend on
+  `ARTEX_DATA_ENVELOPE`.
+- **bbot-recon skill**: only `scope_distance == 0` events reach `insert_assets`;
+  out-of-scope events are recorded as third-party intel facts and never auto-scoped.
 
 ### Fixed
 
@@ -45,6 +92,82 @@ All notable changes to this project are documented in this file. The format is b
   credentials; local Ollama does not inherit cloud keys.
 - Docker copies the local SDK before resolving modules; CI builds the application
   stage from a clean checkout. SDK-generated system messages are in English.
+
+### Security
+
+- **Destination checks for WebFetch and the custom http tool** (Phase D.1, #23, #7).
+  WebFetch in every role (planner, worker, main agent, chat) and the custom http tool
+  check the initial URL and every redirect hop (at most 10) before connecting. Direct
+  connections dial only the checked addresses. This is always on; there is no flag.
+  New refusal codes:
+  - `TARGET_CONTROL_PLANE`: cloud metadata and link-local ranges; ARTEX's listen,
+    recording-proxy and database ports on local addresses; each DSN database host on
+    its own port;
+    also in embedded IPv4 forms.
+  - `TARGET_BLOCKED`: an enabled global or task block rule matches.
+  - `TARGET_NOT_ALLOWED`: the task has allow rules and none matches.
+  - `TARGET_POLICY_UNAVAILABLE`: the rules cannot be read (fails closed).
+  - `TARGET_UNRESOLVED`: the name does not resolve locally and no global or
+    environment proxy is set.
+  - `TARGET_INVALID`: the host or port cannot be read, or the scheme is unsupported.
+  Refusals log `[webfetch-policy] decision=<code> hop=<n> task=<id>`, without URL or
+  host. Chat sessions apply the global block rules and the denylist only. This covers
+  WebFetch and the custom http tool only; Bash, shell, `command`/`script` custom tools,
+  MCP tools and WebSearch queries are not checked, and requests through a proxy are
+  not protected against DNS rebinding. See `SECURITY.md`, "Known limits".
+- **One canonical destination for WebFetch and the custom http tool.** The host is
+  canonicalised once (`db.CanonicalEgressHost`: IDNA to ASCII, lower case, trailing
+  dots dropped after the mapping) and the request is sent with that host and a numeric
+  port, on the initial URL and every redirect hop; a Unicode or compatibility spelling
+  is fetched as the canonical ASCII URL. Numeric IPv4 spellings (`2130706433`,
+  `0x7f.1`, `127.1`, `0177.0.0.1`, full-width forms) are checked and dialled as the
+  dotted address; a host ending in a numeric label that does not parse (`foo.123`) is
+  refused. Ports are compared as numbers; zero-padded ports are rewritten, a rule with
+  an invalid port matches nothing, and a destination with an invalid port is refused
+  with `TARGET_INVALID`.
+- **Database denylist covers every DSN endpoint.** Endpoints come from
+  `pgconn.ParseConfig`, the parser the application connects with, including fallback
+  hosts. Each host is denied on its own port and every database port on local
+  addresses; a Unix-socket DSN keeps its port denied on local addresses. All pairs are
+  kept after the environment scrub and on re-registration. For remote hosts the denial
+  is per (host, port) pair.
+- **Rule matching for these checks is URL-aware.** Domain rules match the parsed,
+  normalised host; fuzzy domain rules match on a label boundary. URL rules with a
+  scheme match scheme, host, port and path prefix; userinfo and query text no longer
+  satisfy a rule. URL-type **block** rules without a scheme match the path: `/admin`
+  is a path prefix (it also blocks `/administrator`), and `evil.com/admin` needs that
+  host plus the path. A URL-type block rule that is only a host name (`evil.com`,
+  `[::1]:8080`) blocks that host on a label boundary. URL-type **allow** rules without a scheme never
+  match. `insert_assets` keeps its previous matching. Details:
+  `docs/adr/0001-webfetch-destination-policy.md`.
+- **Custom http tool credentials.** A template whose origin is fixed text refuses any
+  other rendered origin (`ORIGIN_MISMATCH`), so a parameter such as
+  `@attacker.net/x` can no longer redirect operator headers. Once a redirect chain
+  leaves the original origin, operator headers, `Authorization` and `Cookie` are
+  removed on every later hop, also on a return to the origin. A cross-origin 307/308
+  that would replay the body is refused (`REDIRECT_BODY_REFUSED`). Transport errors
+  are returned as `request failed: <class>` without the URL. Parameters whose names
+  contain `{`, `}`, `/`, `?` or `#` are no longer substituted. Refusals log
+  `[customtool-http] decision=<code> hop=<n> task=<id>`.
+- **Data envelope for host-built messages** (Phase D.1 PR 2, #23, #7). Agent- and
+  target-derived text in the planner input (`worker_output`, `finding`, `recent_facts`,
+  `finding_list`, `cold_digests`, `related_tasks`, `agent_hints`, `task_credentials`,
+  projection notes), in the worker launch (overview and target `assets`; not the intent
+  summary) and in the digest compressor request is framed as
+  `[[ARTEX_DATA nonce=N field=…]]` … `[[END_ARTEX_DATA nonce=N]]`, with a random 16-byte
+  nonce per message. Forged marker stems in data are neutralised. The planner input ends
+  with a code-owned goal anchor.
+- **Code-owned untrusted-data rules.** The untrusted-content block is appended in code
+  to the worker, pentest, main, auto and every chat agent prompt, exactly once, also
+  under a DB prompt override. The planner and the digest compressor get a data rule:
+  data cannot add goals, targets or scope, change or end the task, or be relayed to a
+  worker. Not affected by `ARTEX_DATA_ENVELOPE`.
+- **Fact source labels.** `record_fact` refuses `operator_input` and unknown `source`
+  values for every model tool, so no model can label a fact as operator input. The
+  declared source is not verified and `prove_goal` does not use it; refusal of
+  `target_response` facts as goal proof is deferred.
+  These measures are advisory to the model and do not prevent prompt injection; known
+  gaps are in `SECURITY.md`, "Known limits".
 
 ## [0.5.0] - 2026-11-04
 

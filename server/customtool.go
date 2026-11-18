@@ -6,17 +6,21 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
+	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
@@ -424,6 +428,8 @@ func (s *Server) runHTTPTool(ctx context.Context, execRaw json.RawMessage, param
 	if method == "" {
 		method = "GET"
 	}
+	// Only names the classifier in templateOrigin can see are substituted.
+	params = placeholderSafeParams(params)
 	rawURL := renderTemplate(spec.URL, params, identity)
 	if strings.TrimSpace(rawURL) == "" {
 		return actool.Errorf("http url is empty"), nil
@@ -434,20 +440,78 @@ func (s *Server) runHTTPTool(ctx context.Context, execRaw json.RawMessage, param
 	}
 	runCtx, cancel := context.WithTimeout(ctx, timeoutOr(spec.TimeoutMs, 30000))
 	defer cancel()
-	req, err := http.NewRequestWithContext(runCtx, method, rawURL, bodyReader)
+	taskID := agent.RunInfoFrom(ctx).TaskID
+	refuse := func(code, reason string, hop int) (actool.Result, error) {
+		log.Printf("[customtool-http] decision=%s hop=%d task=%d", code, hop, taskID)
+		return actool.Errorf(code + ": " + reason), nil
+	}
+	target, err := url.Parse(rawURL)
 	if err != nil {
-		return actool.Errorf(err.Error()), nil
+		return actool.Errorf("request failed: invalid url"), nil // url.Parse errors quote the URL
+	}
+	pin, templated := templateOrigin(spec.URL)
+	if pin != nil && !sameOrigin(pin, target) {
+		return refuse(codeOriginMismatch, "the rendered url leaves the origin fixed by the tool's url template", 0)
+	}
+
+	tr, proxyStr := s.httpProxyTransport(spec)
+	var guard *agent.TargetGuard
+	if tr != nil {
+		guard = agent.NewTargetGuard(proxyStr, false)
+	} else {
+		tr = &http.Transport{Proxy: http.ProxyFromEnvironment}
+		guard = agent.NewTargetGuard("", true)
+	}
+	tr.DialContext = guard.DialContext
+	// Direct dials are pinned to the checked IPs per request. Through any proxy only the
+	// proxy address is dialled: the proxy resolves the name itself, so DNS rebinding and
+	// IP-based allow rules are NOT enforced on the proxy leg (residual).
+	tr.DisableKeepAlives = true
+
+	reqCtx, err := guard.Check(runCtx, target)
+	if err != nil {
+		return refusalResult(err, refuse)
+	}
+	if templated && len(spec.Headers) > 0 && !guard.TaskAllowMatches(reqCtx, target) {
+		return refuse(codeTemplatedOrigin, "a url template with a placeholder in its host may carry operator headers only to hosts matched by a task allow rule", 0)
+	}
+	req, err := http.NewRequestWithContext(reqCtx, method, target.String(), bodyReader)
+	if err != nil {
+		return actool.Errorf("request failed: invalid request"), nil
 	}
 	for k, v := range spec.Headers {
 		req.Header.Set(k, renderTemplate(v, params, identity))
 	}
-	client := &http.Client{Timeout: timeoutOr(spec.TimeoutMs, 30000)}
-	if tr := s.httpProxyTransport(spec); tr != nil {
-		client.Transport = tr
+	client := &http.Client{Timeout: timeoutOr(spec.TimeoutMs, 30000), Transport: tr}
+	// net/http copies the ORIGINAL request's headers onto every hop, so the strip runs on
+	// every hop that is not the original origin, and for good once a hop has left it.
+	left := false
+	client.CheckRedirect = func(r *http.Request, via []*http.Request) error {
+		if err := guard.CheckRedirect(r, via); err != nil {
+			return err
+		}
+		if !left && sameOrigin(via[0].URL, r.URL) {
+			return nil
+		}
+		left = true
+		if (r.Response != nil && (r.Response.StatusCode == http.StatusTemporaryRedirect || r.Response.StatusCode == http.StatusPermanentRedirect)) &&
+			r.Body != nil && r.Body != http.NoBody {
+			return &customHTTPRefusal{Code: codeRedirectBody, Reason: "a cross-origin 307/308 redirect would replay the request body", Hop: len(via)}
+		}
+		for k := range spec.Headers {
+			r.Header.Del(k)
+		}
+		r.Header.Del("Authorization")
+		r.Header.Del("Cookie")
+		return nil
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return actool.Errorf("request failed: " + err.Error()), nil
+		var re *customHTTPRefusal
+		if errors.As(err, &re) || isTargetErr(err) {
+			return refusalResult(err, refuse)
+		}
+		return actool.Errorf("request failed: " + errClass(err)), nil
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -456,9 +520,170 @@ func (s *Server) runHTTPTool(ctx context.Context, execRaw json.RawMessage, param
 	return actool.Text(actool.Capture(tc, string(b))), nil
 }
 
+// Refusal codes of the custom http tool; the TARGET_* codes come from agent.TargetGuard.
+const (
+	codeOriginMismatch  = "ORIGIN_MISMATCH"
+	codeTemplatedOrigin = "TEMPLATED_ORIGIN_NOT_ALLOWED"
+	codeRedirectBody    = "REDIRECT_BODY_REFUSED"
+)
+
+// customHTTPRefusal is a refusal made by the tool itself during a redirect.
+type customHTTPRefusal struct {
+	Code, Reason string
+	Hop          int
+}
+
+func (e *customHTTPRefusal) Error() string { return e.Code + ": " + e.Reason }
+
+func isTargetErr(err error) bool {
+	var te *agent.TargetError
+	return errors.As(err, &te)
+}
+
+// refusalResult turns a policy refusal into the tool's error result and its one
+// content-free log line. Anything else (e.g. an unresolvable name) is a plain request error.
+func refusalResult(err error, refuse func(code, reason string, hop int) (actool.Result, error)) (actool.Result, error) {
+	var te *agent.TargetError
+	if errors.As(err, &te) {
+		return refuse(te.Code, te.Reason, te.Hop)
+	}
+	var re *customHTTPRefusal
+	if errors.As(err, &re) {
+		return refuse(re.Code, re.Reason, re.Hop)
+	}
+	return actool.Errorf("request failed: " + errClass(err)), nil
+}
+
+// errClass reduces a transport error to a fixed word. The raw text of a *url.Error holds
+// the full URL (query keys) and host, which must not reach the model.
+func errClass(err error) string {
+	var dns *net.DNSError
+	var certErr *tls.CertificateVerificationError
+	var hdrErr tls.RecordHeaderError
+	var unknownCA x509.UnknownAuthorityError
+	var hostErr x509.HostnameError
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case strings.Contains(err.Error(), "stopped after 10 redirects"):
+		return "redirect: stopped after 10 redirects"
+	case errors.As(err, &dns):
+		return "dns"
+	case errors.As(err, &certErr), errors.As(err, &hdrErr), errors.As(err, &unknownCA), errors.As(err, &hostErr):
+		return "tls"
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return "timeout"
+	}
+	var oe *net.OpError
+	if errors.As(err, &oe) {
+		return "connect"
+	}
+	return "other"
+}
+
+// placeholderSafeParams drops parameter names that placeholderRe cannot match, so the
+// renderer and the template classifier agree on what a placeholder is.
+func placeholderSafeParams(params map[string]any) map[string]any {
+	out := make(map[string]any, len(params))
+	for k, v := range params {
+		if !strings.ContainsAny(k, "{}/?#") {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// originOf returns scheme, lower-cased hostname, port (default implied) and userinfo.
+func originOf(u *url.URL) (scheme, host, port, user string) {
+	scheme = strings.ToLower(u.Scheme)
+	host = strings.ToLower(u.Hostname())
+	port = u.Port()
+	if port == "" {
+		switch scheme {
+		case "http":
+			port = "80"
+		case "https":
+			port = "443"
+		}
+	}
+	return scheme, host, port, u.User.String()
+}
+
+// sameOrigin compares parsed URLs on exact scheme + host + port (and userinfo).
+func sameOrigin(a, b *url.URL) bool {
+	as, ah, ap, au := originOf(a)
+	bs, bh, bp, bu := originOf(b)
+	return as == bs && ah == bh && ap == bp && au == bu
+}
+
+var placeholderRe = regexp.MustCompile(`\{[^{}/?#]*\}`)
+
+// templateOrigin inspects the url template. pin is the origin fixed by the literal text
+// before the first placeholder (nil when the authority is not fixed); templated reports
+// that the authority itself contains a placeholder.
+func templateOrigin(tmpl string) (pin *url.URL, templated bool) {
+	// A brace the renderer will not substitute (e.g. "{a/b}") inside the authority
+	// region can never be pinned: treat it as a templated authority.
+	region := tmpl
+	if i := strings.Index(tmpl, "://"); i >= 0 {
+		region = tmpl[i+3:]
+	}
+	if j := strings.IndexAny(region, "/?#"); j >= 0 {
+		region = region[:j]
+	}
+	if strings.Count(region, "{") != len(placeholderRe.FindAllStringIndex(region, -1)) || (!strings.Contains(tmpl, "://") && strings.Contains(tmpl, "{")) {
+		return nil, true
+	}
+	loc := placeholderRe.FindStringIndex(tmpl)
+	if loc == nil {
+		return nil, false // no placeholder: nothing to pin or check
+	}
+	prefix := tmpl[:loc[0]]
+	schemeEnd := strings.Index(prefix, "://")
+	if schemeEnd < 0 {
+		return nil, true // the scheme or the whole authority is templated
+	}
+	auth := prefix[schemeEnd+3:]
+	if i := strings.IndexAny(auth, "/?#"); i >= 0 {
+		auth = auth[:i]
+		// the authority closed before the first placeholder: fully literal
+	} else {
+		// The placeholder touches the authority. It only extends the authority when
+		// literal host text follows it before the path; a trailing placeholder is
+		// treated as path-like and the authority is pinned.
+		rest := tmpl[loc[1]:]
+		for strings.HasPrefix(rest, "{") {
+			if l := placeholderRe.FindStringIndex(rest); l != nil && l[0] == 0 {
+				rest = rest[l[1]:]
+			} else {
+				break
+			}
+		}
+		if rest != "" && !strings.ContainsAny(rest[:1], "/?#") {
+			return nil, true
+		}
+		if auth == "" || strings.HasSuffix(auth, ".") || strings.HasSuffix(auth, ":") || strings.HasSuffix(auth, "@") || strings.HasSuffix(auth, "-") {
+			return nil, true
+		}
+	}
+	if auth == "" {
+		return nil, true
+	}
+	pu, err := url.Parse(prefix[:schemeEnd+3] + auth)
+	if err != nil || pu.Hostname() == "" {
+		return nil, true
+	}
+	return pu, false
+}
+
 // httpProxyTransport builds a Transport for the http tool's proxy config, or nil
-// (direct). use_recording_proxy routes through the recording proxy + trusts its CA.
-func (s *Server) httpProxyTransport(spec httpExec) *http.Transport {
+// (direct), plus the proxy URL it uses. use_recording_proxy routes through the
+// recording proxy + trusts its CA.
+func (s *Server) httpProxyTransport(spec httpExec) (*http.Transport, string) {
 	proxyStr := strings.TrimSpace(spec.Proxy)
 	var caFile string
 	if spec.UseRecordingProxy {
@@ -468,11 +693,11 @@ func (s *Server) httpProxyTransport(spec httpExec) *http.Transport {
 		}
 	}
 	if proxyStr == "" {
-		return nil
+		return nil, ""
 	}
 	pu, err := url.Parse(proxyStr)
 	if err != nil {
-		return nil
+		return nil, ""
 	}
 	tr := &http.Transport{Proxy: http.ProxyURL(pu)}
 	if caFile != "" {
@@ -483,7 +708,7 @@ func (s *Server) httpProxyTransport(spec httpExec) *http.Transport {
 			}
 		}
 	}
-	return tr
+	return tr, proxyStr
 }
 
 // ---------- helpers ----------

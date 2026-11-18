@@ -531,3 +531,5 @@ Users must comply with all laws and regulations of their country/region regardin
 This project is provided "as is", without any express or implied warranty. The authors and contributors are not liable for any direct or indirect loss, data loss, system damage, or legal disputes caused by the use of this tool (whether used properly or not). **Downloading, installing, or using this project means you have read, understood, and agreed to all of the above terms.**
 
 ARTEX_UNTRUSTED_BOUNDARY defaults to enabled. Set ARTEX_UNTRUSTED_BOUNDARY=0 to disable SDK tool-output framing; summary trust rules still apply.
+
+ARTEX_DATA_ENVELOPE defaults to enabled. It frames agent- and target-derived text in the planner input, the worker launch and the digest compressor request as `[[ARTEX_DATA nonce=… field=…]]` blocks, and ends the planner input with a goal anchor. Set ARTEX_DATA_ENVELOPE=0 (or false/off/no) to disable both; the code-owned untrusted-content and data rules in the prompts still apply. This marks data for the model and does not prevent prompt injection; see `SECURITY.md`.

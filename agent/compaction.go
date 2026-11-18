@@ -463,6 +463,20 @@ func nodeSummary(n *db.Node) string {
 	return ""
 }
 
+// nodeSource returns a fact's declared source ("" when it has none).
+func nodeSource(n *db.Node) string {
+	if n == nil {
+		return ""
+	}
+	var p map[string]any
+	if json.Unmarshal(n.Payload, &p) == nil {
+		if s, ok := p["source"].(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
 func nodeConfidence(n *db.Node) string {
 	if n == nil {
 		return ""
@@ -479,14 +493,30 @@ func nodeConfidence(n *db.Node) string {
 // buildCompressionInput renders the connected sub-graph for the §4 prompt:
 // member nodes (summary + id + kind + state + confidence), the internal blood
 // edges among members, and — for a §3.1 shared-parent group — the anchor parents
-// as context ("common parent #p"), which are NOT members.
-func buildCompressionInput(g *coldGraph, b block, nodeByID map[int64]*db.Node) string {
+// as context ("common parent #p"), which are NOT members. With a non-nil env the
+// member and anchor text, which is derived from agent or target content, goes
+// inside env's frames (D3); nil env is the pre-envelope text.
+func buildCompressionInput(g *coldGraph, b block, nodeByID map[int64]*db.Node, env *dataEnvelope) string {
 	memberSet := make(map[int64]bool, len(b.Members))
 	for _, m := range b.Members {
 		memberSet[m] = true
 	}
+	// framed writes lines (each ending in '\n') as one frame with env on, as is with it off.
+	framed := func(sb *strings.Builder, field, lines string) {
+		if env == nil {
+			sb.WriteString(lines)
+			return
+		}
+		sb.WriteString(env.wrap(field, strings.TrimSuffix(lines, "\n")))
+		sb.WriteByte('\n')
+	}
 	var sb strings.Builder
+	if env != nil {
+		sb.WriteString(strings.TrimPrefix(env.intro(), "\n\n"))
+		sb.WriteString("\n\n")
+	}
 	sb.WriteString("[Member nodes (to be compressed)]:\n")
+	var members strings.Builder
 	for _, m := range b.Members {
 		n := nodeByID[m]
 		kind := "fact"
@@ -498,12 +528,24 @@ func buildCompressionInput(g *coldGraph, b block, nodeByID map[int64]*db.Node) s
 			state = n.State
 		}
 		line := fmt.Sprintf("- #%d [%s/%s] %s", m, kind, state, nodeSummary(n))
+		// provenance: source is the fact's declared source, origin the server-set writer.
+		var attrs []string
 		if conf := nodeConfidence(n); conf != "" {
-			line += fmt.Sprintf(" (confidence=%s)", conf)
+			attrs = append(attrs, "confidence="+conf)
 		}
-		sb.WriteString(line)
-		sb.WriteByte('\n')
+		if src := nodeSource(n); src != "" {
+			attrs = append(attrs, "source="+src)
+		}
+		if n != nil && n.Origin != "" {
+			attrs = append(attrs, "origin="+n.Origin)
+		}
+		if len(attrs) > 0 {
+			line += " (" + strings.Join(attrs, ", ") + ")"
+		}
+		members.WriteString(line)
+		members.WriteByte('\n')
 	}
+	framed(&sb, "members", members.String())
 	// internal edges among members
 	var edgeLines []string
 	for _, m := range b.Members {
@@ -521,14 +563,16 @@ func buildCompressionInput(g *coldGraph, b block, nodeByID map[int64]*db.Node) s
 	}
 	if len(b.Anchors) > 0 {
 		sb.WriteString("\n[Common parents / context anchors (not members; only used to understand which intent these results were explored from)]:\n")
+		var anchors strings.Builder
 		for _, a := range b.Anchors {
 			n := nodeByID[a]
 			state := ""
 			if n != nil {
 				state = n.State
 			}
-			fmt.Fprintf(&sb, "- #%d [%s] %s\n", a, state, nodeSummary(n))
+			fmt.Fprintf(&anchors, "- #%d [%s] %s\n", a, state, nodeSummary(n))
 		}
+		framed(&sb, "anchors", anchors.String())
 	}
 	return sb.String()
 }
@@ -536,12 +580,15 @@ func buildCompressionInput(g *coldGraph, b block, nodeByID map[int64]*db.Node) s
 // compress runs the §4 body LLM call on one block. Uses the same model the agent
 // runs on; thinking disabled (a pure summarization step).
 func (c *Compactor) compress(ctx context.Context, g *coldGraph, b block, nodeByID map[int64]*db.Node) (string, error) {
+	// One envelope (one fresh nonce) per request (D3); nil when ARTEX_DATA_ENVELOPE=0.
+	env := newDataEnvelope("compactor")
 	req := llm.CompletionRequest{
-		System:    []string{compressionSystemPrompt},
-		Messages:  []llm.Message{llm.UserText(buildCompressionInput(g, b, nodeByID))},
+		System:    []string{compressionSystem},
+		Messages:  []llm.Message{llm.UserText(buildCompressionInput(g, b, nodeByID, env))},
 		MaxTokens: 1500,
 		Thinking:  "disabled",
 	}
+	env.logNeutralised()
 	memo := os.Getenv("ARTEX_COMPACTION_MEMO") == "1"
 	var key [32]byte
 	if memo {
@@ -549,11 +596,17 @@ func (c *Compactor) compress(ctx context.Context, g *coldGraph, b block, nodeByI
 		for _, id := range append(append([]int64{}, b.Members...), b.Anchors...) {
 			sources[id] = nodeByID[id]
 		}
+		// The nonce differs per request but changes no meaning: key on the same request
+		// rendered with an empty nonce, so an unchanged block still hits the memo.
+		keyReq := req
+		if env != nil {
+			keyReq.Messages = []llm.Message{llm.UserText(buildCompressionInput(g, b, nodeByID, &dataEnvelope{surface: env.surface}))}
+		}
 		serialized, e := json.Marshal(struct {
 			Model   string
 			Request llm.CompletionRequest
 			Sources map[int64]*db.Node
-		}{c.model, req, sources})
+		}{c.model, keyReq, sources})
 		if e != nil {
 			memo = false
 		} else {
@@ -682,6 +735,11 @@ func (c *Compactor) SummaryStats() (calls, hits int) {
 	defer c.mu.Unlock()
 	return c.summaryCalls, c.summaryMemoHits
 }
+
+// compressionSystem is the compactor's full system prompt: the §4 body prompt plus
+// the code-owned untrusted-data tail shared with the planner (D4). The tail is
+// unconditional; ARTEX_DATA_ENVELOPE=0 does not remove it.
+const compressionSystem = compressionSystemPrompt + untrustedDataRules + compactorDataRule
 
 // compressionSystemPrompt is the §4 body prompt.
 const compressionSystemPrompt = `You are compressing a group of [interconnected] exploration nodes into one consolidated conclusion (body), so the planner can quickly grasp "what this area has already established".

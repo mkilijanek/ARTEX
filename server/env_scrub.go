@@ -28,3 +28,10 @@ type Option func(*Server)
 // WithSecretScrub makes New drop the startup secrets after reading them, before
 // the MCP discovery goroutine and the task resume loop can spawn children.
 func WithSecretScrub() Option { return func(s *Server) { s.scrubSecrets = true } }
+
+// WithControlPlane tells the WebFetch egress policy which addresses are ARTEX's own:
+// the HTTP listen address and the traffic recording proxy address (cmd/artex -addr and
+// -proxy). Without it only the cloud-metadata ranges and the database stay denied.
+func WithControlPlane(listenAddr, recordingProxyAddr string) Option {
+	return func(s *Server) { s.listenAddr, s.recordingProxyAddr = listenAddr, recordingProxyAddr }
+}
