@@ -531,6 +531,98 @@ Not part of this change: four `db` tests (`TestCompanyScopeAttribution`,
 fail when the `db` package runs a second time against the same database. They fail
 the same way on `main` `43208e5`.
 
+## 10b. PR 2 as built (deviations from this plan)
+
+Recorded at DOCUMENT from the working tree of `phase-d/data-envelope-provenance` (on
+`1d76b76`). The sections above are kept as approved; where they differ, this list and
+the code are authoritative.
+
+- **Opt-out keeps the old renderers.** With `ARTEX_DATA_ENVELOPE=0` no envelope is built
+  (`newDataEnvelope` returns nil and draws no nonce) and the pre-change code paths render
+  the messages (`renderGraphOverview`, `renderWorkerGraphOverview`, the unframed branches of
+  `renderTriggers` and `buildCompressionInput`). AC16's "byte-identical to today's" holds
+  for the envelope and the anchor only: the D4 rules, the D5 `origin`/`source` keys in
+  `recent_facts` and `list_facts`, and the `source=`/`origin=` attributes that
+  `buildCompressionInput` adds to every compressor member line (`agent/compaction.go`)
+  are unconditional, so the opt-out input is not the
+  pre-PR input. `TestOptOutHintJSONIsPreChangeLiteral` pins the hint JSON against literals.
+- **Hint origin only with the envelope on.** `graphOverviewData` adds `origin` to each
+  hint only when the envelope is on, so the opt-out leaves every overview consumer
+  unchanged.
+- **`task_credentials` is framed**, although AC13 does not list it: agents write the
+  username, domain and note through `save_task_credential`. The code-owned
+  `task_credentials_note` stays plain (`TestTaskCredentialsFramed`).
+- **More frame fields than AC13/AC14 name.** `projection_notes` (the projection's
+  omitted-item notes), the compact worker launch's `awareness_recent_facts` and
+  `awareness_finding_list`, and the compressor's `members` and `anchors`.
+- **Budgets apply per part, not as the single check AC13 words.** With
+  `ARTEX_BOUNDED_CONTEXT=1` the derived fields are removed from the snapshot before the
+  journal sees it; `plannerPacketBudget` (40960 B) bounds the snapshot JSON, the derived
+  frames are projected to `overviewBudget` (16384 B) plus a fixed framing overhead. That
+  budget is soft: `agent_hints` (made a mandatory key in `agent/context_projection.go` by
+  this change) and `task_credentials` are copied without trimming, and with an intent id
+  so are `recent_facts` and `finding_list`. The `projection_notes` frame also carries
+  code-owned keys (`retrieval`, `detail_required`, `omitted`), not only omitted-item
+  notes. Further,
+  the trigger frames sit outside both (`worker_output` capped at 800 runes, `finding`
+  uncapped). `TestBoundedPlannerInputBudgetsPerPart` pins this.
+- **Worker asset frame in the system prompt.** The `assets` frame stays where the asset
+  JSON was, in the worker system prompt, and shares the launch nonce with the overview in
+  the user message.
+- **Cache-prefix placement.** `addStaticTail` appends a code-owned block after the body,
+  except with `ARTEX_CACHE_PREFIX=1`, where it goes before the body's volatile part so it
+  stays in the cached prefix. A DB row seeded before the block moved out of the seeds is
+  not given a second copy (`untrustedContentTail`).
+- **Compactor.** The compressor gets `compressionSystem` (the §4 prompt plus
+  `untrustedDataRules` and `compactorDataRule`) and its own nonce per request; the
+  summary memo key is computed with an empty nonce (`TestCompactionMemoHitsWithEnvelopeOn`).
+- **Three pre-existing tests adapted.** `TestRenderedAgentPromptByteInventory`: chat
+  ceiling 600 → 1500 B (the tail is now appended to chat). `planner_context_test.go`
+  (`TestPlannerFreshSessionReceivesReplayAndReportedUsage`): its hint fixture uses origin
+  `human` instead of `fixture`, so the hint stays in the journal. `TestPromptSeedsCarryInjectionHardening`:
+  checks that the seeds no longer carry the block and the rendered prompts carry it once.
+- **Refusal message.** An invalid `source` returns "source is not valid: use one of …
+  (omit it for inference)" and does not echo the supplied value; the log line carries
+  only `reason=invalid_source` (`TestFactRefusalLogContentFree`).
+- **`prove_goal` test added.** `TestProveGoalIgnoresFactSource` records that a fact of
+  any source still proves a goal (Q8). Its comment, and that of
+  `TestFactRefusalLogContentFree`, states that it is not the deferred T-FACT-4/T-FACT-3
+  of §3.
+- **bbot skill.** `skills/bbot-recon/SKILL.md` tells the agent to record intel with the
+  `record_fact` parameter `source=third_party_intel`.
+- **Fact-source seeder.** The seeder that adds `source` to the stored `record_fact`
+  schema skips rows whose schema has no `properties` object (`jsonb_typeof` guard in
+  `server/orchestration.go`).
+- **Decision record:** [adr/0002-data-envelope-and-code-owned-rules.md](adr/0002-data-envelope-and-code-owned-rules.md).
+- **Further tests beyond §6:** `TestEnvelopeNeutralisedLogLineIsContentFree`,
+  `TestEnvelopeOptOutDrawsNoNonce`, `TestCompressionInputOptOutIsPlain`,
+  `TestEnvelopeOverheadMeasurement`, `TestBbotSkillIngestionTreatsEventsAsUntrusted`.
+- **Residuals.** Main-agent hints keep origin `human` and stay outside the frames, under
+  a heading that no longer claims operator authorship (C14). Intent summaries,
+  `stagnation_warning.directions` and hint triggers are not framed (C15). A resumed worker
+  draws a new nonce. The declared source is spoofable. There is no live-model evaluation.
+  The planner system prompt is 13478 B against the 13500 B ceiling.
+
+Verification evidence for PR 2:
+
+Local run on 2026-11-18 of the working tree later committed on top of `1d76b76`, Go 1.26.11 in
+a `golang:1.26` container with a fresh PostgreSQL 16 for each command set:
+
+- `gofmt -l` on every changed and new Go file: no output.
+- `go build ./...`: exit 0. `go vet ./...`: exit 0.
+- `go test -p 1 -count=1 -v ./...`: exit 0; 1560 passing test and subtest results, no
+  failures, 7 skips, none of them a PR 2 test (five tests that also skip on `main`-based
+  runs and the two helper-process tests of PR 1). The 22 PR 2 tests pass by name.
+- `go test -race -p 1 -count=1 ./...`: exit 0, no data race reported.
+- `go test ./...` in `third_party/norma`: exit 0. No file under `third_party/` changed.
+- `python3 scripts/verify-norma-source.py`: exit 0.
+
+Red phase: nine of the ten planned tests failed on assertions before the implementation;
+`TestAdversarialLabJSONLReadFramed` passed, because the existing boundary already frames
+Read results. Review fixes (opt-out hint JSON, framed task credentials, seed test) each
+had a failing run first, produced by reverting the fix. Hosted CI has not run on this
+change yet. Platform: linux/amd64 only.
+
 ## 11. Changes after PLAN review
 
 Every finding was checked against the code before it was accepted.

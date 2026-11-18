@@ -221,7 +221,7 @@ func TestPlannerFreshSessionReceivesReplayAndReportedUsage(t *testing.T) {
 	log.SetOutput(&output)
 	defer log.SetOutput(previous)
 	for round := range 2 {
-		if _, err := ts.AddNode(db.KindHint, map[string]any{"text": fmt.Sprintf("round %d fixture", round)}, 0, "active", "fixture", nil); err != nil {
+		if _, err := ts.AddNode(db.KindHint, map[string]any{"text": fmt.Sprintf("round %d fixture", round)}, 0, "active", "human", nil); err != nil {
 			t.Fatal(err)
 		}
 		p := NewPlanner(provider, "fixture", t.TempDir(), nil, 100000, 1)

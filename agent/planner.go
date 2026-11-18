@@ -153,6 +153,20 @@ func renderPlannerTodos(items []actool.Todo) string {
 	return b.String()
 }
 
+// plannerRoundInput assembles one planning round's user message: the opener, the
+// situational block (triggers + pre-fetched overview), the standing instruction, the
+// planner's own todos, and, with the envelope on, last the code-owned goal anchor,
+// so the operator's goal is the final thing read after all the data. Without the
+// anchor (ARTEX_DATA_ENVELOPE=0) the message is the pre-envelope one.
+func plannerRoundInput(lead, situational, todos, goal, constraints string, anchor bool) string {
+	input := lead + situational + "\n\nJudge the goals from the situation above. When a goal is [truly met] (the goal's deliverable obtained / the goal's vulnerability confirmed), mark each with prove_goal. **Hard floor: as long as the goal is unmet and there are currently no open or running intents (frontier_open=0 and running_intents is empty), this round must produce at least one intent advancing toward the goal — at that point there is no running work to wait for and no queued direction, so producing 0 intents = the task stalls. Only when open/running intents are already advancing, or the goal is met, may this round produce no new intents.**" +
+		todos
+	if anchor {
+		input += plannerGoalAnchor(goal, constraints)
+	}
+	return input
+}
+
 // TriggerEvent describes what concretely caused this planning round to fire, so
 // the planner looks first at the actual change instead of re-scanning the whole
 // overview. Kind:
@@ -183,8 +197,9 @@ type TriggerEvent struct {
 // renderTriggers spells out the change(s) that fired this round: for a finished
 // worker — which intent + its output conclusion; for a finding — which intent +
 // what was found. Empty for time/heartbeat wakes. Reads the store (best-effort;
-// a blank field never blocks the round).
-func renderTriggers(ts *db.ExplorationStore, evs []TriggerEvent) string {
+// a blank field never blocks the round). With a non-nil env, worker output and
+// finding details go inside env's frame (D3); nil env is the pre-envelope text.
+func renderTriggers(ts *db.ExplorationStore, evs []TriggerEvent, env *dataEnvelope) string {
 	if len(evs) == 0 || ts == nil {
 		return ""
 	}
@@ -209,7 +224,11 @@ func renderTriggers(ts *db.ExplorationStore, evs []TriggerEvent) string {
 		case "goal_edited":
 			b.WriteString(fmt.Sprintf("\n- The human edited a goal, from \"%s\" to \"%s\" — please adjust exploration directions to the new goal (stop dispatching the old directions if they no longer apply).", ev.OldGoal, ev.NewGoal))
 		case "finding":
-			b.WriteString(fmt.Sprintf("\n- The worker of intent #%d (%s) reported a finding: %s", ev.IntentID, intentSummary(ts, ev.IntentID), ev.Detail))
+			if env != nil {
+				b.WriteString(fmt.Sprintf("\n- The worker of intent #%d (%s) reported a finding:\n%s", ev.IntentID, intentSummary(ts, ev.IntentID), env.wrap("finding", ev.Detail)))
+			} else {
+				b.WriteString(fmt.Sprintf("\n- The worker of intent #%d (%s) reported a finding: %s", ev.IntentID, intentSummary(ts, ev.IntentID), ev.Detail))
+			}
 		case "cancelled":
 			// For the intent content prefer the Summary captured at deletion time (after a real delete the node no longer exists, so intentSummary can't find it).
 			sm := ev.Summary
@@ -218,7 +237,11 @@ func renderTriggers(ts *db.ExplorationStore, evs []TriggerEvent) string {
 			}
 			b.WriteString(fmt.Sprintf("\n- Intent #%d was deleted by the user; the intent was: %s; the deletion reason: %s. The intent has been deleted (no longer executed); please re-plan accordingly.", ev.IntentID, sm, ev.Detail))
 		default: // "done"
-			b.WriteString(fmt.Sprintf("\n- The worker of intent #%d (%s) finished; output conclusion: %s", ev.IntentID, intentSummary(ts, ev.IntentID), workerOutput(ts, ev.IntentID)))
+			if env != nil {
+				b.WriteString(fmt.Sprintf("\n- The worker of intent #%d (%s) finished; output conclusion:\n%s", ev.IntentID, intentSummary(ts, ev.IntentID), env.wrap("worker_output", workerOutput(ts, ev.IntentID))))
+			} else {
+				b.WriteString(fmt.Sprintf("\n- The worker of intent #%d (%s) finished; output conclusion: %s", ev.IntentID, intentSummary(ts, ev.IntentID), workerOutput(ts, ev.IntentID)))
+			}
 			if fids := factIDsYielded(ts, ev.IntentID); fids != "" {
 				b.WriteString(fmt.Sprintf("; new fact ids produced by this intent: %s ", fids))
 			}
@@ -306,6 +329,17 @@ func renderGraphOverview(data map[string]any) string {
 	return "\n\n[This round's situation (graph_overview pre-fetched; identical to what calling that tool would return; call node_detail/list_facts etc. on demand for details)]:\n" + string(b)
 }
 
+// renderGraphOverviewFramed is renderGraphOverview with the overview split by origin
+// and its derived fields in env's frames (D3): the operator block and the counters as
+// plain JSON, then one frame per derived field.
+func renderGraphOverviewFramed(data map[string]any, env *dataEnvelope) (string, error) {
+	sections, err := renderOverviewSections(data, env)
+	if err != nil {
+		return "", err
+	}
+	return "\n\n[This round's situation (graph_overview pre-fetched, the same fields that tool returns, split by origin; call node_detail/list_facts etc. on demand for details)]:" + sections, nil
+}
+
 // plannerDefaultTmpl is the built-in EDITABLE body (section [A]) of the planner
 // prompt, seeded into agent_prompts. Goal is a {{.Goal}} template var; the
 // intermediate artifact output rules tail is code-owned (artifactSpec) and appended
@@ -321,7 +355,7 @@ Task goal: {{.Goal}}
 
 **Decision flow for each wake**:
 
-1. **The full situation is attached below this prompt** (it IS the graph_overview return — no need to call it again): task (original title + goal/root node), asset counts, goals+states, open/running/recent_done intents, sites_without_endpoints (sites with no endpoints — a hint of possibly unexplored directions), facts (exploration-fact count, a different kind from findings), recent_facts ({id,summary,confidence?}).
+1. **The full situation is attached below this prompt** (it IS the graph_overview return — no need to call it again): task (original title + goal/root node), asset counts, goals+states, open/running/recent_done intents, sites_without_endpoints (sites with no endpoints — a hint of possibly unexplored directions), facts (exploration-fact count, a different kind from findings), recent_facts ({id,summary,origin?,source?,confidence?}; origin=server-set writer, source=declared).
    - **Scope**: exploration nodes (goals/intents/facts/findings) belong only to this task; **the asset graph is global and shared** (one copy across tasks; asset counts are global-in-scope, not task-private) — ignore assets unrelated to this task when they appear.
    - **Lineage**: every intent carries parents (upstream: which facts/intents it derived from) and yields (downstream: which facts/findings it produced); each recent_fact carries from_intent; use these to understand "which direction produced which facts, and whether they synthesize into a new direction".
    - **Negative/doubtful observations** ("port closed" / "not injectable" etc. in recent_facts) are a worker's observations, not verdicts: before trusting one, check evidence via node_detail(id) — treat the direction as tentatively sealed only when the evidence is solid, confidence=observed, and the means are exhausted; if evidence is missing, it's just "looks like it / probed only once", or confidence=inferred, treat it as [not yet proven] — if it's in scope and no other intent covers it, by default dispatch ONE re-examination intent to confirm or refute it (**at most one re-examination per negative direction**; if it stays negative after that with reasonable evidence, respect the conclusion and don't dispatch again).
@@ -362,7 +396,10 @@ func plannerSystem(goal, dataDir, workDir string) string {
 		tmpl = strings.Replace(tmpl, "\n\nTask goal: {{.Goal}}", "", 1) + "\n\nTask goal: {{.Goal}}"
 	}
 	body := renderSystem("planner", tmpl, PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()})
-	return body + artifactSpec(workDir)
+	// The data rule is code-owned: it follows the rendered body (before its volatile part
+	// with ARTEX_CACHE_PREFIX=1), so a DB override or an operator edit cannot drop it. It
+	// carries no nonce, so the prompt stays stable.
+	return addStaticTail(body, untrustedDataRules) + artifactSpec(workDir)
 }
 
 // Plan runs one planning round. emit, if non-nil, receives the planner's execution
@@ -404,26 +441,62 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// situation may be compressed by compaction (planner rounds are usually short — low
 	// risk). situational is spliced into input below.
 	data := tsx.graphOverviewData()
-	overview := renderGraphOverview(data)
+	// One envelope (one fresh nonce) per user message (D3); nil when ARTEX_DATA_ENVELOPE=0,
+	// which keeps the pre-envelope message byte for byte.
+	env := newDataEnvelope("planner")
+	var overview, derivedFrames string
+	journalData := data
+	switch {
+	case env == nil:
+		overview = renderGraphOverview(data)
+	case boundedContextEnabled():
+		// The frames stay outside the snapshot JSON: the journal keeps what the operator
+		// wrote and the counters, and the derived text is rendered live after it, projected
+		// to the same byte budget the journal applies.
+		operator, rest, derived := splitOverview(data)
+		journalData = mergeOverview(operator, rest)
+		if len(derived) > 0 {
+			if derivedFrames, err = renderDerivedFrames(projectOverview(derived), env); err != nil {
+				return false, "", fmt.Errorf("planner context: %w", err)
+			}
+		}
+	default:
+		if overview, err = renderGraphOverviewFramed(data, env); err != nil {
+			return false, "", fmt.Errorf("planner context: %w", err)
+		}
+	}
 	var contextJournal *plannerJournal
 	if boundedContextEnabled() {
-		journal, checkpointErr := plannerContextCheckpoint(ctx, ts, data)
+		journal, checkpointErr := plannerContextCheckpoint(ctx, ts, journalData)
 		if checkpointErr != nil {
 			if ctx.Err() != nil {
 				return false, "", ctx.Err()
 			}
 			log.Printf("[context] planner task=%d checkpoint unavailable; using current snapshot: %v", ts.ID(), checkpointErr)
-			journal, err = advancePlannerJournal(nil, data)
+			journal, err = advancePlannerJournal(nil, journalData)
 			if err != nil {
 				return false, "", fmt.Errorf("planner context snapshot: %w", err)
 			}
 		}
-		overview = renderPlannerJournal(journal) + renderPlannerCredentials(data)
+		credData := data
+		if env != nil {
+			// The credentials themselves are agent-writable (save_task_credential): they go in a
+			// frame with the derived fields; only the code-owned note stays plain here.
+			credData = map[string]any{"task_credentials_note": data["task_credentials_note"]}
+			if _, ok := data["task_credentials"]; !ok {
+				credData = nil
+			}
+		}
+		overview = renderPlannerJournal(journal) + renderPlannerCredentials(credData)
 		contextJournal = &journal
 		current, _ := journal.materialize()
 		ctx = withContextFragment(ctx, overview, current, ts.ID())
+		overview += derivedFrames
 	}
-	situational := renderTriggers(ts, triggers) + overview
+	situational := renderTriggers(ts, triggers, env) + overview
+	if env != nil {
+		situational = env.intro() + situational
+	}
 	// Task-level deadline / endgame mode (injected via ctx, see taskclock.go). On the
 	// endgame round, the task-timeout planner wrap-up prompt is spliced into this
 	// round's user input (along with situational) as [this round's operating
@@ -436,8 +509,10 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	taskDir := ensureRunDir(p.workDir, taskID, 0)
 	ctx = intercept.WithReviewContext(ctx, taskDir, intercept.ReviewBackground{})
 	sysBody := plannerSystem(goal, p.workDir, taskDir) + p.lessonsBlock
+	constraints := ""
 	if p.wantConstraints() {
-		sysBody += constraintBlock(ts) // inject the operation constraints (if any) into the system prompt, bounding exploration
+		constraints = constraintBlock(ts)
+		sysBody += constraints // inject the operation constraints (if any) into the system prompt, bounding exploration
 	}
 	system, boundary := deferredSystem(sysBody, def)
 	// The planner has no wall-clock budget of its own; when a deadline exists, clamp
@@ -512,8 +587,8 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 			lead = "This round is a **scheduled patrol (heartbeat)** wake-up, and there are currently **no open or running intents at all** — no worker is running and no direction is queued; exploration has stalled. You **must** produce one or more new intents this round that advance toward the goal and **don't duplicate** existing ones (producing 0 intents is not allowed); first judge from the situation below whether the goal is met, and if not, add directions immediately:"
 		}
 	}
-	input := lead + situational + "\n\nJudge the goals from the situation above. When a goal is [truly met] (the goal's deliverable obtained / the goal's vulnerability confirmed), mark each with prove_goal. **Hard floor: as long as the goal is unmet and there are currently no open or running intents (frontier_open=0 and running_intents is empty), this round must produce at least one intent advancing toward the goal — at that point there is no running work to wait for and no queued direction, so producing 0 intents = the task stalls. Only when open/running intents are already advancing, or the goal is met, may this round produce no new intents.**" +
-		renderPlannerTodos(opts.Todos.List())
+	input := plannerRoundInput(lead, situational, renderPlannerTodos(opts.Todos.List()), goal, constraints, env != nil)
+	env.logNeutralised()
 	// MaxDuration now interrupts an in-flight tool at the wall-clock deadline and
 	// enters wrap-up in place (on the live ctx), so a stuck single round no longer
 	// bypasses wrap-up — no external hard-ctx backstop needed. ctx carries only

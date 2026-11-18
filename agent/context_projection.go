@@ -37,7 +37,9 @@ func projectOverview(data map[string]any) map[string]any {
 	// applies to optional detail; a mandatory overflow is explicit, not data loss.
 	mandatory := map[string]bool{"task": true, "goals": true, "hints": true,
 		"scope": true, "stagnation_warning": true, "coverage": true,
-		"intent_context": true, "intent_id": true, "scope_required_before_action": true, "task_credentials": true, "task_credentials_note": true}
+		"intent_context": true, "intent_id": true, "scope_required_before_action": true, "task_credentials": true, "task_credentials_note": true,
+		// agent_hints is the hint subset the data envelope frames outside the journal (D3); hints stay mandatory.
+		"agent_hints": true}
 	if normalized["intent_id"] != nil {
 		mandatory["recent_facts"], mandatory["finding_list"] = true, true
 		mandatory["recent_facts_filtered_unrelated"], mandatory["finding_list_filtered_unrelated"] = true, true

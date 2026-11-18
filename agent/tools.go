@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 
@@ -458,6 +459,12 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		var p map[string]any
 		_ = json.Unmarshal(h.Payload, &p)
 		hint := map[string]any{"id": h.ID, "state": h.State, "text": p["text"]}
+		// origin lets the user-message renderers keep human-origin hints outside the data
+		// envelope and frame the rest (D3). Only with the envelope on: ARTEX_DATA_ENVELOPE=0
+		// must leave every overview consumer byte-identical to the pre-envelope data.
+		if dataEnvelopeEnabled() {
+			hint["origin"] = h.Origin
+		}
 		if findingTrafficBindingEnabled() && p["traffic_refs"] != nil {
 			hint["traffic_refs"] = p["traffic_refs"]
 		}
@@ -989,11 +996,19 @@ func inheritedIntentSummaryState(state string) bool {
 }
 
 // compactNode distills any exploration node to id + summary + state, dropping the
-// big detail/evidence (fetch that on demand via node_detail).
+// big detail/evidence (fetch that on demand via node_detail). It also carries the
+// provenance: origin is the writer recorded by the server (worker-N, planner, human,
+// orchestrator), source is the declared source of a fact.
 func compactNode(n *db.Node) map[string]any {
 	var p map[string]any
 	_ = json.Unmarshal(n.Payload, &p)
 	m := map[string]any{"id": n.ID, "state": n.State, "summary": p["summary"]}
+	if n.Origin != "" {
+		m["origin"] = n.Origin
+	}
+	if s, ok := p["source"].(string); ok && s != "" {
+		m["source"] = s
+	}
 	if n.Inherited {
 		inheritedMap(m, n.SourceTaskID)
 	}
@@ -1056,7 +1071,7 @@ func (t *ToolSet) listFindings() actool.CoreTool {
 const factsPageSize = 20
 
 func (t *ToolSet) listFacts() actool.CoreTool {
-	return t.readExpTool("list_facts", "Page through the [exploration facts/conclusions] of this task and directly related tasks, newest first (compact: id+summary+state; overlong summaries are truncated — full text via node_detail(id)). All parameters optional: limit (default 20, max 100), before (cursor; pass the previous page's next_before for an older page; omit/0 = the newest page), q (filter by summary keyword). Returns {facts, total, has_more, next_before}: total is the filtered count; when has_more=true, keep paging with next_before. Related-task entries carry source_task_id/inherited=true and are read-only. For findings see list_findings.",
+	return t.readExpTool("list_facts", "Page through the [exploration facts/conclusions] of this task and directly related tasks, newest first (compact: id+summary+state+origin+source; origin is the writer, source the declared source of the content; overlong summaries are truncated — full text via node_detail(id)). All parameters optional: limit (default 20, max 100), before (cursor; pass the previous page's next_before for an older page; omit/0 = the newest page), q (filter by summary keyword). Returns {facts, total, has_more, next_before}: total is the filtered count; when has_more=true, keep paging with next_before. Related-task entries carry source_task_id/inherited=true and are read-only. For findings see list_findings.",
 		obj(map[string]any{
 			"limit":  intp("number of entries to return, default 20, max 100"),
 			"before": intp("pagination cursor: return only older facts with id below this value; omit or 0 = the newest page"),
@@ -1435,8 +1450,37 @@ type factItem struct {
 	Detail     string            `json:"detail"`
 	Evidence   string            `json:"evidence"`   // one line of key evidence (command + key output lines) supporting the conclusion, for later verification
 	Confidence string            `json:"confidence"` // observed (seen directly) | inferred (inferred from phenomena)
+	Source     string            `json:"source"`     // where the content came from, one of factSources; empty = inference
 	IntentID   json.RawMessage   `json:"intent_id"`
 	AssetIDs   []json.RawMessage `json:"asset_ids"`
+}
+
+// Fact sources: where a fact's content came from, as declared by the model that
+// recorded it. The writer itself is the node's origin column, set by the server, never
+// by this field. operator_input is reserved for a future UI/API path and is not offered
+// to, nor accepted from, any model tool.
+const (
+	factSourceTargetResponse  = "target_response"   // content the target itself returned (pages, headers, error bodies)
+	factSourceToolOutput      = "tool_output"       // a tool's own result about the target (port states, scanner verdicts)
+	factSourceThirdPartyIntel = "third_party_intel" // external sources: OSINT, CVE databases, public reports
+	factSourceInference       = "inference"         // the model's own reasoning; the default
+)
+
+var factSources = []string{factSourceTargetResponse, factSourceToolOutput, factSourceThirdPartyIntel, factSourceInference}
+
+// normalizeFactSource returns the stored source for a record_fact input: empty means
+// inference, a value outside factSources (operator_input included) is an error.
+func normalizeFactSource(s string) (string, error) {
+	norm := strings.ToLower(strings.TrimSpace(s))
+	if norm == "" {
+		return factSourceInference, nil
+	}
+	for _, v := range factSources {
+		if norm == v {
+			return v, nil
+		}
+	}
+	return "", fmt.Errorf("source is not valid: use one of %s (omit it for inference)", strings.Join(factSources, ", "))
 }
 
 // recordOneFact writes one fact node and links it to the intent (intent→yields→fact).
@@ -1446,7 +1490,13 @@ func (t *ToolSet) recordOneFact(it factItem, defaultIntent int64) (int64, error)
 	if strings.TrimSpace(it.Summary) == "" {
 		return 0, fmt.Errorf("summary must not be empty")
 	}
-	payload := map[string]any{"summary": it.Summary}
+	source, err := normalizeFactSource(it.Source)
+	if err != nil {
+		// content-free: a fixed code only, never the fact text or the supplied value
+		log.Printf("[facts] record_refused reason=invalid_source")
+		return 0, err
+	}
+	payload := map[string]any{"summary": it.Summary, "source": source}
 	if it.Detail != "" {
 		payload["detail"] = it.Detail
 	}
@@ -1485,14 +1535,16 @@ func (t *ToolSet) recordFact() actool.CoreTool {
 		"⚠️Write only conclusions you [actually saw] in tool output — don't extrapolate. evidence and confidence keep inaccurate conclusions from polluting the graph:\n"+
 		"  · evidence = [one line] of key evidence supporting this conclusion (the command + the one or two most proving output lines), **keep it brief** — details belong in detail; don't paste large output blocks here.\n"+
 		"  · confidence = observed (seen directly in output) | inferred (inferred from phenomena).\n"+
+		"  · source = where the content came from: target_response (content the target itself returned: page bodies, headers, error messages, banners, even when a tool fetched it) | tool_output (a tool's own result about the target: port states, scanner verdicts, status codes, timings) | third_party_intel (OSINT, CVE databases, public reports) | inference (your own reasoning; the default when omitted). Any other value is refused.\n"+
 		"  · **Negative conclusions** (not injectable / port closed / no entry found, etc.) state only \"observation + tentative reading\" — state what you actually saw; whether to abandon the direction is for the planner to decide globally; always provide evidence, mark inferred when the means weren't exhausted or the evidence is weak (including probed only once, looks-like), and mark observed only when truly exhausted and directly seen.",
 		obj(map[string]any{
-			"facts":      map[string]any{"type": "array", "description": "[use when there are several distinct conclusions] array of facts; element fields same as the top-level fields below (summary/detail/evidence/confidence/intent_id/asset_ids); omitting intent_id falls back to the top-level intent_id. The returned ids match this array in length and order.", "items": map[string]any{"type": "object"}},
+			"facts":      map[string]any{"type": "array", "description": "[use when there are several distinct conclusions] array of facts; element fields same as the top-level fields below (summary/detail/evidence/confidence/source/intent_id/asset_ids); omitting intent_id falls back to the top-level intent_id. The returned ids match this array in length and order.", "items": map[string]any{"type": "object"}},
 			"summary":    str("a [one-sentence summary] of this exploration's conclusion (a condensation of detail)"),
 			"intent_id":  idp("the id of the intent that produced this fact (the intent you claimed; the default for each item in batch mode)"),
 			"detail":     str("details related to this fact: write all of this exploration's observations here"),
 			"evidence":   str("[one line] of key evidence: the command + the one or two most proving output lines. Keep it brief; don't paste large output blocks (details go in detail)."),
 			"confidence": str("observed (seen directly in output) | inferred (inferred from phenomena). Always label negative conclusions honestly."),
+			"source":     map[string]any{"type": "string", "enum": factSources, "description": "where the content came from: target_response | tool_output | third_party_intel | inference (default when omitted)"},
 			"asset_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "related asset ids (optional, 0/1/many): which assets this fact involves"},
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {

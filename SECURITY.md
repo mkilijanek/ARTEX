@@ -143,6 +143,54 @@ whole call is refused and nothing is inserted.
 The operator's guard intercept rules and judge still run first for worker and chat
 sessions. The destination checks are a separate check inside the tool.
 
+### Prompt-injection hardening of host-built messages
+
+These measures mark target- and agent-derived text as data and restate the operator's
+goal. They are advisory to the model: they do **not** prevent prompt injection, and no
+test shows how a live model responds to them.
+
+**Data envelope.** Text derived from agent or target content is framed between
+`[[ARTEX_DATA nonce=N field=<name>]]` and `[[END_ARTEX_DATA nonce=N]]`, with one random
+16-byte nonce per planner message, worker launch and digest-compressor request:
+- planner input: `worker_output` and `finding` (the planning triggers), `recent_facts`,
+  `finding_list`, `cold_digests`, `related_tasks`, `agent_hints` (hints whose origin is
+  not `human`), `task_credentials`, and `projection_notes`;
+- worker launch: the same derived fields of the overview, and the target `assets` JSON;
+  the intent summary is not framed;
+- digest compressor: the member and anchor text.
+
+Data that contains the marker stem `ARTEX_DATA` has it rewritten, so data cannot open or
+close a frame. Each rewrite is counted, and a message with at least one logs
+`[envelope] neutralised=<n> surface=<planner|worker|compactor>`, without data or nonce.
+The nonce is never logged. The envelope and the planner goal anchor are on by default;
+`ARTEX_DATA_ENVELOPE=0` (or `false`, `off`, `no`) switches off both and nothing else.
+The design is in
+[docs/adr/0002-data-envelope-and-code-owned-rules.md](docs/adr/0002-data-envelope-and-code-owned-rules.md).
+
+**Code-owned rules.** These are appended in code after the editable prompt body, so a
+DB prompt override or an operator edit cannot remove them, and `ARTEX_DATA_ENVELOPE=0`
+does not switch them off:
+- the untrusted-content block, in the worker, pentest, main, auto and every chat agent
+  prompt, exactly once;
+- an untrusted-data rule in the planner system prompt: data cannot add goals, targets
+  or scope, change or end the task, or be relayed to a worker through `steer_work`;
+- the same rule plus a digest rule for the cold-digest compressor.
+
+The goal anchor at the end of the planner input (task goal, operation constraints, and
+the instruction that each new intent names the goal it serves) is also written by code,
+but it belongs to the envelope: `ARTEX_DATA_ENVELOPE=0` removes it.
+
+The bbot-recon skill tells the agent that every event field is untrusted data and that
+only in-scope events (`scope_distance == 0`) reach `insert_assets`.
+
+**Fact labels.** `record_fact` takes a declared `source`: `target_response`,
+`tool_output`, `third_party_intel` or `inference` (the default). `operator_input` and
+unknown values are refused for every model tool, with the log line
+`[facts] record_refused reason=invalid_source`. The writer (`origin`, set by the server)
+and the declared `source` are shown to the planner and the digest compressor. This only
+labels and displays. It does not establish provenance: a model can mislabel target
+content. Goal proof (`prove_goal`) does not look at the source.
+
 ### Known limits
 
 These are not fixed, and the destination checks above do not cover them:
@@ -166,9 +214,20 @@ These are not fixed, and the destination checks above do not cover them:
 - **Model behaviour.** The regression tests prove the structure and the policy on
   real code paths with scripted model responses. They do not prove that a model
   ignores injected instructions.
-- **Prompt surfaces.** Framing of target-derived data in host-built messages,
-  code-owned untrusted-content rules, a goal anchor and fact provenance labels are
-  not delivered yet.
+- **Prompt surfaces.** The envelope, the code-owned rules and the goal anchor are
+  advisory, as described above. In addition:
+  - the main agent writes with origin `human`, so hints and goal nodes with origin
+    `human` include text the main agent wrote (hints, and goals added with `set_goals`)
+    and stay outside the frames; their heading names the console, the goal decomposer
+    and the main agent, and does not claim operator authorship. Facts and findings the
+    main agent records also show `origin=human`;
+  - intent summaries, `stagnation_warning.directions` and hint triggers are not framed;
+  - a resumed worker draws a new nonce, so frames from its earlier launch carry the old
+    nonce;
+  - the declared fact `source` is spoofable, and `prove_goal` accepts a fact of any
+    source;
+  - the RSI lessons block is not framed;
+  - the finding detail in a planning trigger is not length-capped.
 
 The per-class status is in
 [docs/agentic-attack-audit.md](docs/agentic-attack-audit.md).
