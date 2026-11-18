@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Added
+
+- Analyst comments on findings: `GET`/`POST /api/exploration/findings/{id}/comments`
+  and a "Comments" panel in the vulnerability details. Plain text, append-only,
+  at most 10000 code points and 2000 comments per finding, attributed to the
+  verified operator account. Comments never reach agents or exports. The
+  `finding_comments` table is created automatically. Task archives now carry
+  comments (package format stays 3). Rollback: `pg_dump` the table first; an
+  older binary drops comments when archiving and silently skips them when
+  restoring a newer package. See `docs/finding-comments.md`.
+- Web CI job runs `npm test` (unit tests in `web/src/lib/*.test.mjs`).
+
 ### Changed
 
 - Norma SDK now uses upstream v0.4.8 with reviewed local patches, identified as

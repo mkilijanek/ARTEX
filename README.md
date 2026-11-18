@@ -302,6 +302,10 @@ Click "Retest" in the actions area of any row in the vulnerability list, or clic
 
 On first start, the new backend pre-creates an editable "Vulnerability Retest" (`retester`) agent; you can configure its prompt, LLM, run budget, and tools in Agent management. It uses its bound LLM by default, or the global active configuration when unbound. When a retest session completes successfully with a "Fixed" conclusion, the system automatically sets the vulnerability's handling status to "Fixed"; running, failed, stopped, or other conclusions keep the original status. Original evidence and reports are always preserved. You can also manually select "Fixed" from the status dropdown. While the same vulnerability is being retested, the existing session is reused; after a stop, failure, or service restart, you can start it again.
 
+### Finding comments
+
+The "Comments" panel in the vulnerability details lets analysts add plain-text, append-only notes. Comments are attributed to the signed-in operator account, are kept across retests and status changes, travel with task archives, and are never sent to agents or included in exports. See [docs/finding-comments.md](docs/finding-comments.md) for the API, limits and rollback notes.
+
 In this version, history is viewed via vulnerability details and sessions; it is not yet included in vulnerability report exports or task archive packages, and is not automatically linked to traffic captures. Demo mode only generates clearly labeled simulated records and never requests real targets.
 
 ### Running and testing locally
