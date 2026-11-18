@@ -28,6 +28,11 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Changed
 
+- **Release pipeline**: each release now ships an SBOM of the tagged source
+  (`artex-<tag>-source.spdx.json`, listed in `SHA256SUMS`), the GHCR image carries an SBOM
+  attestation plus OCI title, description, licence, URL and creation-time labels and
+  annotations, and the release description is generated from the tag subject and the
+  merges since the previous release. No author, vendor or tagger data is written.
 - **Go module path is now `github.com/mkilijanek/artex`** (was `github.com/Autumn-27/artex`),
   so import paths name this fork. Only `go.mod` and import lines changed. The vendored
   SDK keeps its upstream path `github.com/Autumn-27/norma` (`third_party/norma`,
