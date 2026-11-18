@@ -174,7 +174,9 @@ func splitOverview(data map[string]any) (operator, rest, derived map[string]any)
 // mergeOverview returns the union of the operator and rest views: the part of the
 // overview that stays outside the frames.
 func mergeOverview(operator, rest map[string]any) map[string]any {
-	out := make(map[string]any, len(operator)+len(rest))
+	// The hint is one length, not a sum: a sum of two lengths in an allocation size is
+	// what static analysis reports as a possible overflow, and the map grows as needed.
+	out := make(map[string]any, len(rest))
 	for _, m := range []map[string]any{rest, operator} {
 		for k, v := range m {
 			out[k] = v
