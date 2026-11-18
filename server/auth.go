@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
@@ -94,15 +95,41 @@ func signJWT(key []byte) (string, error) {
 	}).SignedString(key)
 }
 
-// verifyJWT returns true when tokenStr is a valid, non-expired HS256 token.
-func verifyJWT(tokenStr string, key []byte) bool {
+// verifyJWTSubject is the single validation path: it returns the subject of a
+// valid, non-expired HS256 token. The subject may be empty for a token that
+// carries none; callers that need an identity must check it.
+func verifyJWTSubject(tokenStr string, key []byte) (string, bool) {
 	t, err := jwt.Parse(tokenStr, func(t *jwt.Token) (any, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method")
 		}
 		return key, nil
 	})
-	return err == nil && t.Valid
+	if err != nil || !t.Valid {
+		return "", false
+	}
+	sub, err := t.Claims.GetSubject()
+	if err != nil {
+		return "", false
+	}
+	return sub, true
+}
+
+// verifyJWT returns true when tokenStr is a valid, non-expired HS256 token.
+func verifyJWT(tokenStr string, key []byte) bool {
+	_, ok := verifyJWTSubject(tokenStr, key)
+	return ok
+}
+
+type ctxKey int
+
+const operatorSubjectKey ctxKey = iota
+
+// operatorSubject returns the verified JWT subject stored by requireAuth, or ""
+// when the request did not pass through it or the token carried no subject.
+func operatorSubject(r *http.Request) string {
+	sub, _ := r.Context().Value(operatorSubjectKey).(string)
+	return sub
 }
 
 // extractToken reads the JWT from Authorization: Bearer header,
@@ -131,11 +158,12 @@ func (s *Server) requireAuth(h http.Handler) http.Handler {
 			writeErr(w, 401, "Unauthorized")
 			return
 		}
-		if !verifyJWT(tok, s.jwtKey) {
+		sub, ok := verifyJWTSubject(tok, s.jwtKey)
+		if !ok {
 			writeErr(w, 401, "token is invalid or expired")
 			return
 		}
-		h.ServeHTTP(w, r)
+		h.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), operatorSubjectKey, sub)))
 	})
 }
 
