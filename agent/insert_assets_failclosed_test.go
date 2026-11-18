@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Autumn-27/artex/db"
+	"github.com/mkilijanek/artex/db"
 )
 
 // dropDatabase drops a database by name through a plain admin connection. The connection goes

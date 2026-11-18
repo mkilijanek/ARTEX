@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Autumn-27/artex/db"
+	"github.com/mkilijanek/artex/db"
 )
 
 // commentAPI is the harness for the finding comment tests: the traffic

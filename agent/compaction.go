@@ -22,7 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/Autumn-27/artex/llmmeta"
+	"github.com/mkilijanek/artex/llmmeta"
 	"log"
 	"os"
 	"sort"
@@ -30,9 +30,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/transcript"
+	"github.com/mkilijanek/artex/db"
 )
 
 // Compactor performs background cold-node compaction for many explorations.

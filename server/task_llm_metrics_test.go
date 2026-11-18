@@ -5,10 +5,10 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/llmmeta"
-	"github.com/Autumn-27/artex/llmrec"
 	"github.com/Autumn-27/norma/llm"
+	"github.com/mkilijanek/artex/db"
+	"github.com/mkilijanek/artex/llmmeta"
+	"github.com/mkilijanek/artex/llmrec"
 )
 
 func TestTaskLLMMetricsAttributeEveryRetry(t *testing.T) {

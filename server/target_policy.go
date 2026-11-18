@@ -5,8 +5,8 @@ import (
 	"errors"
 	"log"
 
-	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/db"
+	"github.com/mkilijanek/artex/agent"
+	"github.com/mkilijanek/artex/db"
 )
 
 // registerTargetPolicy installs the WebFetch egress policy (design D1): the rule loader

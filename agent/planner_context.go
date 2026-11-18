@@ -9,8 +9,8 @@ import (
 	"log"
 	"sort"
 
-	"github.com/Autumn-27/artex/db"
 	"github.com/google/uuid"
+	"github.com/mkilijanek/artex/db"
 )
 
 const plannerResyncRounds = 8

@@ -5,10 +5,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Autumn-27/artex/llmmeta"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/compaction"
 	"github.com/Autumn-27/norma/llm"
+	"github.com/mkilijanek/artex/llmmeta"
 )
 
 func TestModelMetricsDistinguishActualSDKSummary(t *testing.T) {

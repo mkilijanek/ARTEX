@@ -2,8 +2,8 @@ package sidequestion
 
 import (
 	"context"
-	"github.com/Autumn-27/artex/llmmeta"
 	"github.com/Autumn-27/norma/llm"
+	"github.com/mkilijanek/artex/llmmeta"
 	"testing"
 )
 

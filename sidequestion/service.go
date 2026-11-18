@@ -3,7 +3,7 @@ package sidequestion
 import (
 	"context"
 	"errors"
-	"github.com/Autumn-27/artex/llmmeta"
+	"github.com/mkilijanek/artex/llmmeta"
 	"strings"
 
 	"github.com/Autumn-27/norma/llm"

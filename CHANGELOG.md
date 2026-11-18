@@ -28,6 +28,10 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Changed
 
+- **Go module path is now `github.com/mkilijanek/artex`** (was `github.com/Autumn-27/artex`),
+  so import paths name this fork. Only `go.mod` and import lines changed. The vendored
+  SDK keeps its upstream path `github.com/Autumn-27/norma` (`third_party/norma`,
+  provenance-pinned). Out-of-tree code that imports ARTEX packages must update its imports.
 - **The built-in `.gov`, `.gov.cn`, `.edu` and `.edu.cn` block rules now also apply to
   WebFetch and the custom http tool**, in every role including chat. They are enabled
   by default, so a fetch of such a domain returns `TARGET_BLOCKED` until an operator

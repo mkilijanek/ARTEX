@@ -8,8 +8,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/norma/llm"
+	"github.com/mkilijanek/artex/db"
 )
 
 // Phase D.1, S2 red tests for the code-owned prompt rules (D4, AC15) and the cold-digest

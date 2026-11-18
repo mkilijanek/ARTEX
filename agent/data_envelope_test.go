@@ -8,8 +8,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/norma/llm"
+	"github.com/mkilijanek/artex/db"
 )
 
 // Phase D.1, S2 red tests for the data envelope (D3): AC13, AC14, AC16.

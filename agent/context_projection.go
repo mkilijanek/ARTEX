@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/Autumn-27/artex/db"
+	"github.com/mkilijanek/artex/db"
 )
 
 const overviewBudget = 16 * 1024

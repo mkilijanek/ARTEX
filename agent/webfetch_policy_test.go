@@ -13,9 +13,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/norma/llm"
 	actool "github.com/Autumn-27/norma/tool"
+	"github.com/mkilijanek/artex/db"
 )
 
 // Phase D.1 / PR 1 network red tests for the WebFetch egress policy (D1, D6).

@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/Autumn-27/artex/llmmeta"
+	"github.com/mkilijanek/artex/llmmeta"
 	"strings"
 	"unicode/utf8"
 

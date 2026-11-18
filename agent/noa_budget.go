@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"iter"
 
-	"github.com/Autumn-27/artex/sidequestion"
 	"github.com/Autumn-27/norma/llm"
+	"github.com/mkilijanek/artex/sidequestion"
 )
 
 var ErrNOAContextBudget = errors.New("local NOA context estimate exceeds configured budget")

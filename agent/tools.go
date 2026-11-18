@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Autumn-27/artex/db"
 	acperm "github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
+	"github.com/mkilijanek/artex/db"
 )
 
 // compactIntents distills intents to {id, summary, state, asset_ids, parents,

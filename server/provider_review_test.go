@@ -3,7 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/Autumn-27/artex/db"
+	"github.com/mkilijanek/artex/db"
 	"net/http"
 	"net/http/httptest"
 	"strings"

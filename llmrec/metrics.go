@@ -3,11 +3,11 @@ package llmrec
 import (
 	"context"
 	"encoding/json"
-	"github.com/Autumn-27/artex/llmmeta"
+	"github.com/mkilijanek/artex/llmmeta"
 	"strings"
 
-	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/norma/llm"
+	"github.com/mkilijanek/artex/db"
 )
 
 type observerKey struct{}
