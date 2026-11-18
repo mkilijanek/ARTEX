@@ -503,6 +503,9 @@ func TestCustomHTTPInitialURLPolicy(t *testing.T) {
 	t.Run("dial uses the checked ip", func(t *testing.T) {
 		// Checked answer 127.0.0.2, later answer (or system resolver) 127.0.0.1, same port:
 		// whoever is dialled by name is the trap.
+		// The database host is resolved through the same injected resolver. Pin the DSN to an
+		// address literal so an ambient DSN on "localhost" (hosted CI) cannot use up an answer.
+		t.Setenv("ARTEX_PG_DSN", "postgres://artex:pw@10.77.0.9:5432/artex?sslmode=disable")
 		pinned := newCredLab(t, "127.0.0.2:0", false)
 		trap := newCredLab(t, "127.0.0.1:"+pinned.port, false)
 		res := newCredResolver(map[string][]string{})
