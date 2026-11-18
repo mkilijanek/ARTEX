@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Added
+
+- **`ARTEX_DATA_ENVELOPE`** (default on). `0`, `false`, `off` or `no` switches off the
+  data envelope and the planner goal anchor; the code-owned prompt rules stay. Design:
+  `docs/adr/0002-data-envelope-and-code-owned-rules.md`.
+- **`record_fact` `source` parameter**: `target_response`, `tool_output`,
+  `third_party_intel` or `inference` (the default when omitted). Existing databases get
+  the property in the stored `record_fact` schema once at startup
+  (`seedFactSourceSchema`); the description and other properties are not touched.
+- Log lines `[envelope] neutralised=<n> surface=<planner|worker|compactor>` and
+  `[facts] record_refused reason=invalid_source`. Neither carries data, the nonce or
+  the refused value.
+
 ### Changed
 
 - **The built-in `.gov`, `.gov.cn`, `.edu` and `.edu.cn` block rules now also apply to
@@ -41,6 +54,20 @@ All notable changes to this project are documented in this file. The format is b
 - **`insert_assets` fails closed**: if the asset intercept rules cannot be read, the
   whole call is refused, nothing is inserted, and `[assets] gate_unavailable task=<id>`
   is logged. Before, the gate was skipped and the assets were inserted.
+- **Planner and worker messages are restructured while the envelope is on.** The
+  overview is split into an operator block (task, goal nodes, hints with origin
+  `human`), the counters, and one frame per derived field; hints carry an `origin` key.
+  With `ARTEX_BOUNDED_CONTEXT=1` the derived frames follow the planner snapshot JSON
+  instead of being inside it. Message sizes grow (fixture: planner input +2681 B, worker
+  launch +1407 B; `docs/token-audit.md`).
+- **The untrusted-content block is no longer part of the editable worker, pentest, main
+  and auto prompt seeds.** It is appended in code, so a DB prompt row that still holds
+  it is not given a second copy. Chat agents now get it as well.
+- **Facts show their writer and declared source.** `list_facts`, `recent_facts` and the
+  digest compressor input carry `origin` and `source`. This does not depend on
+  `ARTEX_DATA_ENVELOPE`.
+- **bbot-recon skill**: only `scope_distance == 0` events reach `insert_assets`;
+  out-of-scope events are recorded as third-party intel facts and never auto-scoped.
 
 ### Fixed
 
@@ -113,6 +140,25 @@ All notable changes to this project are documented in this file. The format is b
   are returned as `request failed: <class>` without the URL. Parameters whose names
   contain `{`, `}`, `/`, `?` or `#` are no longer substituted. Refusals log
   `[customtool-http] decision=<code> hop=<n> task=<id>`.
+- **Data envelope for host-built messages** (Phase D.1 PR 2, #23, #7). Agent- and
+  target-derived text in the planner input (`worker_output`, `finding`, `recent_facts`,
+  `finding_list`, `cold_digests`, `related_tasks`, `agent_hints`, `task_credentials`,
+  projection notes), in the worker launch (overview and target `assets`; not the intent
+  summary) and in the digest compressor request is framed as
+  `[[ARTEX_DATA nonce=N field=…]]` … `[[END_ARTEX_DATA nonce=N]]`, with a random 16-byte
+  nonce per message. Forged marker stems in data are neutralised. The planner input ends
+  with a code-owned goal anchor.
+- **Code-owned untrusted-data rules.** The untrusted-content block is appended in code
+  to the worker, pentest, main, auto and every chat agent prompt, exactly once, also
+  under a DB prompt override. The planner and the digest compressor get a data rule:
+  data cannot add goals, targets or scope, change or end the task, or be relayed to a
+  worker. Not affected by `ARTEX_DATA_ENVELOPE`.
+- **Fact source labels.** `record_fact` refuses `operator_input` and unknown `source`
+  values for every model tool, so no model can label a fact as operator input. The
+  declared source is not verified and `prove_goal` does not use it; refusal of
+  `target_response` facts as goal proof is deferred.
+  These measures are advisory to the model and do not prevent prompt injection; known
+  gaps are in `SECURITY.md`, "Known limits".
 
 ## [0.5.0] - 2026-11-04
 

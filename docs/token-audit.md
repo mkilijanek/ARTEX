@@ -410,3 +410,41 @@ WebFetch now comes before the tools the SDK appends.
 - The tool list is part of the cached request prefix. The new order is fixed, so the
   prefix changes once when this version is deployed and is stable after that.
 - No token or cache measurement was made for this change, and none is claimed.
+
+
+## Phase D.1 PR 2: data envelope overhead
+
+The data envelope (`agent/data_envelope.go`) and the planner goal anchor add bytes to
+every planner round and worker launch while `ARTEX_DATA_ENVELOPE` is on (the default).
+Byte counts from `TestEnvelopeOverheadMeasurement` on its test fixtures
+(`ARTEX_BOUNDED_CONTEXT=0`):
+
+| Message | Envelope off | Envelope on | Overhead |
+| --- | --- | --- | --- |
+| Planner input (user message, includes the goal anchor) | 3839 B | 6520 B | +2681 B |
+| Worker launch (system + user) | 12893 B | 14300 B | +1407 B |
+
+The overhead per message is mostly fixed (the envelope introduction, the anchor, two
+marker lines per frame), so these fixture ratios overstate the relative cost on a real
+task with a larger overview. No live token, cache or billing measurement was made.
+
+Budgets with `ARTEX_BOUNDED_CONTEXT=1` (`TestBoundedPlannerInputBudgetsPerPart`):
+- `plannerPacketBudget` (40960 B) applies to the journal snapshot JSON only.
+- The derived frames are rendered after that JSON. Their content is projected to the
+  separate `overviewBudget` (16384 B), plus a fixed framing overhead (669 B measured on
+  the fixture). The budget is soft: mandatory keys (`agent_hints`, `task_credentials`,
+  and with an intent id `recent_facts` and `finding_list`) are never trimmed.
+- The trigger frames are outside both budgets: `worker_output` is capped at 800 runes
+  (`truncOutput`), the `finding` detail is not capped.
+
+Cache effects:
+- The planner system prompt carries no nonce and stays byte-identical across rounds
+  with an unchanged goal (`TestPlannerSystemStableAcrossRounds`). With
+  `ARTEX_CACHE_PREFIX=1` the code-owned rules sit in the cached stable prefix.
+- The worker system prompt contains the `assets` frame and therefore the launch nonce,
+  so it differs per launch when the intent has target assets.
+- The compressor's summary memo key is built with an empty nonce, so an unchanged
+  block still hits the memo (`TestCompactionMemoHitsWithEnvelopeOn`).
+- The rendered planner system prompt is 13478 B against the 13500 B ceiling in
+  `TestRenderedAgentPromptByteInventory`; the chat ceiling there was raised from 600 B
+  to 1500 B because the untrusted-content block is now appended to chat prompts.

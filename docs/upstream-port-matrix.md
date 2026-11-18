@@ -64,13 +64,24 @@ decision [adr/0001-webfetch-destination-policy.md](adr/0001-webfetch-destination
 Corrected citations. These corrections apply to the historical selection table above,
 which is not rewritten:
 - Rows `8c3bae4`/`c73e287`, `975f634` and `f6b29b8`/`1c3a5f4` are marked PORT. Only
-  the untrusted boundary was delivered (#47). `975f634` is planned for Phase D.1 PR 2,
-  and `f6b29b8`/`1c3a5f4` are partially adapted as described above.
+  the untrusted boundary was delivered (#47). `975f634` is adapted in Phase D.1 PR 2
+  (see below), and `f6b29b8`/`1c3a5f4` are partially adapted as described above.
 - In [upstream-commit-inventory.tsv](upstream-commit-inventory.tsv), `975f634`,
   `1c3a5f4`, `f6b29b8`, `c73e287`, `8c3bae4`, `8acf1be`, `09ef702` and `62c9b4a` are
   triaged `dependency-review`, and `bc33db2` is `defer-independent`.
 - The row "ADAPT `46e81f5` (v0.4.7), `f6b29b8` (v0.4.8)" refers to the Norma SDK
   dependency, not to the target checks.
 - `8acf1be` and `09ef702` (code-owned untrusted-content tails and the planner goal
-  anchor) appear only in the inventory. They
-  are planned for Phase D.1 PR 2.
+  anchor) appear only in the inventory. They are adapted in Phase D.1 PR 2 (see below).
+
+## Phase D.1 PR 2 delivery (2026-11-18)
+
+Branch `phase-d/data-envelope-provenance`; plan [phase-d1-plan.md](phase-d1-plan.md)
+(§10b lists the deviations); per-class results in
+[agentic-attack-audit.md](agentic-attack-audit.md).
+
+| Change | Delivery in this fork | Remaining acceptance |
+| --- | --- | --- |
+| `975f634` derived data envelopes | **Adapted.** `agent/data_envelope.go` frames derived fields as `[[ARTEX_DATA nonce=N field=…]]` blocks, one 16-byte random nonce per planner message, worker launch and compressor request, and neutralises forged marker stems. Fork-specific: an opt-out, `ARTEX_DATA_ENVELOPE=0`, that keeps the previous renderers; with `ARTEX_BOUNDED_CONTEXT=1` the frames are rendered after the planner snapshot JSON, not inside it, with their own projection budget; `task_credentials` is framed because agents write it (`save_task_credential`); hints carry an `origin` key only with the envelope on. | No live-model evaluation; intent summaries and `stagnation_warning.directions` unframed (C15) |
+| `8acf1be`, `09ef702` code-owned tails and goal anchor | **Adapted.** `agent/untrusted_prompt.go`: `untrustedContentTail` for worker, pentest, main, auto and every chat agent (removed from the editable seeds), `untrustedDataRules` for the planner and the compressor, `compactorDataRule`, `plannerGoalAnchor`; bbot-recon skill note. Fork-specific: with `ARTEX_CACHE_PREFIX=1` the static rules are placed before the volatile part of the prompt so they stay in the cached prefix; the anchor follows the envelope opt-out. | Main agent still writes as `human` (C14, D.2) |
+| `62c9b4a`, `bc33db2` fact provenance | **Adapted without the `prove_goal` change.** `record_fact` `source` enum, `operator_input` and unknown values refused for every model tool, `origin`/`source` in `list_facts`, `recent_facts`, `compactNode` and the compressor input; `seedFactSourceSchema` (`server/orchestration.go`) adds the property to existing databases once. The refusal message lists the allowed values and does not echo the supplied one. | `prove_goal` refusal of `target_response` facts: **DEFERRED** to the goal-proof iteration (Q8); declared source is spoofable |
