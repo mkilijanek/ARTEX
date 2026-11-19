@@ -118,6 +118,12 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Fixed
 
+- **Token counts above one billion** (#81): the Dashboard's LLM token usage chart cut off
+  the first digit of its Y-axis labels once a day passed one billion tokens (`1200.0M` did
+  not fit the axis, so the scale read `600.0M`, `200.0M`, `800.0M`), in both the "Old" and
+  the "New" view. Token counts now use one shared formatter with `k`, `M`, `B` and `T`,
+  at most three significant digits and no trailing zeros (`600M`, `1.2B`, `3.62B`), on the
+  Dashboard, the task list, the task details tabs, Chat and Interception Rules.
 - Session IDs no longer depend on transcript persistence. Corrupt history stops
   before model execution with a path-bearing `session_restore_error`, without
   provider retries; recovery steps are in `docs/norma-sdk-audit.md`.
