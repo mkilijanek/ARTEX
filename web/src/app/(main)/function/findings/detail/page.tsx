@@ -258,16 +258,20 @@ function FindingDetailInner() {
               <ArrowLeftIcon />
             </Link>
           </Button>
-          <ShieldAlertIcon className="size-4 text-muted-foreground" />
+          <ShieldAlertIcon className="size-4 shrink-0 text-muted-foreground" />
           <h1 className="min-w-0 max-w-md truncate text-sm font-semibold" title={title}>
             {title}
           </h1>
-          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground">#{finding.id}</code>
+          <code className="shrink-0 whitespace-nowrap rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground">
+            #{finding.id}
+          </code>
           <Separator orientation="vertical" className="mx-1 h-4" />
           <StatusBadge domain="severity" value={finding.severity} dot />
           <StatusBadge domain="finding" value={finding.status} dot />
           {finding.inherited && finding.source_task_id && (
-            <Badge variant="outline">Source task #{finding.source_task_id} · read-only</Badge>
+            <Badge variant="outline" className="shrink-0 whitespace-nowrap">
+              Source task #{finding.source_task_id} · read-only
+            </Badge>
           )}
         </div>
         <TabsList>
