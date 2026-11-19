@@ -22,12 +22,13 @@
   "current": {
     "schema_sql_sha256": "951f3d0c88597f494b5fc1a87ca6694daa9d35e490d3f131d4fb36a2f49f963a",
     "reference": "reference-catalog-pg16.txt",
-    "reference_sha256": "128ae3b92d6e9966564182ba630fc079c570224038bca99e6cd2c9d19bcabae8",
+    "reference_sha256": "031e2187a7498c60c1d30663e4d4cea6d75e843bf23bed73c21f94a5d40903bc",
     "migrations": [
       {"version": 1, "name": "0001_llm_records.sql", "sha256": "202d1b5f84f8091f5e676526b15fb66c888f39f73ddab60f46c251f19e19aa1e"},
       {"version": 2, "name": "0002_llm_usage.sql", "sha256": "3b3aece1c4c80bceef74d15652e1c97c972275d7c738a41938945f00588c8d39"},
       {"version": 3, "name": "0003_task_scope_icp_index.sql", "sha256": "318e3e91b55552ed3322cb7fdb515133dc279d6fd76e5d94498bf56de1692331"},
-      {"version": 5001, "name": "5001_llm_usage_fork_columns.sql", "sha256": "d55ce9857b9ef9d526ecaeeeeada7750f156761d1ec6878e154c198c7c81553f"}
+      {"version": 5001, "name": "5001_llm_usage_fork_columns.sql", "sha256": "d55ce9857b9ef9d526ecaeeeeada7750f156761d1ec6878e154c198c7c81553f"},
+      {"version": 5002, "name": "5002_tool_rag_observations.sql", "sha256": "9fabb12a79280db7a102c57538bce03513feb0baa223d1d2771c28bca993a67c"}
     ]
   }
 }

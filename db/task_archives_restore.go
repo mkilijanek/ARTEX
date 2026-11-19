@@ -73,7 +73,7 @@ WHERE relation.source_task_id=$1 LIMIT 1`, taskID).Scan(&dependent)
 	if _, err := tx.Exec(`DELETE FROM llm_usage WHERE COALESCE(task_id,'')=$1 OR exploration_id=$2`, strconv.FormatInt(taskID, 10), expID); err != nil {
 		return err
 	}
-	for _, table := range []string{"skill_usage", "tool_usage"} {
+	for _, table := range []string{"skill_usage", "tool_usage", "tool_rag_observations"} {
 		if _, err := tx.Exec(`DELETE FROM `+table+` WHERE task_id=$1 OR exploration_id=$2`, taskID, expID); err != nil {
 			return err
 		}
