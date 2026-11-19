@@ -6,6 +6,10 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
+- **`vulnx` in the image** (ProjectDiscovery's vulnerability-intelligence CLI, the
+  successor of `cvemap`; the upstream repository was renamed and the binary is `vulnx`),
+  pinned at v2.0.2 and installed like the other ProjectDiscovery tools. It queries
+  ProjectDiscovery's cloud API and needs outbound access to it and, for full use, an API key.
 - Ticket ID on findings: an optional reference to an external ticketing system,
   shown as a "Ticket ID" field in the Status card of the vulnerability details
   (click to edit) and as a column in the findings list.
@@ -40,6 +44,12 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Changed
 
+- **Image: no floating versions for the Playwright packages and sqlmap.** `@playwright/mcp`
+  (0.0.86), `@playwright/cli` (0.1.25) and `playwright` (1.65.1) are installed at exact
+  versions instead of `@latest`, and sqlmap is a checkout of release tag 1.10.11 instead
+  of the default branch. Each is a build argument; upgrade them deliberately. Still not
+  exact: the Debian packages, the NodeSource Node 22.x package, and the base images
+  (pinned by tag, not by digest). The downloaded tools are still not checksum-verified.
 - **Release pipeline**: each release now ships an SBOM of the tagged source
   (`artex-<tag>-source.spdx.json`, listed in `SHA256SUMS`), the GHCR image carries an SBOM
   attestation plus OCI title, description, licence, URL and creation-time labels and
