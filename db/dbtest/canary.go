@@ -99,18 +99,37 @@ func AssertNoSecret(t testing.TB, what, text string) {
 }
 
 // CaptureLog redirects the standard logger into a buffer until the test ends and
-// returns a function that yields what was logged so far.
+// returns a function that yields what was logged so far. Goroutines an earlier test
+// left running keep logging into it, so the buffer is guarded by a mutex.
 func CaptureLog(t testing.TB) func() string {
 	t.Helper()
-	var buf bytes.Buffer
+	buf := &lockedBuffer{}
 	prevOut, prevFlags := log.Writer(), log.Flags()
-	log.SetOutput(&buf)
+	log.SetOutput(buf)
 	log.SetFlags(0)
 	t.Cleanup(func() {
 		log.SetOutput(prevOut)
 		log.SetFlags(prevFlags)
 	})
 	return buf.String
+}
+
+// lockedBuffer is a bytes.Buffer that is safe for a writer and a reader on different goroutines.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // SuffixEnv gives this package's own tests a database name of their own, as

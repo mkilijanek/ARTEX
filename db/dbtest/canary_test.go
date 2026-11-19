@@ -5,6 +5,8 @@ import (
 	"log"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -106,5 +108,35 @@ func TestUpgradeSuffixEnv(t *testing.T) {
 		if got := envDSN(); got != want {
 			t.Errorf("SuffixEnv(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// A goroutine an earlier test left running logs while a later test reads the capture; under
+// -race an unguarded buffer is reported as a data race.
+func TestUpgradeCaptureLogIsSafeForConcurrentWriters(t *testing.T) {
+	read := CaptureLog(t)
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	var logged atomic.Int64
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				log.Printf("background line")
+				logged.Add(1)
+			}
+		}
+	}()
+	for logged.Load() < 2000 {
+		_ = read()
+	}
+	close(stop)
+	wg.Wait()
+	if !strings.Contains(read(), "background line") {
+		t.Fatal("the background log line was not captured")
 	}
 }

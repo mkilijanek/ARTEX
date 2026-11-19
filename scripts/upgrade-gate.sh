@@ -30,7 +30,7 @@ cd "$(dirname "$0")/.."
 # Count of the top-level tests selected by PATTERN after the D.2 fix round, from a run with
 # -v: 82 (./db 29, ./db/dbtest 48, ./agent 1, ./server 4). Raise it with the tests, never
 # lower it to make the gate pass.
-MIN_UPGRADE_TESTS=82
+MIN_UPGRADE_TESTS=83
 PATTERN='^(TestUpgrade|TestConfigFileDSNIsNotUsed)'
 PACKAGES=(./db ./db/dbtest ./agent ./server)
 
