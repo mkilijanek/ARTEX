@@ -1,0 +1,22 @@
+{
+  "note": "Schema fixtures are byte-exact copies of db/schema.sql at the listed commits. Regenerate only with: git show <commit>:db/schema.sql",
+  "shapes": [
+    {"shape": "r0509", "fixture": "schema-b4b9600f5c8f.sql", "sha256": "b4b9600f5c8f41cd13f0a33646fc2cb18fdc861a394c1167a1eb50a51517e4c6",
+     "releases": [
+       {"tag": "v0.5.9m", "commit": "fd95c24b1889de8c25cad12d1c6355ac3fcdc594"},
+       {"tag": "v0.5.10m", "commit": "43208e5354858a241e8410998c262c2ff733f472"},
+       {"tag": "v0.5.11m", "commit": "58470d7581299b459be36be95ba93cf9c1598384"}
+     ]},
+    {"shape": "r0512", "fixture": "schema-7996d35963a0.sql", "sha256": "7996d35963a0eb882e339ea410058452ba9aadc653399edaa3b51858c4fec1f7",
+     "releases": [
+       {"tag": "v0.5.12m", "commit": "450c877f91024fecd2f2023363db1d44cafd7fbc"}
+     ]}
+  ],
+  "current": {
+    "schema_sql_sha256": "951f3d0c88597f494b5fc1a87ca6694daa9d35e490d3f131d4fb36a2f49f963a",
+    "goddl_fixture": "goddl-4bfc9dbe09c3.sql",
+    "goddl_sha256": "4bfc9dbe09c30629946c5b1918d67f164de08e9dd7b9857f8aeb95b9ad875624",
+    "reference": "reference-catalog-pg16.txt",
+    "reference_sha256": "511b7806720b74403fdb24eacc7cb67e1827cad48875872465b1d9c627f9f21c"
+  }
+}

@@ -49,12 +49,12 @@ advisory while `curl` is available. No doc will say "destinations are enforced".
 
 **Out of scope.**
 - No new attack capability and no change to hunting behaviour or task completion.
-- The shell and recording-proxy egress gate (D.2; decision Q1).
+- The shell and recording-proxy egress gate (D.1 follow-up; decision Q1).
 - Live-model evaluation.
 - Defaults of `ARTEX_BOUNDED_CONTEXT`, `ARTEX_CACHE_PREFIX`, `ARTEX_COMPACTION_MEMO` and `ARTEX_WORKER_CONTEXT`
   (#1, #2, #33 stay open).
 - Any `third_party/norma` patch. The hooks exist (`agentcore.go:111-120`).
-- Guard hooks for planner and main sessions, and the `main_agent` origin (D.2; Q4, Q5).
+- Guard hooks for planner and main sessions, and the `main_agent` origin (D.1 follow-up; Q4, Q5).
 - Server-checkable goal proof, the `prove_goal` refusal and `confidence=observed` (goal-proof iteration; Q6–Q8).
 
 ## 2. Current state (verified by reading code at 43208e5)
@@ -79,7 +79,7 @@ the audit report.
 | C11 | Direct retry bypasses proxies | `webfetch.go:143-148,155-175,238-250` retries directly on `tls:`/`eof`/reset errors, which a self-signed target triggers. With capture off, the WebFetch proxy is the global egress proxy (`server/manager.go:765-777`), so the retry leaks the source IP. With capture on, the retry skips recording and the upstream global proxy (`traffic/traffic.go:213-221`). | D6 | GAP | T-WF-6, T-WF-7 | 1 |
 | C12 | Cold-digest laundering | The compressor (`agent/compaction.go:540`, prompt `:687`) has no data rule, and its output is shown as `cold_digests`. | Rule plus frames | GAP | T-DIGEST-1 | 2 |
 | C13 | NOA summaries | Named as data in `normaTrustRules`; framing not verified. | – | UNKNOWN | audit report | 2 |
-| C14 | Main agent treated as human | ToolSet origin is `"human"` (`mainagent.go:115`). Hints are stored as `human` (`tools.go:1568,1686`). Goals and hints are labelled "The human (main agent)" (`planner.go:195-205`). Constraints reach the worker system prompt (`worker.go:464`, `constraints.go:14`). | D.2 (Q5) | RESIDUAL | – | – |
+| C14 | Main agent treated as human | ToolSet origin is `"human"` (`mainagent.go:115`). Hints are stored as `human` (`tools.go:1568,1686`). Goals and hints are labelled "The human (main agent)" (`planner.go:195-205`). Constraints reach the worker system prompt (`worker.go:464`, `constraints.go:14`). | D.1 follow-up (Q5) | RESIDUAL | – | – |
 | C15 | Planner-written intent summary in the worker system prompt, unframed (`worker.go:347-349,468`) | It is the worker's assignment; the planner data rule forbids relaying data. | – | RESIDUAL | – | – |
 | C16 | RSI lessons (cross-task poisoning) | Opt-in `ARTEX_RSI_LESSONS=inject` (`server/lessons.go:26`). Flattened, capped, headed "not instructions" (`db/lessons.go:245-271`); no nonce. | – | PARTIAL / RESIDUAL | – | – |
 | C17 | MCP tools and WebSearch queries as exfil channels | Destinations are operator-trusted (SECURITY.md:49-52); argument and query text is model-chosen. | – | RESIDUAL | – | 1 (doc) |
@@ -268,10 +268,10 @@ Tails and rules are unconditional. `ARTEX_DATA_ENVELOPE=0` switches off only D3 
 mode. With capture on and no global proxy, it is kept and logged: the dial wrapper sees a non-proxy dial while a
 proxy is configured.
 
-**D7 [D.2]. Recording-proxy enforcement (UNKNOWN; decision Q1).** go-mitmproxy v1.9.2 (`go.mod:11`) carries Bash
+**D7 [D.1 follow-up]. Recording-proxy enforcement (UNKNOWN; decision Q1).** go-mitmproxy v1.9.2 (`go.mod:11`) carries Bash
 traffic when capture is on. ARTEX uses `SetUpstreamProxy` (`traffic/traffic.go:221`) and the addon
 `Response`/`RequestError` hooks (`:392,403`). Whether a request-phase addon can short-circuit a request is UNKNOWN,
-because the module source is not on this host. This is the first D.2 item, starting with a spike.
+because the module source is not on this host. This is the first D.1 follow-up item, starting with a spike.
 
 ## 5. Tasks (vertical slices; red tests first)
 
@@ -353,7 +353,7 @@ ignores injected text. They do not cover Bash, MCP or WebSearch egress, or resol
 | PR | Risk | Mitigation / acceptance |
 |---|---|---|
 | 1 | A lab target is blocked | Narrow denylist; loopback lab test |
-| 1 | Bash/curl/MCP/WebSearch bypass | **Accepted residual**; D.2 (D7) |
+| 1 | Bash/curl/MCP/WebSearch bypass | **Accepted residual**; D.1 follow-up (D7) |
 | 1 | Rebinding inside an env or remote proxy | **Accepted residual**; stated in docs |
 | 1 | Fetches through a global proxy fail without a direct fallback | Intended: no source-IP leak |
 | 1 | Templated-host http tools with operator headers refused in chat or without allow rules | Intended; error explains the needed task allow rule; documented |
@@ -439,11 +439,11 @@ the S4/S5 security review and the docs.
 
 | Q | Question | Decision |
 |---|---|---|
-| Q1 | D.2 scope for shell and captured-traffic egress | A go-mitmproxy addon spike first (D7); the upstream target gate (`f6b29b8`/`1c3a5f4`) only if the proxy route fails; planned at deep tier |
+| Q1 | D.1 follow-up scope for shell and captured-traffic egress | A go-mitmproxy addon spike first (D7); the upstream target gate (`f6b29b8`/`1c3a5f4`) only if the proxy route fails; planned at deep tier |
 | Q2 | Denylist breadth | Metadata ranges plus ARTEX's own ports only (§4 D1); other loopback and private allowed |
 | Q3 | Direct retry with capture on and no global proxy | Kept and logged; disabled whenever a global proxy is configured |
-| Q4 | Guard hooks on planner and main sessions | Deferred to D.2 |
-| Q5 | `main_agent` origin instead of `human` | Deferred to D.2 (data/UI note) |
+| Q4 | Guard hooks on planner and main sessions | Deferred to a D.1 follow-up |
+| Q5 | `main_agent` origin instead of `human` | Deferred to a D.1 follow-up (data/UI note) |
 | Q6 | Server-checkable goal proof (retest "reproduced" or operator confirmation) | Separate goal-proof iteration |
 | Q7 | `confidence=observed` rule for `prove_goal` | In the goal-proof iteration |
 | Q8 | `prove_goal` refusal of `target_response` facts | Moved out of D.1 to the goal-proof iteration. D.1 keeps the `source` enum, `origin`/`source` display, the `operator_input` refusal and the schema refresh. Task completion does not change |

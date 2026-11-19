@@ -1,2 +1,5 @@
 *.bat text eol=crlf
 *.sh  text eol=lf
+# Schema bytes are hashed by the upgrade tests (db/upgrade_fixture_test.go): never convert line endings.
+db/schema.sql -text
+db/testdata/upgrade/** -text

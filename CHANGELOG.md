@@ -190,6 +190,26 @@ All notable changes to this project are documented in this file. The format is b
   These measures are advisory to the model and do not prevent prompt injection; known
   gaps are in `SECURITY.md`, "Known limits".
 
+### Tests and CI
+
+- **Schema upgrade validation (Phase D.2 stage 1; no runtime change).** Recorded `db/schema.sql`
+  fixtures for releases 0.5.9m to 0.5.12m, a synthetic legacy shape, and tests on temporary
+  PostgreSQL 16 databases: fresh database against a committed reference catalog, upgrade matrix
+  with an expected-changes file, convergence, repeated startup, atomic schema apply, advisory-lock
+  coordination, task archive round trip and column guard, and startup writers run twice. A
+  schema-change gate pins `db/schema.sql`, the Go DDL and the reference by hash. New:
+  `scripts/upgrade-gate.sh` (fails on a skipped or missing upgrade test) and a CI step that runs
+  it, plus `.gitattributes` rules that keep the hashed files byte-exact. Refers to #24 and does
+  not close it: there are still no versioned migrations, migration order or checksums. The
+  suite was exercised by a real schema change, `findings.ticket_id` (see above): it needed
+  a regenerated reference (one line), three pinned hashes, six expected-changes entries and one
+  archive restore default. See `docs/schema-upgrade.md` and
+  `docs/adr/0003-schema-upgrade-validation.md`.
+- **Database tests read the database only from `ARTEX_PG_DSN`.** A test binary never uses the
+  config file. With the variable unset, the existing database tests skip and the upgrade tests
+  fail. Developers who ran `go test` against the database named in `config.json` must now set
+  the variable to a test server.
+
 ## [0.5.0] - 2026-11-04
 
 Ollama support, a setup token for the first-run claim, secret scrubbing for child processes, a Docker image that builds from a fresh clone, Go 1.26.10 and Node 22, and race and shellcheck runs in CI. Entries marked "direct commit" landed on `main` without a pull request.
