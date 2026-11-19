@@ -491,18 +491,28 @@ The check refuses to run unless the server holds only `template0`, `template1`, 
 
 ### Rollback rehearsal
 
-The dry run for stage 2 also rehearses the way back, with the **published 0.5.13m binary**, on the same copy (the
-test `TestUpgradeRollbackToTheReleaseWithoutTheLedgerAndForward` only simulates that binary):
+The dry run for stage 2 also rehearses the way back with the **published 0.5.13m binary** on the same copy (the test
+`TestUpgradeRollbackToTheReleaseWithoutTheLedgerAndForward` only simulates that binary). Steps:
 
-1. After the dry run, the copy holds the ledger. Stop the check, and point the published 0.5.13m binary at the copy
-   with a config of its own. It must start and serve.
-2. Stop it. Run the cleanup SQL (see "Rollback") on the copy, and check with
-   `psql -c '\dt schema_migrations'` that the table is gone.
-3. Start the binary under test again. The log must show `[migrate] ledger absent: adopting baseline (4)` and then
-   `[migrate] up to date`.
-4. Remove the container, the volume and the dump copy as above.
+1. Run the dry run (above). The copy now holds the ledger.
+2. Start the published 0.5.13m binary against the copy: the release archive, checked against its `SHA256SUMS`, in a
+   container on an internal network where only the database container is reachable, with its own data directory.
+   Stop it as soon as it logs that it is listening: its start-up writes to the database and it would resume tasks.
+3. Run the dry run again. The log must show `[migrate] up to date` and the report no change.
+4. Remove the containers, the volume, the network and the dump copy.
 
-Result: to be filled in from the rehearsal log.
+Result (2026-11-19, one database older than 0.5.12m, 51 tables, restored into a dedicated local container):
+
+| Step | Ledger | Change in the database |
+|---|---|---|
+| after the restore | absent | |
+| 1. dry run with this release | `0001 0002 0003 5001` | seven tables added: six missing tables with no rows, and `schema_migrations` with four rows; no row count changed in any existing table; catalog equal to the reference; adoption took about 0.1 s |
+| 2. published 0.5.13m binary | unchanged | it started, loaded its tasks and listened; its own start-up added 3 rows to `server_logs`, 1 to `settings` and 4 to `tools` |
+| 3. dry run with this release again | unchanged | `[migrate] up to date`; no row count changed |
+
+So going back to 0.5.13m needs no step, and coming forward again is clean. Limits: row counts and the catalog were
+compared, not row values; one database; the old binary ran for a few seconds only. The cleanup SQL was not part of
+this rehearsal; it is covered by tests on recorded shapes.
 
 ## What is still missing
 
