@@ -136,6 +136,14 @@ func TestDryRunRestoredCopy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Every start deletes the prompt variables that were renamed away (db/db.go, "cleanup
+	// renamed vars"). That deletion is intended, so the rows present before startup are
+	// counted and exactly that many may disappear from agent_prompt_vars; nothing else may.
+	var obsoleteVars int64
+	if err := conn.QueryRowContext(ctx,
+		`SELECT count(*) FROM agent_prompt_vars WHERE var_name IN ('EngagementTitle', 'CoverageGaps', 'Now')`).Scan(&obsoleteVars); err != nil {
+		t.Fatalf("count obsolete prompt variables: %s", dbtest.AtomicErrorSummary(err))
+	}
 	startup(t, dsn)
 	afterFirst, err := dbtest.RowCounts(ctx, conn)
 	if err != nil {
@@ -159,8 +167,16 @@ func TestDryRunRestoredCopy(t *testing.T) {
 	text := report.String()
 	dbtest.AssertNoSecret(t, "dry-run report", text)
 	t.Log("\n" + text)
-	if removed := report.RemovedRows(); len(removed) > 0 {
-		t.Errorf("startup removed rows from: %s", strings.Join(removed, ", "))
+	var unexpected []string
+	for _, table := range report.RemovedRows() {
+		if table == "agent_prompt_vars" && before[table]-afterSecond[table] == obsoleteVars {
+			t.Logf("expected: startup removed %d obsolete prompt variable row(s) from agent_prompt_vars", obsoleteVars)
+			continue
+		}
+		unexpected = append(unexpected, table)
+	}
+	if len(unexpected) > 0 {
+		t.Errorf("startup removed rows from: %s", strings.Join(unexpected, ", "))
 	}
 	if d := dbtest.DiffMaps(afterFirst, afterSecond); len(d) > 0 {
 		t.Errorf("the second startup changed row counts: %s", strings.Join(d, ", "))

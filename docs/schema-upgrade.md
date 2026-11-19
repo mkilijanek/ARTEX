@@ -171,8 +171,9 @@ Other facts that the runs established and that an operator may notice:
 `TestDryRunRestoredCopy` runs startup twice on a copy of a real database and prints a report with row counts per
 table before and after and the catalog differences against the reference **by object name**. It prints no row value.
 It is not part of the gate: it needs its own server and does nothing unless `ARTEX_UPGRADECHECK_DSN` is set. It
-fails if startup removes rows from a table (the three obsolete `agent_prompt_vars` rows are deleted by every start, so
-a database that has run a recent release no longer has them) or if the second start changes a row count.
+fails if startup removes rows from a table or if the second start changes a row count. One removal is expected and
+reported as such: the obsolete prompt variables (`EngagementTitle`, `CoverageGaps`, `Now`) that every start deletes
+from `agent_prompt_vars`; exactly the rows present before startup may disappear.
 
 The check refuses to run unless the server holds only `template0`, `template1`, `postgres` and databases named
 `*_upgradecheck`, so it cannot be pointed at a shared server.
@@ -199,7 +200,8 @@ The check refuses to run unless the server holds only `template0`, `template1`, 
    gunzip -c backups/artex-db-<timestamp>.sql.gz | docker exec -i artex-upgradecheck \
      psql -U artex -d restored_upgradecheck -v ON_ERROR_STOP=1
    ```
-5. Run the check from a checkout of the commit under test (Go installed):
+5. Run the check from a checkout of the commit under test (Go installed; from a container instead, put it on the
+   same Docker network and use the container name and port 5432 in the address):
    ```bash
    ARTEX_UPGRADECHECK_DSN='postgres://artex:CHOOSE-A-PASSWORD@127.0.0.1:55432/restored_upgradecheck?sslmode=disable' \
      go test ./db -run TestDryRunRestoredCopy -v -count=1
