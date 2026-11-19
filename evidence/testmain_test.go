@@ -6,11 +6,15 @@ import (
 	"testing"
 
 	"github.com/mkilijanek/artex/db"
+	"github.com/mkilijanek/artex/db/dbtest"
 )
 
 // Initialize an explicitly configured fresh database before taking the same
 // suite lock as db, agent and server. Hold it on one pinned connection.
 func TestMain(m *testing.M) {
+	// Backlog B-1: no test of this package may reach a database named in the config
+	// file; they read ARTEX_PG_DSN only, and this keeps it that way.
+	dbtest.MustIsolateFromConfigFile()
 	// Own database per package (#80): stop contending on the shared tables of
 	// a single test database during parallel ./... runs.
 	db.SuffixTestDatabase("evidence")

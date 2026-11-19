@@ -7,12 +7,16 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/mkilijanek/artex/db"
+	"github.com/mkilijanek/artex/db/dbtest"
 )
 
 // TestMain acquires a PostgreSQL advisory lock (7337741002) for the entire
 // agent test suite so cross-package DELETE cleanup races with db/server
 // packages are avoided when running `go test ./...`.
 func TestMain(m *testing.M) {
+	// Backlog B-1: with ARTEX_PG_DSN unset, db.DSN() would fall back to the config
+	// file, which names the operator's own database. Tests must never use it.
+	dbtest.MustIsolateFromConfigFile()
 	// Own database per package (#80): with separate databases, packages stop
 	// contending on shared tables and the advisory lock below stops
 	// serializing go test ./... across packages.
