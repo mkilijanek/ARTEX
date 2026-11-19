@@ -83,3 +83,19 @@ func normalizeArchivedFindingVersions(raw json.RawMessage) (json.RawMessage, err
 	}
 	return json.Marshal(rows)
 }
+
+// normalizeArchivedFindingTicketIDs gives archived findings without a ticket_id
+// (archives written before the column existed) the empty default:
+// json_populate_recordset would otherwise insert NULL into a NOT NULL column.
+func normalizeArchivedFindingTicketIDs(raw json.RawMessage) (json.RawMessage, error) {
+	rows, err := decodeArchiveRows(raw)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		if row["ticket_id"] == nil {
+			row["ticket_id"] = ""
+		}
+	}
+	return json.Marshal(rows)
+}

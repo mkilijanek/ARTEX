@@ -240,6 +240,10 @@ WHERE archive.id=$1 FOR UPDATE OF archive,task`, archiveID).Scan(&taskID, &expID
 	if err != nil {
 		return nil, err
 	}
+	remappedTables["findings"], err = normalizeArchivedFindingTicketIDs(remappedTables["findings"])
+	if err != nil {
+		return nil, err
+	}
 	// Insert graph rows in foreign-key order. The archived stub has no graph rows,
 	// so an ID conflict signals external corruption and must stop the restore.
 	for _, table := range []string{"exploration_nodes", "exploration_edges", "exploration_anchors", "task_constraints", "activity"} {
