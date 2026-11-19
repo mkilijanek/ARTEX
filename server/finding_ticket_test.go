@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	actool "github.com/Autumn-27/norma/tool"
+	"github.com/mkilijanek/artex/db/dbtest"
 	"github.com/mkilijanek/artex/intercept"
 )
 
@@ -163,7 +164,7 @@ func TestPatchFindingTicketIDStoresAndReturns(t *testing.T) {
 
 func TestPatchFindingTicketIDRejectsInvalidValues(t *testing.T) {
 	a := newTicketAPI(t)
-	logs := captureLog(t)
+	logs := dbtest.CaptureLog(t)
 	if w := a.patchTicket("KEEP-1"); w.Code != 200 {
 		t.Fatal(w.Code, w.Body)
 	}
@@ -198,8 +199,8 @@ func TestPatchFindingTicketIDRejectsInvalidValues(t *testing.T) {
 	if a.stored() != "KEEP-1" {
 		t.Fatalf("stored value changed to %q", a.stored())
 	}
-	if strings.Contains(logs.String(), canary) {
-		t.Fatalf("the log contains the rejected value: %q", logs)
+	if strings.Contains(logs(), canary) {
+		t.Fatalf("the log contains the rejected value: %q", logs())
 	}
 
 	// An invalid ticket id next to a valid status must not apply the status.
