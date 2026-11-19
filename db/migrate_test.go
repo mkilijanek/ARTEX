@@ -1022,9 +1022,31 @@ func TestMigrationFailureErrorAndLogsAreContentFree(t *testing.T) {
 
 // ---- the Ensure wrappers ----
 
-// On a database with only schema.sql applied, the wrappers create both tables with every fork
-// column and index (EnsureLLMUsageTable runs 0002 and 5001).
+// AC18: on a database with only schema.sql applied, the wrappers produce the full fork shape of
+// llm_records and llm_usage (every column, including the 14 fork columns of llm_usage, and every
+// index), equal to what a full Open produces for those two tables. The comparison is over the
+// catalog lines (kind, name, hash of the definition) of every object that belongs to the two
+// tables; the wrappers write no ledger row.
 func TestEnsureWrappersRunEmbeddedMigrations(t *testing.T) {
+	llmLines := func(t *testing.T, tmp *dbtest.Temp, q dbtest.Queryer) []string {
+		t.Helper()
+		var picked []dbtest.Entry
+		for _, e := range tmp.Catalog(t, q) {
+			if strings.Contains(e.Name, "llm_records") || strings.Contains(e.Name, "llm_usage") {
+				picked = append(picked, e)
+			}
+		}
+		return dbtest.Lines(picked)
+	}
+
+	full := migrationTemp(t, "wrappers_full")
+	fd, err := Open(full.DSN)
+	if err != nil {
+		t.Fatalf("Open failed (%s)", dbtest.AtomicErrorSummary(err))
+	}
+	t.Cleanup(func() { fd.Close() })
+	want := llmLines(t, full, fd.DB)
+
 	tmp := migrationTemp(t, "wrappers")
 	tmp.Load(t, "schema.sql", schemaSQL)
 	d := &DB{tmp.Conn(t)}
@@ -1034,17 +1056,26 @@ func TestEnsureWrappersRunEmbeddedMigrations(t *testing.T) {
 	if err := d.EnsureLLMUsageTable(); err != nil {
 		t.Fatalf("EnsureLLMUsageTable failed (%s)", dbtest.AtomicErrorSummary(err))
 	}
-	var cols, idx int
-	if err := d.QueryRow(`SELECT count(*) FROM information_schema.columns WHERE table_name = 'llm_usage' AND column_name IN
-		('provider','intent_id','attempt','reason','request_bytes','system_bytes','message_bytes','tool_schema_bytes','tool_result_bytes','size_known','call_id','round_no','purpose','tool_bytes')`).Scan(&cols); err != nil {
-		t.Fatal(err)
+	got := llmLines(t, tmp, d.DB)
+
+	// Guard against an empty comparison: the shape must contain the 14 fork columns and the five
+	// llm_usage indexes by name.
+	forkColumns := []string{"provider", "intent_id", "attempt", "reason", "request_bytes", "system_bytes", "message_bytes",
+		"tool_schema_bytes", "tool_result_bytes", "size_known", "call_id", "round_no", "purpose", "tool_bytes"}
+	joined := "\n" + strings.Join(want, "\n")
+	for _, c := range forkColumns {
+		if !strings.Contains(joined, "column llm_usage."+c+" ") {
+			t.Errorf("the full Open shape has no column llm_usage.%s", c)
+		}
 	}
-	if err := d.QueryRow(`SELECT count(*) FROM pg_indexes WHERE tablename = 'llm_usage' AND indexname IN
-		('idx_llm_usage_call','idx_llm_usage_purpose','idx_llm_usage_task','idx_llm_usage_model','idx_llm_usage_exp')`).Scan(&idx); err != nil {
-		t.Fatal(err)
+	for _, i := range []string{"idx_llm_usage_call", "idx_llm_usage_purpose", "idx_llm_usage_task", "idx_llm_usage_model", "idx_llm_usage_exp",
+		"idx_llm_records_ts", "idx_llm_records_session"} {
+		if !strings.Contains(joined, i+" ") {
+			t.Errorf("the full Open shape has no index %s", i)
+		}
 	}
-	if cols != 14 || idx != 5 {
-		t.Errorf("llm_usage has %d of 14 fork columns and %d of 5 indexes", cols, idx)
+	if diff := dbtest.DiffLines(want, got); len(diff) > 0 {
+		t.Errorf("the wrappers do not produce the shape of a full Open:\n%s", strings.Join(diff, "\n"))
 	}
 	if migrationTableExists(t, d.DB, "schema_migrations") {
 		t.Error("the wrappers must not write a ledger")

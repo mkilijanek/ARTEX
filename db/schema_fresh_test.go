@@ -11,7 +11,8 @@ import (
 )
 
 // startup is what a running server does to the schema, in order: Open (schema.sql and
-// seedBuiltins) and the two Go DDL steps of server/manager.go:392-397. It never skips:
+// seedBuiltins; the llm tables come from the embedded migrations) and the two Ensure wrapper
+// calls, which re-run those migrations and keep the tests that call them valid. It never skips:
 // a database that cannot be opened is a failure. An error is reported through
 // dbtest.AtomicErrorSummary (SQLSTATE and object names, a fixed text for a connection
 // error): a PostgreSQL message can quote the row that violated a constraint, which matters
@@ -122,14 +123,14 @@ const referenceHeader = `# ARTEX schema reference catalog, PostgreSQL 16 only (d
 #   ARTEX_UPGRADE_REGENERATE=1 go test ./db -run TestRegenerateUpgradeReference
 `
 
-// TestRegenerateUpgradeReference rewrites the goddl fixture and the reference catalog from
-// the current code, on the PostgreSQL server of ARTEX_PG_DSN, and prints the sha256
-// values to put into schema_gate_test.go and manifest.json. It does nothing unless
+// TestRegenerateUpgradeReference rewrites the reference catalog from the current code, on the
+// PostgreSQL server of ARTEX_PG_DSN, and prints the sha256 values to put into
+// schema_gate_test.go and manifest.json. The historical Go DDL fixture is never regenerated. It does nothing unless
 // ARTEX_UPGRADE_REGENERATE=1; its name does not start with TestUpgrade, so the skip
 // gate does not count it.
 func TestRegenerateUpgradeReference(t *testing.T) {
 	if os.Getenv("ARTEX_UPGRADE_REGENERATE") != "1" {
-		t.Skip("set ARTEX_UPGRADE_REGENERATE=1 to regenerate the goddl fixture and the reference catalog")
+		t.Skip("set ARTEX_UPGRADE_REGENERATE=1 to regenerate the reference catalog")
 	}
 	srv := dbtest.RequireServer(t)
 	tmp := dbtest.TempDatabase(t, srv, "regen")
@@ -141,14 +142,9 @@ func TestRegenerateUpgradeReference(t *testing.T) {
 	for _, l := range dbtest.Lines(entries) {
 		b.WriteString(l + "\n")
 	}
-	goddl := goDDLText()
-	goddlName := "goddl-" + sha256Hex([]byte(goddl))[:12] + ".sql"
-	for name, content := range map[string]string{referenceFile: b.String(), goddlName: goddl} {
-		if err := os.WriteFile(filepath.Join(upgradeDir, name), []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
+	if err := os.WriteFile(filepath.Join(upgradeDir, referenceFile), []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
 	}
 	t.Logf("schema.sql   sha256 %s", sha256Hex([]byte(schemaSQL)))
-	t.Logf("goddl        sha256 %s  (%s)", sha256Hex([]byte(goddl)), goddlName)
 	t.Logf("reference    sha256 %s  (%s, %d objects)", sha256Hex([]byte(b.String())), referenceFile, len(entries))
 }

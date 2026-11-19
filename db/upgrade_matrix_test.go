@@ -67,14 +67,27 @@ func recordedSchemaFile(t *testing.T, shape string) string {
 	return ""
 }
 
+// recordedGoDDLFile is the historical Go DDL fixture of a recorded shape: old releases created the
+// llm tables with it, not with migrations.
+func recordedGoDDLFile(t *testing.T, shape string) string {
+	t.Helper()
+	for _, s := range recordedShapes {
+		if s.shape == shape {
+			return s.goddl
+		}
+	}
+	t.Fatalf("no recorded shape %q", shape)
+	return ""
+}
+
 // buildShape creates the temporary database of a shape and loads, in this order, the
-// recorded schema, the Go DDL (llm_records, llm_usage), the legacy mutations when the shape
+// recorded schema, the historical Go DDL (llm_records, llm_usage), the legacy mutations when the shape
 // has them, and the data fixture. It is the state of a database a release left behind.
 func buildShape(t *testing.T, srv *dbtest.Server, sh matrixShape) *dbtest.Temp {
 	t.Helper()
 	tmp := dbtest.TempDatabase(t, srv, "mx_"+sh.name)
 	tmp.Load(t, "schema fixture of "+sh.name, readUpgradeFile(t, recordedSchemaFile(t, sh.recorded)))
-	tmp.Load(t, "Go DDL fixture", readUpgradeFile(t, readManifest(t).Current.GoDDLFixture))
+	tmp.Load(t, "Go DDL fixture of "+sh.recorded, readUpgradeFile(t, recordedGoDDLFile(t, sh.recorded)))
 	if sh.mutations != "" {
 		tmp.Load(t, sh.mutations, readUpgradeFile(t, sh.mutations))
 	}

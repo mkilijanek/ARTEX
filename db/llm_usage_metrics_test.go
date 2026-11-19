@@ -38,8 +38,9 @@ func TestUsageMetricsLegacySchemaIsAdditiveAndRepeatable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	usageDDL := embeddedLLMDDL(t, migrationLLMUsage, migrationLLMUsageFork)
 	for range 2 {
-		if _, err = tx.Exec(llmUsageSchema); err != nil {
+		if _, err = tx.Exec(usageDDL); err != nil {
 			t.Fatal(err)
 		}
 	}

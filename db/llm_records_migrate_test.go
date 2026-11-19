@@ -1,12 +1,30 @@
 package db
 
 import (
+	"io/fs"
+	"strings"
 	"testing"
 )
 
+// embeddedLLMDDL is the text of the named embedded migration files, in the order given. The tests
+// that used the Go DDL constants read the migration files instead (they are what Open runs).
+func embeddedLLMDDL(t testing.TB, names ...string) string {
+	t.Helper()
+	var b strings.Builder
+	for _, name := range names {
+		content, err := fs.ReadFile(embeddedMigrations(), name)
+		if err != nil {
+			t.Fatalf("read embedded migration %s: %v", name, err)
+		}
+		b.Write(content)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
 // The raw-body columns were added after release, so existing installs only get
-// them through llmRecordsMigrate. This runs the real migration against the dev
-// PG on a table stripped back to its pre-upgrade shape, inside a transaction
+// them through the ALTER statements of migration 0001. This runs that embedded file against the
+// dev PG on a table stripped back to its pre-upgrade shape, inside a transaction
 // that is always rolled back — PG does transactional DDL, so nothing persists.
 func TestLLMRecordsMigrateAddsRawColumnsToOldTable(t *testing.T) {
 	d, err := Open(testDSN(t))
@@ -28,7 +46,7 @@ func TestLLMRecordsMigrateAddsRawColumnsToOldTable(t *testing.T) {
 	if _, err := tx.Exec(`ALTER TABLE llm_records DROP COLUMN IF EXISTS raw_request, DROP COLUMN IF EXISTS raw_response`); err != nil {
 		t.Fatalf("simulate old table: %v", err)
 	}
-	if _, err := tx.Exec(llmRecordsMigrate); err != nil {
+	if _, err := tx.Exec(embeddedLLMDDL(t, migrationLLMRecords)); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 
@@ -45,7 +63,7 @@ func TestLLMRecordsMigrateAddsRawColumnsToOldTable(t *testing.T) {
 	}
 
 	// Re-running must stay a no-op (the migration runs on every startup).
-	if _, err := tx.Exec(llmRecordsMigrate); err != nil {
+	if _, err := tx.Exec(embeddedLLMDDL(t, migrationLLMRecords)); err != nil {
 		t.Fatalf("migrate is not idempotent: %v", err)
 	}
 
