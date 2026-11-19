@@ -163,6 +163,15 @@ ledger then come from the same moment, and the pending migrations run once. A pa
 and manual edits of `schema_migrations` are **unsupported**: the ledger would no longer describe the data, and a
 migration could run twice or be skipped.
 
+**Check the database name after a restore.** If the DSN names a database that does not exist on the server, ARTEX
+creates it and starts as a fresh installation: an empty schema, a new ledger, the first-run setup. It does not
+refuse. This is older behaviour, not new in this release, but after a restore into a database with another name it
+looks like data loss. If the console asks for first-run setup after an upgrade or a restore, stop and compare the
+database name in `ARTEX_PG_DSN` (or `POSTGRES_DB` with Docker Compose) with the one you restored into.
+
+With Docker Compose, `ARTEX_SCHEMA_ALLOW_NEWER` is read from `.env` and passed to the container by
+`docker-compose.yml`; an empty value means it is not set.
+
 ## What the validation covers
 
 Starting points ("shapes"), each loaded into a temporary PostgreSQL 16 database with a data
