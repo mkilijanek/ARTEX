@@ -27,13 +27,23 @@ const EnvConfig = "ARTEX_CONFIG"
 // configuration, db.DSN() fails with "no database config", and the tests that need
 // PostgreSQL skip exactly as they do on a host with no configuration at all.
 //
+// The file lies in a private directory (os.MkdirTemp, mode 0700) made for this process, so
+// that no other user of the machine can create the file first and plant a configuration
+// there; the shared temporary directory holds no fixed path. The empty directory stays
+// until the temporary directory is cleaned: a TestMain ends in os.Exit, which leaves no
+// place for a cleanup that every package shares.
+//
 // It overrides ARTEX_CONFIG even when the variable is set: a developer's own
 // config file is exactly what the tests must not read. Tests that need a config
 // file set ARTEX_CONFIG themselves with t.Setenv.
 func MustIsolateFromConfigFile() {
-	path := filepath.Join(os.TempDir(), "artex-tests-no-config", "config.json")
+	dir, err := os.MkdirTemp("", "artex-tests-no-config-")
+	if err != nil {
+		panic(fmt.Sprintf("dbtest: private directory for %s: %v", EnvConfig, err))
+	}
+	path := filepath.Join(dir, "config.json")
 	if _, err := os.Stat(path); err == nil {
-		panic(fmt.Sprintf("dbtest: %s exists; remove it, tests rely on it being absent", path))
+		panic(fmt.Sprintf("dbtest: %s exists in a directory made just now", path))
 	} else if !errors.Is(err, os.ErrNotExist) {
 		panic(fmt.Sprintf("dbtest: stat %s: %v", path, err))
 	}

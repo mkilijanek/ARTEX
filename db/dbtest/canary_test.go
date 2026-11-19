@@ -27,6 +27,23 @@ func TestUpgradeCanaryDetectionNamesTheKindNeverTheText(t *testing.T) {
 	}
 }
 
+func TestUpgradeRegisteredSecretIsDetectedUntilRemoved(t *testing.T) {
+	remove, err := RegisterSecret("test secret", "0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kind, found := FindSecret("a log line with 0123456789abcdef in it"); !found || kind != "test secret" {
+		t.Errorf("FindSecret = %q, %v; want the registered kind", kind, found)
+	}
+	remove()
+	if kind, found := FindSecret("a log line with 0123456789abcdef in it"); found {
+		t.Errorf("a removed secret is still reported as %s", kind)
+	}
+	if _, err := RegisterSecret("short", "abc"); err == nil {
+		t.Error("a secret shorter than the minimum was registered")
+	}
+}
+
 func TestUpgradeShortServerPasswordIsNotMatchedAgainstOrdinaryText(t *testing.T) {
 	t.Setenv(EnvDSN, "postgres://upg:pw@db.invalid/artextest_dbtest")
 	if _, found := FindSecret("the pw column"); found {

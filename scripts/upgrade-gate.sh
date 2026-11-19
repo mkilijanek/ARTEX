@@ -12,18 +12,25 @@
 #   ARTEX_PG_DSN=postgres://USER:PASS@HOST:5432/DB?sslmode=disable scripts/upgrade-gate.sh
 #
 # ARTEX_PG_DSN must name a PostgreSQL 16 test server: the tests create and drop
-# temporary databases named <DB>_<package>_upg_<case> on it and nowhere else.
+# temporary databases named <DB>_<package>_upg_<case> on it and nowhere else, and
+# create and drop canary roles named <DB>_<package>_upgrole_<8 hex>.
+# One run per base database at a time: the temporary database names are stable (the
+# leftover check finds them by prefix) and a test drops a database of its name before it
+# creates it, so two runs on one server and one <DB> destroy each other's databases.
+# Give a second run its own <DB>.
 # UPGRADE_GATE_REQUIRE_GIT=1 turns a missing git history into a failure (hosted CI
 # sets it, with a full-depth checkout); without it the comparison is reported as
 # NOT RUN where there is no .git.
 #
-# The summary prints counts and test names only, no row content, no DSN.
+# The summary prints counts and test names only, no row content, no DSN. The output of a
+# failed run is echoed only when it holds no canary marker (see echo_failing_output).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# Count of the tests selected by PATTERN at the time of the merge. Raise it with the
-# tests, never lower it to make the gate pass.
-MIN_UPGRADE_TESTS=40
+# Count of the top-level tests selected by PATTERN after the D.2 fix round, from a run with
+# -v: 82 (./db 29, ./db/dbtest 48, ./agent 1, ./server 4). Raise it with the tests, never
+# lower it to make the gate pass.
+MIN_UPGRADE_TESTS=82
 PATTERN='^(TestUpgrade|TestConfigFileDSNIsNotUsed)'
 PACKAGES=(./db ./db/dbtest ./agent ./server)
 
@@ -38,6 +45,23 @@ trap 'rm -f "$out"' EXIT
 # test2json events are one JSON object per line: Time, Action, Package, Test, ...
 count() { grep -cE "$1" "$out" || true; }
 
+# The fixed canary strings of db/dbtest/canary.go. A test that leaked one into its output
+# would print it again if this script echoed that output: when one is found, a fixed
+# message replaces the echo. (A random per-run secret is checked inside the tests.)
+CANARY_PATTERN='CANARY-D2-(ROW|PW)'
+
+# echo_failing_output prints the output events of "$out" to stderr, unless they hold a canary
+# marker or the password of ARTEX_PG_DSN.
+echo_failing_output() {
+  local pw
+  pw="$(printf '%s' "$ARTEX_PG_DSN" | sed -n 's#^[a-z]*://[^:/@]*:\([^@]*\)@.*$#\1#p')"
+  if grep -qE "$CANARY_PATTERN" "$out" || { [ "${#pw}" -ge 8 ] && grep -qF -- "$pw" "$out"; }; then
+    echo "upgrade-gate: output withheld: it contains a canary marker or the server password (a test leaked it); rerun the failing test by hand" >&2
+    return 0
+  fi
+  grep -E '"Action":"output"' "$out" | sed -e 's/^.*"Output":"//' -e 's/"}$//' -e 's/\\n$//' -e 's/\\t/\t/g' -e 's/\\"/"/g' >&2 || true
+}
+
 status=0
 go test -json -count=1 -p 1 -run "$PATTERN" "${PACKAGES[@]}" >"$out" || status=$?
 
@@ -49,7 +73,7 @@ echo "upgrade-gate: tests passed=$passed skipped=$skipped failed=$failed (minimu
 problem=0
 if [ "$status" -ne 0 ]; then
   echo "upgrade-gate: FAIL: go test exited $status; failing output follows" >&2
-  grep -E '"Action":"output"' "$out" | sed -e 's/^.*"Output":"//' -e 's/"}$//' -e 's/\\n$//' -e 's/\\t/\t/g' -e 's/\\"/"/g' >&2 || true
+  echo_failing_output
   problem=1
 fi
 if [ "$skipped" -ne 0 ]; then
@@ -68,7 +92,7 @@ git_status=0
 go test -json -count=1 -run '^TestGitHistoryFixtures$' ./db >"$out" || git_status=$?
 if [ "$git_status" -ne 0 ]; then
   echo "upgrade-gate: FAIL: fixtures differ from git history, or the history is missing (go test exit $git_status)" >&2
-  grep -E '"Action":"output"' "$out" | sed -e 's/^.*"Output":"//' -e 's/"}$//' -e 's/\\n$//' -e 's/\\t/\t/g' -e 's/\\"/"/g' >&2 || true
+  echo_failing_output
   exit 1
 fi
 if [ "$(count '"Action":"skip","Package":"[^"]*","Test":"TestGitHistoryFixtures"')" -ne 0 ]; then

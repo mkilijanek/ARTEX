@@ -65,6 +65,37 @@ func TestUpgradeGuardRefusesNameWithoutPackageSuffix(t *testing.T) {
 	}
 }
 
+// The base name becomes part of CREATE/DROP statements and of role names: a name outside
+// [a-z0-9_] is refused, whatever its suffix.
+func TestUpgradeGuardRefusesABaseDatabaseNameOutsideLowerCaseDigitsAndUnderscore(t *testing.T) {
+	for _, base := range []string{
+		"postgres://upg:" + PasswordCanary + "@db.invalid/Artextest_db?sslmode=disable",
+		"postgres://upg:" + PasswordCanary + "@db.invalid/artex-test_db?sslmode=disable",
+		"postgres://upg:" + PasswordCanary + "@db.invalid/artex%22test_db?sslmode=disable",
+		"postgres://upg:" + PasswordCanary + "@db.invalid/artex%20test_db?sslmode=disable",
+		"host=db.invalid user=upg password=" + PasswordCanary + ` dbname='artex"test_db'`,
+		"host=db.invalid user=upg password=" + PasswordCanary + ` dbname='artex;test_db'`,
+	} {
+		t.Setenv(EnvDSN, base)
+		for _, target := range []string{"", "x_upg_case1"} {
+			mustRefuse(t, Guard(OpConnect, base, target), "[a-z0-9_] only")
+		}
+		if _, err := FromEnv(); err == nil {
+			t.Errorf("FromEnv accepted a base database name outside [a-z0-9_]")
+		}
+	}
+	t.Setenv(EnvDSN, urlBase)
+	if err := Guard(OpConnect, urlBase, ""); err != nil {
+		t.Fatalf("a base name of [a-z0-9_] was refused: %v", err)
+	}
+}
+
+func TestUpgradeIdentifierQuotingDoublesQuotes(t *testing.T) {
+	if got := quoteIdent(`a"b`); got != `"a""b"` {
+		t.Fatalf("quoteIdent = %s", got)
+	}
+}
+
 func TestUpgradeGuardRefusesTargetWithoutMarkerOrBase(t *testing.T) {
 	t.Setenv(EnvDSN, urlBase)
 	for _, target := range []string{
@@ -143,6 +174,29 @@ func TestUpgradeGuardRefusesUnparseableDSNWithoutEchoingIt(t *testing.T) {
 	bad := "postgres://upg:" + PasswordCanary + "@db.invalid:notaport/artextest_db"
 	t.Setenv(EnvDSN, bad)
 	mustRefuse(t, Guard(OpCreate, bad, "artextest_db_upg_x"), "parse")
+}
+
+// A role this package did not name is never dropped, and the refusal comes before any
+// connection (the server below does not exist).
+func TestUpgradeDropRoleRefusesNamesThatAreNotCanaryRoles(t *testing.T) {
+	t.Setenv(EnvDSN, urlBase)
+	srv, err := FromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		"postgres", "artextest", "artextest_db", "artextest_db_upgrole_", "artextest_db_upgrole_xyz",
+		"artextest_db_upgrole_DEADBEEF", "artextest_db_upgrole_deadbeef0", "other_db_upgrole_deadbeef",
+		`artextest_db_upgrole_deadbeef"; DROP ROLE postgres; --`,
+	} {
+		err := srv.dropRole(name)
+		if err == nil || !strings.Contains(err.Error(), "refusing to drop role") {
+			t.Errorf("dropRole(%q) = %v, want a refusal", name, err)
+		}
+	}
+	if !srv.roleNameOK("artextest_db_upgrole_deadbeef") {
+		t.Error("a canary role name of this package was refused")
+	}
 }
 
 // Every operation of Server runs the guard before it touches the server. The server

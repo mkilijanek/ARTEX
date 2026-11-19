@@ -6,6 +6,11 @@
 // create: the connection string comes from the environment variable ARTEX_PG_DSN
 // and from nothing else, and one guard function (Guard) runs before every CREATE
 // DATABASE, every fixture load and every DROP DATABASE.
+//
+// One run per base database at a time. The temporary databases have stable names
+// (<base>_upg_<label>, so that the leftover check can find them), and TempDatabase drops a
+// database of that name before it creates it: two runs on one server and one base database
+// would destroy each other's databases. Give a second run its own database name.
 package dbtest
 
 import (
@@ -35,6 +40,10 @@ var packageSuffixes = []string{"_db", "_dbtest", "_server"}
 
 var caseName = regexp.MustCompile(`^[a-z0-9]+(_[a-z0-9]+)*$`)
 
+// baseName is what the parsed database name of ARTEX_PG_DSN must match: it is concatenated into
+// the names of temporary databases and of the roles of the canary test.
+var baseName = regexp.MustCompile(`^[a-z0-9_]+$`)
+
 // Op names what the guard is asked to allow.
 type Op string
 
@@ -43,6 +52,10 @@ const (
 	OpCreate  Op = "create database"
 	OpLoad    Op = "load fixture"
 	OpDrop    Op = "drop database"
+
+	OpCreateRole Op = "create role"
+	OpDropRole   Op = "drop role"
+	OpListRoles  Op = "list roles"
 )
 
 // Refusal is the error Guard returns. Its message carries the database name the
@@ -96,6 +109,8 @@ func ParsedDatabase(dsn string) (string, error) {
 //
 //   - dsn is, byte for byte, the current value of ARTEX_PG_DSN;
 //   - the database name pgconn resolves from dsn agrees with the URL path (URL form);
+//   - that name matches [a-z0-9_]+ (it becomes part of the names of temporary databases and
+//     roles, which are quoted as identifiers all the same);
 //   - that name ends in a package suffix (_db, _dbtest, _server), so it is a test
 //     database of a package and never the operator's database;
 //   - target is empty (a connection to the server only), or is exactly
@@ -116,6 +131,9 @@ func Guard(op Op, dsn, target string) error {
 	}
 	if strings.Contains(name, TempMarker) {
 		return refuse("the base database name already carries the " + TempMarker + " marker")
+	}
+	if !baseName.MatchString(name) {
+		return refuse("the database name is not made of [a-z0-9_] only")
 	}
 	suffixed := false
 	for _, s := range packageSuffixes {

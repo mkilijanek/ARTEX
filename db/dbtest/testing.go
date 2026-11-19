@@ -32,7 +32,10 @@ type Temp struct {
 const timeout = 2 * time.Minute
 
 // TempDatabase creates <base>_upg_<label>, dropping a stale database of that name
-// first, and drops it when the test ends. A failed drop fails the test.
+// first, and drops it when the test ends. A failed drop fails the test. The names are
+// stable on purpose (the leftover check finds them by prefix), so two runs against one
+// server and one base database destroy each other's databases: one run per base
+// database at a time.
 func TempDatabase(t testing.TB, srv *Server, label string) *Temp {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -93,9 +96,9 @@ func (tmp *Temp) Catalog(t testing.TB, q Queryer) []Entry {
 }
 
 // CheckNoLeftovers is for a package TestMain, after m.Run: it reports a
-// temporary database that a test left behind (AC11). With ARTEX_PG_DSN unset it
-// does nothing, and when the guard refuses the DSN it does nothing either (the
-// new tests report that themselves).
+// temporary database or a canary role that a test left behind (AC11). With
+// ARTEX_PG_DSN unset it does nothing, and when the guard refuses the DSN it does
+// nothing either (the new tests report that themselves).
 func CheckNoLeftovers() error {
 	srv, err := FromEnv()
 	if err != nil {
@@ -107,8 +110,19 @@ func CheckNoLeftovers() error {
 	if err != nil {
 		return err
 	}
+	roles, err := srv.LeftoverRoles(ctx)
+	if err != nil {
+		return err
+	}
+	var msgs []string
 	if len(left) > 0 {
-		return fmt.Errorf("temporary databases left behind: %s", strings.Join(left, ", "))
+		msgs = append(msgs, "temporary databases left behind: "+strings.Join(left, ", "))
+	}
+	if len(roles) > 0 {
+		msgs = append(msgs, "canary roles left behind: "+strings.Join(roles, ", "))
+	}
+	if len(msgs) > 0 {
+		return fmt.Errorf("%s", strings.Join(msgs, "; "))
 	}
 	return nil
 }

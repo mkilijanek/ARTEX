@@ -107,7 +107,7 @@ func (s *Server) CreateDatabase(ctx context.Context, name string) error {
 	if err := Guard(OpCreate, s.dsn, name); err != nil {
 		return err
 	}
-	return s.execAdmin(ctx, OpCreate, name, `CREATE DATABASE "`+name+`"`)
+	return s.execAdmin(ctx, OpCreate, name, `CREATE DATABASE `+quoteIdent(name))
 }
 
 // DropDatabase drops a temporary database, terminating its sessions.
@@ -115,7 +115,7 @@ func (s *Server) DropDatabase(ctx context.Context, name string) error {
 	if err := Guard(OpDrop, s.dsn, name); err != nil {
 		return err
 	}
-	return s.execAdmin(ctx, OpDrop, name, `DROP DATABASE IF EXISTS "`+name+`" WITH (FORCE)`)
+	return s.execAdmin(ctx, OpDrop, name, `DROP DATABASE IF EXISTS `+quoteIdent(name)+` WITH (FORCE)`)
 }
 
 // LoadSQL executes sqlText in a temporary database as one simple-protocol query

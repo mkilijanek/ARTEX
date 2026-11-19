@@ -2,7 +2,9 @@ package db
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -15,6 +17,69 @@ import (
 // _upgradecheck, and runs TestDryRunRestoredCopy against it with
 // ARTEX_UPGRADECHECK_DSN. Without that variable the run does not happen.
 const dryRunEnv = "ARTEX_UPGRADECHECK_DSN"
+
+// failRecorder keeps the message of a Fatalf and stops the goroutine, as a real testing.TB does.
+type failRecorder struct {
+	testing.TB
+	msg string
+}
+
+func (f *failRecorder) Helper()        {}
+func (f *failRecorder) Cleanup(func()) {}
+func (f *failRecorder) Fatalf(format string, args ...any) {
+	f.msg = fmt.Sprintf(format, args...)
+	runtime.Goexit()
+}
+
+// startupFailure runs startup against dsn and returns the failure message it reports.
+func startupFailure(t *testing.T, dsn string) string {
+	t.Helper()
+	rec := &failRecorder{TB: t}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		startup(rec, dsn)
+	}()
+	<-done
+	if rec.msg == "" {
+		t.Fatal("startup did not fail")
+	}
+	return rec.msg
+}
+
+// The dry run runs startup on a copy of a real database: a PostgreSQL message can quote a row
+// value, a connection error names host and user. startup reports SQLSTATE and object names, or
+// a fixed text for a connection error, and nothing the driver wrote.
+func TestUpgradeStartupFailureIsReportedWithoutDriverText(t *testing.T) {
+	// A server that is not there; the DSN carries the fixed password canary.
+	msg := startupFailure(t, "postgres://upg:"+dbtest.PasswordCanary+"@127.0.0.1:1/artextest_db?sslmode=disable&connect_timeout=2")
+	if !strings.Contains(msg, "startup: Open failed (no SQLSTATE: connection error (details withheld))") {
+		t.Errorf("a connection error is not reported as the fixed text: %q", msg)
+	}
+	for _, leak := range []string{"127.0.0.1", "upg", dbtest.PasswordCanary, "refused"} {
+		if strings.Contains(msg, leak) {
+			t.Errorf("the connection failure message holds %q", leak)
+		}
+	}
+
+	// A row that violates a re-added CHECK: the PostgreSQL message names the constraint and the
+	// relation, which the summary keeps; the message text itself is dropped.
+	srv := dbtest.RequireServer(t)
+	tmp := dbtest.TempDatabase(t, srv, "startupfail")
+	tmp.Load(t, "r0509 schema", atomicSchema(t, "r0509"))
+	tmp.Load(t, "violation base rows", atomicFixture(t, "violation-base.sql"))
+	tmp.Load(t, "violating row", atomicFixture(t, "violation-task-scope-kind.sql"))
+	msg = startupFailure(t, tmp.DSN)
+	if !strings.Contains(msg, "startup: Open failed (SQLSTATE 23514, schema public, table task_scope, constraint task_scope_kind_check)") {
+		t.Errorf("a PostgreSQL error is not reported as SQLSTATE and object names: %q", msg)
+	}
+	for _, leak := range []string{"violated by some row", dbtest.RowCanary, "apply schema"} {
+		if strings.Contains(msg, leak) {
+			t.Errorf("the failure message holds %q", leak)
+		}
+	}
+	dbtest.AssertNoSecret(t, "startup failure message", msg)
+}
 
 // The server of ARTEX_PG_DSN is shared: it holds other databases, so the inventory
 // rule must refuse it.

@@ -12,19 +12,22 @@ import (
 
 // startup is what a running server does to the schema, in order: Open (schema.sql and
 // seedBuiltins) and the two Go DDL steps of server/manager.go:392-397. It never skips:
-// a database that cannot be opened is a failure.
-func startup(t *testing.T, dsn string) *DB {
+// a database that cannot be opened is a failure. An error is reported through
+// dbtest.AtomicErrorSummary (SQLSTATE and object names, a fixed text for a connection
+// error): a PostgreSQL message can quote the row that violated a constraint, which matters
+// when the database is a copy of a real one (the dry run).
+func startup(t testing.TB, dsn string) *DB {
 	t.Helper()
 	d, err := Open(dsn)
 	if err != nil {
-		t.Fatalf("startup: Open: %v", err)
+		t.Fatalf("startup: Open failed (%s)", dbtest.AtomicErrorSummary(err))
 	}
 	t.Cleanup(func() { d.Close() })
 	if err := d.EnsureLLMRecordsTable(); err != nil {
-		t.Fatalf("startup: EnsureLLMRecordsTable: %v", err)
+		t.Fatalf("startup: EnsureLLMRecordsTable failed (%s)", dbtest.AtomicErrorSummary(err))
 	}
 	if err := d.EnsureLLMUsageTable(); err != nil {
-		t.Fatalf("startup: EnsureLLMUsageTable: %v", err)
+		t.Fatalf("startup: EnsureLLMUsageTable failed (%s)", dbtest.AtomicErrorSummary(err))
 	}
 	return d
 }

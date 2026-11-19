@@ -7,15 +7,18 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // The canaries make a leak visible. Fixture rows carry RowCanary in their text
-// columns; the PostgreSQL role the canary tests use has PasswordCanary as its
-// password. Neither string may appear in any log line, failure message, guard
-// refusal or dry-run report (AC12).
+// columns. PasswordCanary is a fixed, recognisable string for places where it never
+// becomes a credential (a wrong password in a DSN, the password in a DSN of a unit test);
+// a PostgreSQL role the tests create takes a random password of its own, made per run and
+// registered with RegisterSecret (CreateCanaryRole). None of these strings may appear in
+// any log line, failure message, guard refusal or dry-run report (AC12).
 const (
 	RowCanary      = "CANARY-D2-ROW"
 	PasswordCanary = "CANARY-D2-PW"
@@ -24,16 +27,51 @@ const (
 // minSecretLen keeps a short real password from matching ordinary words.
 const minSecretLen = 8
 
-// secrets are the strings that must not appear in test output: both canaries and
-// the password of the server named by ARTEX_PG_DSN, when it has one.
-func secrets() map[string]string {
-	m := map[string]string{
-		"row canary":      RowCanary,
-		"password canary": PasswordCanary,
+type secret struct{ kind, value string }
+
+var (
+	registeredMu sync.Mutex
+	registered   []*secret
+)
+
+// RegisterSecret adds a value to the strings FindSecret looks for, until remove is called.
+// A value shorter than minSecretLen is refused: it would match ordinary words. Several
+// values may be registered under one kind.
+func RegisterSecret(kind, value string) (remove func(), err error) {
+	if len(value) < minSecretLen {
+		return nil, fmt.Errorf("a secret to register must be at least %d bytes long", minSecretLen)
 	}
+	entry := &secret{kind: kind, value: value}
+	registeredMu.Lock()
+	defer registeredMu.Unlock()
+	registered = append(registered, entry)
+	return func() {
+		registeredMu.Lock()
+		defer registeredMu.Unlock()
+		for i, e := range registered {
+			if e == entry {
+				registered = append(registered[:i:i], registered[i+1:]...)
+				return
+			}
+		}
+	}, nil
+}
+
+// secrets are the strings that must not appear in test output: both canaries, the
+// registered secrets and the password of the server named by ARTEX_PG_DSN, when it has one.
+func secrets() []secret {
+	m := []secret{
+		{"row canary", RowCanary},
+		{"password canary", PasswordCanary},
+	}
+	registeredMu.Lock()
+	for _, e := range registered {
+		m = append(m, *e)
+	}
+	registeredMu.Unlock()
 	if dsn := envDSN(); dsn != "" {
 		if cfg, err := pgconn.ParseConfig(dsn); err == nil && len(cfg.Password) >= minSecretLen {
-			m["ARTEX_PG_DSN password"] = cfg.Password
+			m = append(m, secret{"ARTEX_PG_DSN password", cfg.Password})
 		}
 	}
 	return m
@@ -42,9 +80,9 @@ func secrets() map[string]string {
 // FindSecret reports which kind of secret, if any, text contains. It returns the
 // kind only, never the secret.
 func FindSecret(text string) (kind string, found bool) {
-	for kind, s := range secrets() {
-		if strings.Contains(text, s) {
-			return kind, true
+	for _, s := range secrets() {
+		if strings.Contains(text, s.value) {
+			return s.kind, true
 		}
 	}
 	return "", false
