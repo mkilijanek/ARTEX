@@ -48,6 +48,9 @@ type LLMUsage struct {
 	Status        string `json:"status"` // ok | error
 }
 
+// llmUsageSchema is the Go DDL that migrations 0002 and 5001 replaced. Kept for slice A3
+// (docs/phase-d2-stage2-plan.md 7): the tests that still read it move to the embedded migration
+// text there. Production code no longer uses it.
 const llmUsageSchema = `
 CREATE TABLE IF NOT EXISTS llm_usage (
     id             BIGSERIAL PRIMARY KEY,
@@ -85,20 +88,11 @@ CREATE INDEX IF NOT EXISTS idx_llm_usage_model ON llm_usage(task_id, model);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_exp   ON llm_usage(exploration_id);
 `
 
-// EnsureLLMUsageTable creates the llm_usage metering table if it does not exist.
+// EnsureLLMUsageTable creates the llm_usage metering table if it does not exist. Open does this
+// through migrations 0002 and 5001; the method re-runs both embedded files (idempotent) in one
+// transaction, and writes no ledger row.
 func (d *DB) EnsureLLMUsageTable() error {
-	tx, err := d.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback() //nolint:errcheck
-	if err := coordinateWithSchemaMigration(tx); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(llmUsageSchema); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return d.execEmbeddedMigrations(migrationLLMUsage, migrationLLMUsageFork)
 }
 
 // InsertLLMUsage appends one metering row. Best-effort: callers log and continue on
