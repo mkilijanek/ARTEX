@@ -87,7 +87,7 @@ func TestUpgradeLedgerFreshOpenAdoptsTheBaselineWithoutEnsure(t *testing.T) {
 	}
 	defer d.Close()
 
-	requireBaselineLedger(t, readLedger(t, d.DB))
+	requireEmbeddedLedger(t, readLedger(t, d.DB))
 	if diff := dbtest.DiffLines(loadReference(t), dbtest.Lines(tmp.Catalog(t, d.DB))); len(diff) > 0 {
 		t.Errorf("the catalog after Open alone differs from %s (%d objects):\n  %s", referenceFile, len(diff), strings.Join(diff, "\n  "))
 	}
@@ -96,7 +96,7 @@ func TestUpgradeLedgerFreshOpenAdoptsTheBaselineWithoutEnsure(t *testing.T) {
 			t.Errorf("Open alone did not create %s", table)
 		}
 	}
-	for _, want := range []string{"[migrate] ledger absent: adopting baseline (4)", "[migrate] adopted baseline in", "[migrate] up to date (upstream=0003, fork=5001)"} {
+	for _, want := range []string{"[migrate] ledger absent: adopting baseline (4)", "[migrate] adopted baseline in", "[migrate] up to date (upstream=0003, fork=5002)"} {
 		if !strings.Contains(logs(), want) {
 			t.Errorf("the log has no %q line", want)
 		}
@@ -125,11 +125,11 @@ func TestUpgradeLedgerAdoptsEveryShape(t *testing.T) {
 
 			d1 := startup(t, tmp.DSN)
 			first := readLedger(t, d1.DB)
-			requireBaselineLedger(t, first)
+			requireEmbeddedLedger(t, first)
 
 			d2 := startup(t, tmp.DSN)
 			second := readLedger(t, d2.DB)
-			requireBaselineLedger(t, second)
+			requireEmbeddedLedger(t, second)
 			if !sameLedgerRows(first, second) {
 				t.Errorf("shape %s: the second start changed the ledger (a row, applied_at included)", sh.name)
 			}
@@ -273,5 +273,5 @@ func TestUpgradeLedgerArchiveRestoreAndStartupExclude(t *testing.T) {
 	case <-time.After(2 * time.Minute):
 		t.Fatal("the restore did not finish after Open ended")
 	}
-	requireBaselineLedger(t, readLedger(t, restorer.DB))
+	requireEmbeddedLedger(t, readLedger(t, restorer.DB))
 }

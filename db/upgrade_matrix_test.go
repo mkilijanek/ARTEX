@@ -46,15 +46,19 @@ const noFindingComments = "the r0509 DDL (0.5.9m to 0.5.11m) has no finding_comm
 // as `added` entries in expected-changes.json).
 const noLedger = "the releases of every shape predate the migration runner and have no ledger table; the first start creates it and adopts the baseline (docs/phase-d2-stage2-plan.md 3.2)"
 
+// noToolRag: tool_rag_observations is created by migration 5002 (docs/phase-d3-plan.md 3.6), after every recorded
+// release; the first start creates it empty and records one more `added` ledger row per shape.
+const noToolRag = "the releases of every shape predate migration 5002; the first start creates tool_rag_observations empty (docs/phase-d3-plan.md 3.6)"
+
 var matrixShapes = []matrixShape{
 	{name: "r0509", recorded: "r0509", data: "data-r0509.sql",
-		exempt: map[string]string{"finding_comments": noFindingComments, "schema_migrations": noLedger}},
+		exempt: map[string]string{"finding_comments": noFindingComments, "schema_migrations": noLedger, "tool_rag_observations": noToolRag}},
 	{name: "r0512", recorded: "r0512", data: "data-r0512.sql",
-		exempt: map[string]string{"schema_migrations": noLedger}},
+		exempt: map[string]string{"schema_migrations": noLedger, "tool_rag_observations": noToolRag}},
 	{name: "r0513", recorded: "r0513", data: "data-r0513.sql",
-		exempt: map[string]string{"schema_migrations": noLedger}},
+		exempt: map[string]string{"schema_migrations": noLedger, "tool_rag_observations": noToolRag}},
 	{name: "legacy", recorded: "r0509", mutations: "legacy-mutations.sql", data: "data-legacy.sql",
-		exempt: map[string]string{"finding_comments": noFindingComments, "schema_migrations": noLedger}},
+		exempt: map[string]string{"finding_comments": noFindingComments, "schema_migrations": noLedger, "tool_rag_observations": noToolRag}},
 }
 
 func readUpgradeFile(t *testing.T, name string) string {
@@ -370,7 +374,7 @@ func referenceTables(t *testing.T) []string {
 	return out
 }
 
-// AC3, fixture coverage: every one of the 58 tables has at least one row in the data fixture,
+// AC3, fixture coverage: every one of the 59 tables has at least one row in the data fixture,
 // or an exemption with a reason in matrixShapes; an exemption for a table that has rows is
 // stale and fails too.
 func TestUpgradeFixtureHasRowsInEveryTable(t *testing.T) {

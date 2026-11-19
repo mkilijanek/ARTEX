@@ -22,7 +22,8 @@
       {"kind": "added", "table": "schema_migrations", "pk": {"version": "1"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"},
       {"kind": "added", "table": "schema_migrations", "pk": {"version": "2"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"},
       {"kind": "added", "table": "schema_migrations", "pk": {"version": "3"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"},
-      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5001"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"}
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5001"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"},
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5002"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"}
     ],
     "r0512": [
       {"kind": "deleted", "table": "agent_prompt_vars", "pk": {"id": "9"}, "cause": "db/db.go:280", "class": "intended"},
@@ -45,7 +46,8 @@
       {"kind": "added", "table": "schema_migrations", "pk": {"version": "1"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"},
       {"kind": "added", "table": "schema_migrations", "pk": {"version": "2"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"},
       {"kind": "added", "table": "schema_migrations", "pk": {"version": "3"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"},
-      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5001"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"}
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5001"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"},
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5002"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"}
     ],
     "r0513": [
       {"kind": "deleted", "table": "agent_prompt_vars", "pk": {"id": "9"}, "cause": "db/db.go:280", "class": "intended"},
@@ -66,7 +68,8 @@
       {"kind": "added", "table": "schema_migrations", "pk": {"version": "1"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"},
       {"kind": "added", "table": "schema_migrations", "pk": {"version": "2"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"},
       {"kind": "added", "table": "schema_migrations", "pk": {"version": "3"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"},
-      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5001"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"}
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5001"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"},
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5002"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"}
     ],
     "legacy": [
       {"kind": "deleted", "table": "agent_prompt_vars", "pk": {"id": "9"}, "cause": "db/db.go:280", "class": "intended"},
@@ -99,7 +102,8 @@
       {"kind": "added", "table": "schema_migrations", "pk": {"version": "1"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"},
       {"kind": "added", "table": "schema_migrations", "pk": {"version": "2"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"},
       {"kind": "added", "table": "schema_migrations", "pk": {"version": "3"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"},
-      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5001"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"}
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5001"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"},
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5002"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"}
     ]
   }
 }
