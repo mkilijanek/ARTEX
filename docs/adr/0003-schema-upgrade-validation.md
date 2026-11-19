@@ -67,7 +67,7 @@ about existing databases.
 - Every schema change now needs a fixture, a regenerated reference and an expected-changes review.
   Upstream `0004` and `0005` wait for Stage 2.
 - Evidence is limited to linux/amd64 and PostgreSQL 16, to shapes from 0.5.9m on (`legacy` is synthetic), and to the
-  current code on old table shapes. The dry run on real data was approved by the owner and is not done yet.
+  current code on old table shapes. The dry run on real data was approved by the owner and run once on a copy of one database older than 0.5.12m; it passed (see `docs/schema-upgrade.md`, limits).
 - Stage 1 does not deliver "migration order/checksums" from the issue; the pull request does not close it.
 - Test code now fails when `ARTEX_PG_DSN` is unset (upgrade tests) and never reads the config file.
 - To judge in review: defects the harness exposed, entries the owner had to decide, and the effort of the next schema change.

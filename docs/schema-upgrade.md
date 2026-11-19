@@ -68,7 +68,10 @@ Checks (test names are in `db/`, `db/dbtest/` and `server/`):
 - Nothing is detected **at runtime**: an older binary on a newer database, a foreign database, or an object
   that kept its name but has another definition (`IF NOT EXISTS` checks names only). Restore the pre-upgrade dump
   before running an older binary.
-- The dry run on a restored copy of a real database (below) has not been run on real data yet.
+- The dry run on a restored copy of a real database (below) was run once, on 2026-11-19, on a copy of one database
+  that predates 0.5.12m (51 tables). Startup created the six missing tables, changed no row count in any existing
+  table, left no catalog difference to the reference, and a second startup changed nothing. It compares row counts
+  and the catalog, not row values, and one database is not every database.
 - The first hosted CI run on this change is still to come. The git-history comparison needs a `.git` directory
   and a full-depth checkout; the container run behind the numbers in the change did not have one.
 
