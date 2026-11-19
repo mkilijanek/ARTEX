@@ -135,7 +135,7 @@ export function FindingCommentsPanel({
         {/* From lg up a height-bounded parent makes this area scroll; the input below stays in view. */}
         <div
           data-testid="comments-list"
-          className="flex min-w-0 flex-col gap-3 lg:min-h-32 lg:flex-1 lg:overflow-y-auto"
+          className="flex min-w-0 flex-col gap-3 lg:min-h-16 lg:flex-1 lg:overflow-y-auto"
         >
           {error ? (
             <Alert variant="destructive">

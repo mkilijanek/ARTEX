@@ -250,7 +250,7 @@ function FindingDetailInner() {
   return (
     <Tabs value={tab} onValueChange={setTab} className="flex flex-1 flex-col gap-0">
       {/* Sticky header */}
-      <header className="sticky top-0 z-10 flex flex-col gap-2 border-b bg-background/95 px-4 py-2.5 backdrop-blur lg:px-6">
+      <header className="sticky top-0 z-10 flex flex-col [html[data-navbar-style=sticky]_&]:top-12 gap-2 border-b bg-background/95 px-4 py-2.5 backdrop-blur lg:px-6">
         <div className="flex flex-wrap items-center gap-2">
           <SidebarTrigger className="-ml-1" />
           <Button asChild variant="ghost" size="icon" className="size-7">
@@ -293,8 +293,8 @@ function FindingDetailInner() {
               </CardContent>
             </Card>
 
-            {/* Right column: status panel with the comments below it (sticky, bounded by the viewport) */}
-            <div className="flex min-w-0 flex-col gap-4 lg:sticky lg:top-24 lg:col-start-3 lg:row-span-2 lg:row-start-1 lg:max-h-[calc(100vh-7rem)] lg:self-start lg:overflow-y-auto">
+            {/* Right column: status panel with the comments below it (sticky below the page headers: 3rem global + the details header; bounded by the viewport) */}
+            <div className="flex min-w-0 flex-col gap-4 lg:sticky lg:top-40 lg:col-start-3 lg:row-span-2 lg:row-start-1 lg:max-h-[calc(100vh-12rem)] lg:self-start lg:overflow-y-auto">
               <FindingCommentsPanel
                 key={id}
                 findingId={id}
@@ -302,7 +302,7 @@ function FindingDetailInner() {
                 readOnly={finding.inherited}
                 className="lg:order-2 lg:min-h-0 lg:flex-1"
               />
-              <Card className="h-fit shrink-0 lg:order-1">
+              <Card className="h-fit lg:order-1 lg:min-h-64 lg:shrink-[3] lg:overflow-y-auto">
                 <CardHeader>
                   <CardTitle className="text-sm">Status</CardTitle>
                 </CardHeader>
