@@ -20,10 +20,12 @@ import (
 
 // The upgrade matrix (docs/phase-d2-plan.md AC3, AC4, AC5, AC12): for each shape of an older
 // database, load its recorded schema and a synthetic data fixture into a throw-away database,
-// run startup (Open, EnsureLLMRecordsTable, EnsureLLMUsageTable), and compare. Shapes:
+// run startup (Open: schema.sql, the baseline adoption of the migration runner, seedBuiltins), and
+// compare. Shapes:
 //
 //	r0509   releases 0.5.9m to 0.5.11m (one recorded schema)
-//	r0512   release 0.5.12m and main
+//	r0512   release 0.5.12m
+//	r0513   release 0.5.13m, whose schema.sql is the frozen one
 //	legacy  SYNTHETIC: the r0509 schema with the older forms of legacy-mutations.sql put back
 //
 // None of these tests skips: a missing ARTEX_PG_DSN, a refused DSN or a failed Open is a failure.
@@ -39,12 +41,20 @@ type matrixShape struct {
 
 const noFindingComments = "the r0509 DDL (0.5.9m to 0.5.11m) has no finding_comments table (added after 0.5.11m, issue #65); startup creates it empty"
 
+// noLedger: every shape is a database that a release WITHOUT the migration runner left behind, so it has no
+// ledger; the first start creates schema_migrations and adopts the baseline set (four rows, listed per shape
+// as `added` entries in expected-changes.json).
+const noLedger = "the releases of every shape predate the migration runner and have no ledger table; the first start creates it and adopts the baseline (docs/phase-d2-stage2-plan.md 3.2)"
+
 var matrixShapes = []matrixShape{
 	{name: "r0509", recorded: "r0509", data: "data-r0509.sql",
-		exempt: map[string]string{"finding_comments": noFindingComments}},
-	{name: "r0512", recorded: "r0512", data: "data-r0512.sql"},
+		exempt: map[string]string{"finding_comments": noFindingComments, "schema_migrations": noLedger}},
+	{name: "r0512", recorded: "r0512", data: "data-r0512.sql",
+		exempt: map[string]string{"schema_migrations": noLedger}},
+	{name: "r0513", recorded: "r0513", data: "data-r0513.sql",
+		exempt: map[string]string{"schema_migrations": noLedger}},
 	{name: "legacy", recorded: "r0509", mutations: "legacy-mutations.sql", data: "data-legacy.sql",
-		exempt: map[string]string{"finding_comments": noFindingComments}},
+		exempt: map[string]string{"finding_comments": noFindingComments, "schema_migrations": noLedger}},
 }
 
 func readUpgradeFile(t *testing.T, name string) string {
@@ -67,14 +77,27 @@ func recordedSchemaFile(t *testing.T, shape string) string {
 	return ""
 }
 
+// recordedGoDDLFile is the historical Go DDL fixture of a recorded shape: old releases created the
+// llm tables with it, not with migrations.
+func recordedGoDDLFile(t *testing.T, shape string) string {
+	t.Helper()
+	for _, s := range recordedShapes {
+		if s.shape == shape {
+			return s.goddl
+		}
+	}
+	t.Fatalf("no recorded shape %q", shape)
+	return ""
+}
+
 // buildShape creates the temporary database of a shape and loads, in this order, the
-// recorded schema, the Go DDL (llm_records, llm_usage), the legacy mutations when the shape
+// recorded schema, the historical Go DDL (llm_records, llm_usage), the legacy mutations when the shape
 // has them, and the data fixture. It is the state of a database a release left behind.
 func buildShape(t *testing.T, srv *dbtest.Server, sh matrixShape) *dbtest.Temp {
 	t.Helper()
 	tmp := dbtest.TempDatabase(t, srv, "mx_"+sh.name)
 	tmp.Load(t, "schema fixture of "+sh.name, readUpgradeFile(t, recordedSchemaFile(t, sh.recorded)))
-	tmp.Load(t, "Go DDL fixture", readUpgradeFile(t, readManifest(t).Current.GoDDLFixture))
+	tmp.Load(t, "Go DDL fixture of "+sh.recorded, readUpgradeFile(t, recordedGoDDLFile(t, sh.recorded)))
 	if sh.mutations != "" {
 		tmp.Load(t, sh.mutations, readUpgradeFile(t, sh.mutations))
 	}
@@ -246,8 +269,9 @@ func TestUpgradeRowSnapshotKeepsInfinityAndNullApart(t *testing.T) {
 	}
 }
 
-// AC3: startup on a database a release left behind loses no row and changes no value, except
-// exactly the entries of expected-changes.json, and moves no sequence backwards. An entry of
+// AC3, AC4: startup on a database a release left behind loses no row and changes no value, except
+// exactly the entries of expected-changes.json (among them the four rows of the migration ledger, which
+// the baseline adoption adds), and moves no sequence backwards. An entry of
 // class defect is a difference nobody has decided on: the test fails and says so.
 func TestUpgradeRowsPreserved(t *testing.T) {
 	exp := readExpectedChanges(t)
@@ -346,7 +370,7 @@ func referenceTables(t *testing.T) []string {
 	return out
 }
 
-// AC3, fixture coverage: every one of the 57 tables has at least one row in the data fixture,
+// AC3, fixture coverage: every one of the 58 tables has at least one row in the data fixture,
 // or an exemption with a reason in matrixShapes; an exemption for a table that has rows is
 // stale and fails too.
 func TestUpgradeFixtureHasRowsInEveryTable(t *testing.T) {
@@ -581,8 +605,8 @@ func TestUpgradeLegacyBranchesWereEntered(t *testing.T) {
 	srv := dbtest.RequireServer(t)
 	for _, sh := range matrixShapes {
 		sh := sh
-		if sh.name == "r0512" {
-			continue // identical DDL to r0509 apart from finding_comments; not a legacy candidate
+		if sh.name == "r0512" || sh.name == "r0513" {
+			continue // identical DDL to r0509 apart from finding_comments and findings.ticket_id; not a legacy candidate
 		}
 		t.Run(sh.name, func(t *testing.T) {
 			tmp := buildShape(t, srv, sh)

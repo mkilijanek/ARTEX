@@ -165,7 +165,9 @@ scripts/backup.sh --with-data          # db dump + data/ archive, keep 14
 scripts/backup.sh --keep 7             # db only, keep 7
 ```
 
-Restore a dump into a running stack:
+Restore only **full** dumps, into a freshly created database: a partial or data-only restore, or an edit of the
+migration ledger table `schema_migrations`, is unsupported (see [docs/schema-upgrade.md](docs/schema-upgrade.md),
+"Restores"). Restore a dump into a running stack:
 
 ```bash
 gunzip -c backups/artex-db-<timestamp>.sql.gz | docker compose exec -T postgres \
@@ -180,7 +182,7 @@ Daily cron example (03:20, operator crontab):
 
 ## Updating and upgrading
 
-> Upgrading only swaps the program and never touches data: the Postgres volume `pgdata`, `./data` (jwt.key / SQLite, etc.), and `./skills` are all preserved. **No manual database migration is needed**: `artex` idempotently re-runs `schema.sql` on every start (with `ADD COLUMN` / `CREATE INDEX IF NOT EXISTS`), i.e. "restart equals migrate". It is still recommended to back up `./data` and the database before upgrading. How upgrades are validated, and what that does not cover: [docs/schema-upgrade.md](docs/schema-upgrade.md).
+> Upgrading only swaps the program and never touches data: the Postgres volume `pgdata`, `./data` (jwt.key / SQLite, etc.), and `./skills` are all preserved. **No manual database migration is needed**: on every start `artex` re-runs the frozen `schema.sql` (with `ADD COLUMN` / `CREATE INDEX IF NOT EXISTS`) and then applies the numbered migrations in `db/migrations/` that are not yet recorded in the table `schema_migrations`, i.e. "restart equals migrate". **Back up the database (`scripts/backup.sh`) and `./data` before upgrading**, stop older instances, and do not run `pg_dump` during the upgrade: migration statements wait at most 60 seconds for a lock and then fail. The first start of a release with migrations writes the table `schema_migrations` (four rows); going back to an older binary needs nothing (0.5.13m and older ignore the table). The start refuses a database it does not understand (for example one that a newer release migrated) before it writes anything; the message names the fix, and `ARTEX_SCHEMA_ALLOW_NEWER` is a capped override for keeping the service up. Details, refusals, rollback and what is not covered: [docs/schema-upgrade.md](docs/schema-upgrade.md).
 
 ### Upgrading from a clone made before 2026-10-23
 

@@ -1,22 +1,33 @@
 {
-  "note": "Schema fixtures are byte-exact copies of db/schema.sql at the listed commits. Regenerate only with: git show <commit>:db/schema.sql",
+  "note": "Schema fixtures are byte-exact copies of db/schema.sql at the listed commits. Regenerate only with: git show <commit>:db/schema.sql. The goddl fixture is the Go DDL that those releases ran after schema.sql (before the migration runner); it is historical and never regenerated. current.migrations lists every file of db/migrations/ as embedded (version, name, sha256); a migration file is never edited.",
   "shapes": [
     {"shape": "r0509", "fixture": "schema-b4b9600f5c8f.sql", "sha256": "b4b9600f5c8f41cd13f0a33646fc2cb18fdc861a394c1167a1eb50a51517e4c6",
+     "goddl_fixture": "goddl-4bfc9dbe09c3.sql", "goddl_sha256": "4bfc9dbe09c30629946c5b1918d67f164de08e9dd7b9857f8aeb95b9ad875624",
      "releases": [
        {"tag": "v0.5.9m", "commit": "fd95c24b1889de8c25cad12d1c6355ac3fcdc594"},
        {"tag": "v0.5.10m", "commit": "43208e5354858a241e8410998c262c2ff733f472"},
        {"tag": "v0.5.11m", "commit": "58470d7581299b459be36be95ba93cf9c1598384"}
      ]},
     {"shape": "r0512", "fixture": "schema-7996d35963a0.sql", "sha256": "7996d35963a0eb882e339ea410058452ba9aadc653399edaa3b51858c4fec1f7",
+     "goddl_fixture": "goddl-4bfc9dbe09c3.sql", "goddl_sha256": "4bfc9dbe09c30629946c5b1918d67f164de08e9dd7b9857f8aeb95b9ad875624",
      "releases": [
        {"tag": "v0.5.12m", "commit": "450c877f91024fecd2f2023363db1d44cafd7fbc"}
+     ]},
+    {"shape": "r0513", "fixture": "schema-951f3d0c8859.sql", "sha256": "951f3d0c88597f494b5fc1a87ca6694daa9d35e490d3f131d4fb36a2f49f963a",
+     "goddl_fixture": "goddl-4bfc9dbe09c3.sql", "goddl_sha256": "4bfc9dbe09c30629946c5b1918d67f164de08e9dd7b9857f8aeb95b9ad875624",
+     "releases": [
+       {"tag": "v0.5.13m", "commit": "b160905d0d17ec398296609a0d39263f5b72f761"}
      ]}
   ],
   "current": {
     "schema_sql_sha256": "951f3d0c88597f494b5fc1a87ca6694daa9d35e490d3f131d4fb36a2f49f963a",
-    "goddl_fixture": "goddl-4bfc9dbe09c3.sql",
-    "goddl_sha256": "4bfc9dbe09c30629946c5b1918d67f164de08e9dd7b9857f8aeb95b9ad875624",
     "reference": "reference-catalog-pg16.txt",
-    "reference_sha256": "511b7806720b74403fdb24eacc7cb67e1827cad48875872465b1d9c627f9f21c"
+    "reference_sha256": "128ae3b92d6e9966564182ba630fc079c570224038bca99e6cd2c9d19bcabae8",
+    "migrations": [
+      {"version": 1, "name": "0001_llm_records.sql", "sha256": "202d1b5f84f8091f5e676526b15fb66c888f39f73ddab60f46c251f19e19aa1e"},
+      {"version": 2, "name": "0002_llm_usage.sql", "sha256": "3b3aece1c4c80bceef74d15652e1c97c972275d7c738a41938945f00588c8d39"},
+      {"version": 3, "name": "0003_task_scope_icp_index.sql", "sha256": "318e3e91b55552ed3322cb7fdb515133dc279d6fd76e5d94498bf56de1692331"},
+      {"version": 5001, "name": "5001_llm_usage_fork_columns.sql", "sha256": "d55ce9857b9ef9d526ecaeeeeada7750f156761d1ec6878e154c198c7c81553f"}
+    ]
   }
 }

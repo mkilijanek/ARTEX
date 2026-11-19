@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -20,6 +19,7 @@ import (
 	"time"
 
 	"github.com/mkilijanek/artex/db"
+	"github.com/mkilijanek/artex/db/dbtest"
 )
 
 // commentAPI is the harness for the finding comment tests: the traffic
@@ -127,14 +127,6 @@ func (a *commentAPI) list(path string) commentListResp {
 		a.t.Fatal(err)
 	}
 	return out
-}
-
-func captureLog(t *testing.T) *bytes.Buffer {
-	t.Helper()
-	var buf bytes.Buffer
-	log.SetOutput(&buf)
-	t.Cleanup(func() { log.SetOutput(os.Stderr) })
-	return &buf
 }
 
 // T-API-1
@@ -475,7 +467,7 @@ func TestFindingCommentsPaginationHTTP(t *testing.T) {
 // T-API-8
 func TestFindingCommentsLogAndErrorHygiene(t *testing.T) {
 	a := newCommentAPI(t)
-	logs := captureLog(t)
+	logs := dbtest.CaptureLog(t)
 	const canary = "FCCANARY7d1e4b"
 	w := a.postBody(a.base(), "hello "+canary)
 	if w.Code != 201 {
@@ -490,8 +482,8 @@ func TestFindingCommentsLogAndErrorHygiene(t *testing.T) {
 		t.Fatal(err)
 	}
 	line := fmt.Sprintf("finding=%d comment=%d", a.finding, created.Comment.ID)
-	if !strings.Contains(logs.String(), line) || !strings.Contains(logs.String(), "author=operator/ARTEX") {
-		t.Fatalf("missing content-free create line %q in %q", line, logs)
+	if !strings.Contains(logs(), line) || !strings.Contains(logs(), "author=operator/ARTEX") {
+		t.Fatalf("missing content-free create line %q in %q", line, logs())
 	}
 	// Decoder errors never echo the input.
 	for name, body := range map[string]string{
@@ -521,7 +513,7 @@ func TestFindingCommentsLogAndErrorHygiene(t *testing.T) {
 	if w.Code != 400 || errField(t, w) != "comment rejected" || strings.Contains(w.Body.String(), "FCFORCED") || a.count() != before {
 		t.Fatalf("forced check: %d %s", w.Code, w.Body)
 	}
-	out := logs.String()
+	out := logs()
 	if !strings.Contains(out, "sqlstate=23514") || !strings.Contains(out, constraint) {
 		t.Fatalf("log lacks sqlstate/constraint: %q", out)
 	}

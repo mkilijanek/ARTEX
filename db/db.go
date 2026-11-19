@@ -1,6 +1,6 @@
 // Package db is the PostgreSQL data source for ARTEX (replacing the old graph
 // single-file SQLite). It opens the connection, applies the schema, and seeds
-// the built-in agents and variable catalog.
+// the built-in agents and variable catalog. The schema and migration rules are in migrate.go.
 package db
 
 import (
@@ -153,8 +153,16 @@ func ensureDatabase(dsn string) error {
 	return nil
 }
 
-// Open connects, applies the schema (idempotent), and seeds builtin rows.
-func Open(dsn string) (*DB, error) {
+// Open connects, checks the migration ledger, applies schema.sql and the pending migrations, and
+// seeds builtin rows (order and rules: migrate.go).
+func Open(dsn string) (*DB, error) { return openWithMigrations(dsn, embeddedMigrations()) }
+
+// openWithMigrations is Open with the migration set injected (tests use synthetic sets).
+func openWithMigrations(dsn string, fsys migrationSource) (*DB, error) {
+	startup, err := loadMigrationStartup(fsys)
+	if err != nil {
+		return nil, err
+	}
 	if err := ensureDatabase(dsn); err != nil {
 		return nil, err
 	}
@@ -183,15 +191,7 @@ func Open(dsn string) (*DB, error) {
 	// pgx runs multi-statement Exec via the simple protocol when there are no args.
 	// Keep the dedicated lock connection checked out until both DDL and seeding
 	// finish so concurrent application instances cannot initialize out of order.
-	err = withSchemaMigrationLock(context.Background(), sqlDB, func(conn *sql.Conn) error {
-		if err := applySchemaWithRetry(context.Background(), conn, time.Sleep); err != nil {
-			return fmt.Errorf("apply schema: %w", err)
-		}
-		if err := d.seedBuiltins(); err != nil {
-			return fmt.Errorf("seed builtins: %w", err)
-		}
-		return nil
-	})
+	err = withSchemaMigrationLock(context.Background(), sqlDB, startup.run(d))
 	if err != nil {
 		sqlDB.Close()
 		return nil, err

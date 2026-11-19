@@ -31,6 +31,8 @@ import (
 // rows the first run writes are the rows of this commit's seeders. The real-binary gap is
 // closed only by the dry run on a copy of a real database (docs/phase-d2-plan.md AC15).
 
+// goDDLFixture is the HISTORICAL Go DDL of releases 0.5.9m to 0.5.13m (they created the llm tables
+// with it, not with migrations); db/testdata/upgrade/manifest.json records it per shape.
 const (
 	upgradeFixtures = "../db/testdata/upgrade"
 	r0509Schema     = "schema-b4b9600f5c8f.sql"

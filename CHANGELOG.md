@@ -6,6 +6,20 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
+- **Versioned migrations (Phase D.2 stage 2, S2-A).** `db/schema.sql` is frozen at its 0.5.13m bytes; every later
+  schema change is a numbered file in `db/migrations/`, recorded with its sha256 in the table `schema_migrations`.
+  Upstream's files keep their bytes in `0001`-`4999`, the fork's use `5000`-`9999`. This release ships the baseline only:
+  `0001`, `0002`, `0003` (upstream) and `5001` (the fork's extra `llm_usage` columns and indexes), all no-ops on a
+  database that an earlier release started. Each migration runs in its own transaction with its ledger row, with a
+  60 second lock timeout and a deadlock retry. Migration files may not use `CONCURRENTLY`, `VACUUM` or
+  transaction-control statements (checked when the program starts, and again at run time by a marker).
+  Fork migrations state `-- downgrade-safe: yes|no: <reason>` in their first line. See
+  `docs/schema-upgrade.md` and `docs/adr/0004-versioned-migrations-stage-2.md`.
+- **`ARTEX_SCHEMA_ALLOW_NEWER=<NNNN>`**: the highest unknown migration version the start accepts, four digits. It
+  lets a binary start on a database that a newer release migrated, only to keep the service up while the right
+  binary or a restore is prepared. It expires at the next newer version, a malformed value stops the start, and a
+  warning is logged on every start. This binary's `schema.sql` re-creates triggers, functions and CHECK constraints
+  and re-runs its data statements over the newer database: read the risk in `docs/schema-upgrade.md` first.
 - **`vulnx` in the image** (ProjectDiscovery's vulnerability-intelligence CLI, the
   successor of `cvemap`; the upstream repository was renamed and the binary is `vulnx`),
   pinned at v2.0.2 and installed like the other ProjectDiscovery tools. It queries
@@ -44,6 +58,20 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Changed
 
+- **The first start of this release on an existing database writes one new table, `schema_migrations`, with four
+  rows (`0001`, `0002`, `0003`, `5001`), in one transaction.** Everything else the start does is what earlier
+  releases did. This write is **not undone by rolling the binary back**; binaries up to 0.5.13m ignore the table and
+  still start. See "Upgrade notes".
+- **Startup refuses, before it writes anything,** on: an empty `schema_migrations`; a ledger with no fork-range
+  (`5000`-`9999`) row; a migration whose recorded name or checksum differs from this binary's; an applied version this
+  binary does not ship (override: `ARTEX_SCHEMA_ALLOW_NEWER`); a pending migration numbered below an applied one of
+  its range. Messages and recovery steps are in `docs/schema-upgrade.md`.
+- **A failure of an `llm_*` table migration now stops the start.** Earlier releases only logged it. The DDL of
+  `llm_records` and `llm_usage` moved from Go constants into migrations `0001`, `0002` and `5001`, and the two
+  `EnsureLLM*Table` calls at server start are gone (the methods remain as wrappers).
+- **Migration statements wait at most 60 seconds for a lock**, then fail with SQLSTATE `55P03` and a hint naming
+  the table. `schema.sql` itself still waits without a limit. Do not start an upgrade while `pg_dump` or an older
+  instance runs against the database. Deadlocks are retried up to 4 times.
 - **Finding details: Comments moved under Status.** On the Overview tab the Comments panel
   now sits in the right column directly below the Status card (the comment list scrolls
   inside the column, which stays sticky), and on narrow screens directly below Digest.
@@ -115,6 +143,23 @@ All notable changes to this project are documented in this file. The format is b
   `ARTEX_DATA_ENVELOPE`.
 - **bbot-recon skill**: only `scope_distance == 0` events reach `insert_assets`;
   out-of-scope events are recorded as third-party intel facts and never auto-scoped.
+
+### Upgrade notes
+
+- **Back up first** (`scripts/backup.sh`), stop older instances, and make sure no `pg_dump` is running. The first start
+  writes the ledger table and that is irreversible by redeploying the old binary (harmless: 0.5.13m and older never
+  read it).
+- **Rollback:** redeploy the previous binary. Optional cleanup of the table: the guarded SQL in
+  `docs/schema-upgrade.md` ("Rollback"); it refuses unless the ledger holds exactly `0001`, `0002`, `0003`, `5001`.
+- **Downgrade rule from the next migration on:** a binary older than the newest applied migration is refused unless
+  `ARTEX_SCHEMA_ALLOW_NEWER` is set. Every fork migration is listed here with its `downgrade-safe` line (this release:
+  `5001`: yes, additive columns with defaults and two indexes; releases up to 0.5.13m create the same objects
+  themselves; the upstream files `0001`-`0003` are pinned as yes in `db/migrate_pins_test.go`, because they keep
+  upstream's bytes and carry no flag line).
+- **Restores:** only full dumps, into a freshly created database. Partial or data-only restores and manual edits of
+  `schema_migrations` are unsupported.
+- Not in this release: a drift report (a same-named object with another definition is not detected); the first
+  migration that changes the schema (upstream `0004`, an index on `llm_usage`, comes next); upstream `0005`.
 
 ### Fixed
 
@@ -215,6 +260,17 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Tests and CI
 
+- **Schema upgrade suite runs on the migration runner (Phase D.2 stage 2, S2-A).** New recorded shape `r0513`
+  (`db/schema.sql` as released in 0.5.13m); the reference catalog has 58 tables, including `schema_migrations`;
+  four `added` entries per shape in `expected-changes.json`. New tests: the runner (refusals, override, adoption,
+  lock timeout, deadlock retry, concurrency, lint, transaction marker, content-free errors), the rollback cleanup SQL
+  and a rollback to the release without the ledger and forward again, and the migration pins
+  (`db/migrate_pins_test.go`). `scripts/upgrade-gate.sh` now selects the migration tests, requires **128** passing
+  tests with no skip, and runs a tag check: a migration file that
+  a `v*` tag holds must be unchanged at `HEAD`, and upstream-range files must equal the pinned upstream commit.
+  `.gitattributes` keeps `db/migrations/*.sql` byte-exact, and `.github/CODEOWNERS` names the owner of the files that
+  enforce immutability (required code-owner review is a repository setting, not set by this change). The Go DDL
+  constants and their pin are removed; the historical Go DDL fixture is recorded per shape.
 - **Schema upgrade validation (Phase D.2 stage 1; no runtime change).** Recorded `db/schema.sql`
   fixtures for releases 0.5.9m to 0.5.12m, a synthetic legacy shape, and tests on temporary
   PostgreSQL 16 databases: fresh database against a committed reference catalog, upgrade matrix
@@ -223,7 +279,7 @@ All notable changes to this project are documented in this file. The format is b
   schema-change gate pins `db/schema.sql`, the Go DDL and the reference by hash. New:
   `scripts/upgrade-gate.sh` (fails on a skipped or missing upgrade test) and a CI step that runs
   it, plus `.gitattributes` rules that keep the hashed files byte-exact. Refers to #24 and does
-  not close it: there are still no versioned migrations, migration order or checksums. The
+  not close it: there were no versioned migrations, migration order or checksums yet (stage 2, above, adds them). The
   suite was exercised by a real schema change, `findings.ticket_id` (see above): it needed
   a regenerated reference (one line), three pinned hashes, six expected-changes entries and one
   archive restore default. See `docs/schema-upgrade.md` and

@@ -1,0 +1,16 @@
+# Review ownership for the files that decide what a database upgrade does and whether
+# the checks around it can be bypassed (docs/phase-d2-stage2-plan.md 3.4, risk R16).
+# This file only names the owner. Making review by code owners required is a branch
+# protection setting on GitHub that only the repository owner can turn on.
+/db/migrations/            @mkilijanek
+/db/migrate_pins_test.go   @mkilijanek
+/scripts/upgrade-gate.sh   @mkilijanek
+/.github/workflows/        @mkilijanek
+# The code that enforces immutability of the migrations and the checks around it.
+/db/migrate.go                                   @mkilijanek
+/db/db.go                                        @mkilijanek
+/db/schema.sql                                   @mkilijanek
+/.gitattributes                                  @mkilijanek
+/.github/CODEOWNERS                              @mkilijanek
+/db/upgrade_gatescript_test.go                   @mkilijanek
+/db/testdata/upgrade/rollback-cleanup-ledger.sql @mkilijanek

@@ -17,7 +17,9 @@ Branch: `perf-db/coverage-graph-hotpaths`. This branch is independent of Phase C
 - Add `idx_ts_icp ON task_scope(value) WHERE kind='icp'`. The fork uses an existing
   idempotent, advisory-locked `schema.sql` startup bootstrap, rather than upstream's
   versioned migration runner. The index is therefore installed through that path
-  on fresh and existing stores; repeated startup is tested. No migration-runner
+  on fresh and existing stores; repeated startup is tested. (Since the migration runner, upstream's file
+  `0003_task_scope_icp_index.sql` also ships as a baseline migration; it is a no-op because `schema.sql` keeps the
+  index line. See `docs/schema-upgrade.md`.) No migration-runner
   replacement, destructive schema change or scope-predicate rewrite is included.
 - Extract the existing main query verbatim into `coverageGraphSQL`, so the
   benchmark's EXPLAIN uses the actual production SQL. Shared/current/source task

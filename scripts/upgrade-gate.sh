@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
-# Gate for the schema upgrade tests (docs/phase-d2-plan.md AC11, section 5.5).
+# Gate for the schema upgrade tests and the migration runner tests (docs/phase-d2-plan.md AC11,
+# section 5.5; docs/phase-d2-stage2-plan.md AC23, AC28).
 #
 # A green `go test` can hide tests that did not run: a skipped test reads as passed.
-# This script runs the upgrade tests with -json and fails unless
+# This script runs the upgrade and migration tests with -json and fails unless
 #   * go test exits 0,
 #   * at least MIN_UPGRADE_TESTS top-level tests passed,
 #   * no test, at any level, was skipped,
-# then compares the recorded schema fixtures with git history (TestGitHistoryFixtures).
+# then compares the recorded schema fixtures with git history (TestGitHistoryFixtures), and checks the
+# migrations against the release tags: every file of db/migrations/ that any release tag (v*) contains
+# must exist, byte-identical, at HEAD, and the upstream files (0001-4999) must be byte-identical to the
+# pinned upstream commit when that commit is in the repository (check_migration_tags below).
 #
 # Usage:
 #   ARTEX_PG_DSN=postgres://USER:PASS@HOST:5432/DB?sslmode=disable scripts/upgrade-gate.sh
+#   scripts/upgrade-gate.sh --migration-tags [REPO_DIR]    only the migration tag check, no database
 #
 # ARTEX_PG_DSN must name a PostgreSQL 16 test server: the tests create and drop
 # temporary databases named <DB>_<package>_upg_<case> on it and nowhere else, and
@@ -19,20 +24,107 @@
 # creates it, so two runs on one server and one <DB> destroy each other's databases.
 # Give a second run its own <DB>.
 # UPGRADE_GATE_REQUIRE_GIT=1 turns a missing git history into a failure (hosted CI
-# sets it, with a full-depth checkout); without it the comparison is reported as
-# NOT RUN where there is no .git.
+# sets it, with a full-depth checkout); without it the comparisons are reported as
+# NOT RUN where there is no .git. UPGRADE_GATE_UPSTREAM_COMMIT replaces the pinned upstream commit (the
+# self-test of the tag check uses it; nothing else should).
 #
 # The summary prints counts and test names only, no row content, no DSN. The output of a
 # failed run is echoed only when it holds no canary marker (see echo_failing_output).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# Count of the top-level tests selected by PATTERN after the D.2 fix round, from a run with
-# -v: 83 (./db 29, ./db/dbtest 49, ./agent 1, ./server 4). Raise it with the tests, never
-# lower it to make the gate pass.
-MIN_UPGRADE_TESTS=83
-PATTERN='^(TestUpgrade|TestConfigFileDSNIsNotUsed)'
+# Count of the top-level tests selected by PATTERN, from a run with -v: 128 (./db 72, ./db/dbtest 51, ./agent 1,
+# ./server 4): 94 upgrade tests (TestUpgrade*, TestConfigFileDSNIsNotUsed*) and the 34 migration runner tests
+# of ./db (TestMigration*, TestLedger*, TestLoadMigrations*), so that none of those can skip unseen. Raise the
+# count with the tests, never lower it to make the gate pass.
+MIN_UPGRADE_TESTS=128
+PATTERN='^(TestUpgrade|TestConfigFileDSNIsNotUsed|TestMigration|TestLedger|TestLoadMigrations)'
 PACKAGES=(./db ./db/dbtest ./agent ./server)
+
+# The upstream commit the upstream migration files (0001-4999) were taken from; its blob ids are pinned in
+# db/migrate_pins_test.go as well.
+UPSTREAM_COMMIT="${UPGRADE_GATE_UPSTREAM_COMMIT:-278de8b2e09a3702f77bbbd065ef35e4b7fdb1d0}"
+MIGRATIONS_DIR=db/migrations
+
+# check_migration_tags REPO prints the outcome and returns 0 (identical, or not run) or 1 (a violation).
+#   1. For every release tag v* and every file the tag holds under db/migrations/: the file must exist at
+#      HEAD with the same git blob id (the same bytes; .gitattributes keeps the bytes unconverted). A
+#      changed or a deleted tagged file is a violation. Until the first release with migrations exists this
+#      compares nothing, and the pins test (TestMigrationPins) is the guard of that window.
+#   2. When UPSTREAM_COMMIT is in the repository: every NNNN_*.sql below 5000 at HEAD must have the blob id
+#      it has in that commit; a file that commit does not have is a violation. The object is never fetched.
+# Without git history the check is NOT RUN, or a failure with UPGRADE_GATE_REQUIRE_GIT=1. It prints file
+# names and short blob ids only.
+check_migration_tags() {
+  local repo="$1" list tag file want got base number tags_seen=0 files_seen=0 bad=0
+  if ! command -v git >/dev/null 2>&1 || ! git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
+    if [ "${UPGRADE_GATE_REQUIRE_GIT:-}" = "1" ]; then
+      echo "upgrade-gate: FAIL: migration check: UPGRADE_GATE_REQUIRE_GIT=1 but there is no git history here" >&2
+      return 1
+    fi
+    echo "upgrade-gate: migration tag check: NOT RUN (no git history here; set UPGRADE_GATE_REQUIRE_GIT=1 to make that a failure)"
+    return 0
+  fi
+  list="$(mktemp "${TMPDIR:-/tmp}/upgrade-gate-files.XXXXXX")"
+
+  while IFS= read -r tag; do
+    tags_seen=$((tags_seen + 1))
+    if ! git -C "$repo" ls-tree -r -z --name-only "$tag" -- "$MIGRATIONS_DIR" >"$list" 2>/dev/null; then
+      echo "upgrade-gate: FAIL: cannot list $MIGRATIONS_DIR in tag $tag" >&2
+      bad=1
+      continue
+    fi
+    while IFS= read -r -d '' file; do
+      files_seen=$((files_seen + 1))
+      want="$(git -C "$repo" rev-parse "$tag:$file")"
+      if ! got="$(git -C "$repo" rev-parse --verify -q "HEAD:$file" 2>/dev/null)"; then
+        echo "upgrade-gate: FAIL: $file is in release tag $tag and is missing at HEAD (a released migration is never deleted or renamed)" >&2
+        bad=1
+      elif [ "$got" != "$want" ]; then
+        echo "upgrade-gate: FAIL: $file differs at HEAD from release tag $tag (blob ${got:0:12}, tag ${want:0:12}); a released migration is never edited, a new one corrects it" >&2
+        bad=1
+      fi
+    done <"$list"
+  done < <(git -C "$repo" tag --list 'v*')
+  if [ "$files_seen" -eq 0 ]; then
+    echo "upgrade-gate: migration tag check: no release tag holds a file of $MIGRATIONS_DIR yet ($tags_seen tag(s) looked at): nothing to compare"
+  elif [ "$bad" -eq 0 ]; then
+    echo "upgrade-gate: migration tag check: $files_seen tagged file(s) in $tags_seen tag(s) are identical at HEAD"
+  fi
+
+  if git -C "$repo" cat-file -e "${UPSTREAM_COMMIT}^{commit}" 2>/dev/null; then
+    if ! git -C "$repo" ls-tree -r -z --name-only HEAD -- "$MIGRATIONS_DIR" >"$list" 2>/dev/null; then
+      echo "upgrade-gate: FAIL: cannot list $MIGRATIONS_DIR at HEAD" >&2
+      bad=1
+    fi
+    files_seen=0
+    while IFS= read -r -d '' file; do
+      base="${file##*/}"
+      [[ "$base" =~ ^([0-9]{4})_[a-z0-9_]+\.sql$ ]] || continue
+      number=$((10#${BASH_REMATCH[1]}))
+      [ "$number" -lt 5000 ] || continue
+      files_seen=$((files_seen + 1))
+      got="$(git -C "$repo" rev-parse "HEAD:$file")"
+      if ! want="$(git -C "$repo" rev-parse --verify -q "${UPSTREAM_COMMIT}:$file" 2>/dev/null)"; then
+        echo "upgrade-gate: FAIL: $file is numbered in the upstream range (below 5000) and upstream commit ${UPSTREAM_COMMIT:0:12} has no such file" >&2
+        bad=1
+      elif [ "$got" != "$want" ]; then
+        echo "upgrade-gate: FAIL: $file differs from upstream commit ${UPSTREAM_COMMIT:0:12} (blob ${got:0:12}, upstream ${want:0:12}); upstream files are byte-identical" >&2
+        bad=1
+      fi
+    done <"$list"
+    [ "$bad" -ne 0 ] || echo "upgrade-gate: migration upstream check: $files_seen upstream-range file(s) equal upstream commit ${UPSTREAM_COMMIT:0:12}"
+  else
+    echo "upgrade-gate: migration upstream check: NOT RUN (upstream commit ${UPSTREAM_COMMIT:0:12} is not in this repository; it is never fetched here)"
+  fi
+  rm -f "$list"
+  return "$bad"
+}
+
+if [ "${1:-}" = "--migration-tags" ]; then
+  check_migration_tags "${2:-.}"
+  exit $?
+fi
 
 if [ -z "${ARTEX_PG_DSN:-}" ]; then
   echo "upgrade-gate: ARTEX_PG_DSN is not set; the tests would fail (they never read the config file)" >&2
@@ -100,4 +192,6 @@ if [ "$(count '"Action":"skip","Package":"[^"]*","Test":"TestGitHistoryFixtures"
 else
   echo "upgrade-gate: git history comparison: fixtures equal git show <commit>:db/schema.sql for every release commit"
 fi
+
+check_migration_tags . || exit 1
 echo "upgrade-gate: OK"

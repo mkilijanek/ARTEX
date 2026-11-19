@@ -105,8 +105,9 @@ func TestUpgradeDryRunRefusesAServerThatHoldsOtherDatabases(t *testing.T) {
 }
 
 // TestDryRunRestoredCopy runs startup twice on a restored copy and prints a content-free
-// report: row counts per table before and after, catalog differences against the
-// reference by object name. Not part of the gate (it needs the user's approval and its
+// report: row counts per table before and after, the state of the migration ledger before and after
+// (absent or its versions: numbers only, never a name, a checksum or a row), catalog differences against
+// the reference by object name. Not part of the gate (it needs the user's approval and its
 // own server); it does nothing without ARTEX_UPGRADECHECK_DSN.
 func TestDryRunRestoredCopy(t *testing.T) {
 	dsn := strings.TrimSpace(os.Getenv(dryRunEnv))
@@ -144,13 +145,25 @@ func TestDryRunRestoredCopy(t *testing.T) {
 		`SELECT count(*) FROM agent_prompt_vars WHERE var_name IN ('EngagementTitle', 'CoverageGaps', 'Now')`).Scan(&obsoleteVars); err != nil {
 		t.Fatalf("count obsolete prompt variables: %s", dbtest.AtomicErrorSummary(err))
 	}
+	ledgerBefore, err := dbtest.LedgerStateOf(ctx, conn)
+	if err != nil {
+		t.Fatal(err)
+	}
 	startup(t, dsn)
+	ledgerAfterFirst, err := dbtest.LedgerStateOf(ctx, conn)
+	if err != nil {
+		t.Fatal(err)
+	}
 	afterFirst, err := dbtest.RowCounts(ctx, conn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	startup(t, dsn)
 	afterSecond, err := dbtest.RowCounts(ctx, conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledgerAfter, err := dbtest.LedgerStateOf(ctx, conn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +177,7 @@ func TestDryRunRestoredCopy(t *testing.T) {
 		After:    afterSecond,
 		Catalog:  dbtest.DiffLines(loadReference(t), dbtest.Lines(entries)),
 	}
-	text := report.String()
+	text := report.String() + fmt.Sprintf("ledger schema_migrations: %s -> %s\n", ledgerBefore, ledgerAfter)
 	dbtest.AssertNoSecret(t, "dry-run report", text)
 	t.Log("\n" + text)
 	var unexpected []string
@@ -180,5 +193,19 @@ func TestDryRunRestoredCopy(t *testing.T) {
 	}
 	if d := dbtest.DiffMaps(afterFirst, afterSecond); len(d) > 0 {
 		t.Errorf("the second startup changed row counts: %s", strings.Join(d, ", "))
+	}
+	// The ledger: a copy of a database from before the runner has none and ends with exactly the baseline set;
+	// a copy that already has one keeps its versions and holds at least the baseline set. The second start
+	// changes nothing.
+	switch {
+	case !ledgerBefore.Present && !ledgerAfter.LedgerIs(baselineVersions...):
+		t.Errorf("the ledger was absent before startup and is %s after it, want exactly the baseline set", ledgerAfter)
+	case ledgerBefore.Present && !ledgerAfter.LedgerHas(ledgerBefore.Versions...):
+		t.Errorf("the ledger was %s before startup and is %s after it: a version disappeared", ledgerBefore, ledgerAfter)
+	case !ledgerAfter.LedgerHas(baselineVersions...):
+		t.Errorf("the ledger is %s after startup, it lacks a baseline version", ledgerAfter)
+	}
+	if ledgerAfter.String() != ledgerAfterFirst.String() {
+		t.Errorf("the second startup changed the ledger: %s -> %s", ledgerAfterFirst, ledgerAfter)
 	}
 }

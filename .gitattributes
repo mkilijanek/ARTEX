@@ -3,3 +3,5 @@
 # Schema bytes are hashed by the upgrade tests (db/upgrade_fixture_test.go): never convert line endings.
 db/schema.sql -text
 db/testdata/upgrade/** -text
+# Migration bytes are hashed into schema_migrations.checksum and pinned (db/migrate_pins_test.go): never convert line endings.
+db/migrations/*.sql -text

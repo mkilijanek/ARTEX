@@ -39,6 +39,8 @@ services:
       ARTEX_WORKER_CONTEXT: ${ARTEX_WORKER_CONTEXT:-0}
       ARTEX_CACHE_PREFIX: ${ARTEX_CACHE_PREFIX:-0}
       ARTEX_COMPACTION_MEMO: ${ARTEX_COMPACTION_MEMO:-0}
+      # Schema migrations: empty means not set. See docs/schema-upgrade.md before using it.
+      ARTEX_SCHEMA_ALLOW_NEWER: ${ARTEX_SCHEMA_ALLOW_NEWER:-}
     ports:
       - "${ARTEX_BIND_ADDR:-127.0.0.1}:8787:8787"
       - "127.0.0.1:8788:8788"

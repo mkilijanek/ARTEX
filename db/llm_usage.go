@@ -48,57 +48,11 @@ type LLMUsage struct {
 	Status        string `json:"status"` // ok | error
 }
 
-const llmUsageSchema = `
-CREATE TABLE IF NOT EXISTS llm_usage (
-    id             BIGSERIAL PRIMARY KEY,
-    ts             TIMESTAMPTZ NOT NULL DEFAULT now(),
-    task_id        TEXT,
-    exploration_id BIGINT,
-    worker         TEXT,
-    model          TEXT,
-    profile_name   TEXT,
-    latency_ms     INTEGER,
-    input_tokens   INTEGER NOT NULL DEFAULT 0,
-    output_tokens  INTEGER NOT NULL DEFAULT 0,
-    cache_read     INTEGER NOT NULL DEFAULT 0,
-    cache_write    INTEGER NOT NULL DEFAULT 0,
-    status         TEXT
-);
-ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT '';
-ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS intent_id BIGINT NOT NULL DEFAULT 0;
-ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS attempt INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS reason TEXT NOT NULL DEFAULT '';
-ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS request_bytes BIGINT NOT NULL DEFAULT 0;
-ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS system_bytes BIGINT NOT NULL DEFAULT 0;
-ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS message_bytes BIGINT NOT NULL DEFAULT 0;
-ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS tool_schema_bytes BIGINT NOT NULL DEFAULT 0;
-ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS tool_result_bytes BIGINT NOT NULL DEFAULT 0;
-ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS size_known BOOLEAN NOT NULL DEFAULT false;
-ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS call_id TEXT NOT NULL DEFAULT '';
-ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS round_no INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS purpose TEXT NOT NULL DEFAULT '';
-ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS tool_bytes JSONB NOT NULL DEFAULT '{}';
-CREATE INDEX IF NOT EXISTS idx_llm_usage_call ON llm_usage(call_id) WHERE call_id <> '';
-CREATE INDEX IF NOT EXISTS idx_llm_usage_purpose ON llm_usage(purpose, ts);
-CREATE INDEX IF NOT EXISTS idx_llm_usage_task  ON llm_usage(task_id);
-CREATE INDEX IF NOT EXISTS idx_llm_usage_model ON llm_usage(task_id, model);
-CREATE INDEX IF NOT EXISTS idx_llm_usage_exp   ON llm_usage(exploration_id);
-`
-
-// EnsureLLMUsageTable creates the llm_usage metering table if it does not exist.
+// EnsureLLMUsageTable creates the llm_usage metering table if it does not exist. Open does this
+// through migrations 0002 and 5001; the method re-runs both embedded files (idempotent) in one
+// transaction, and writes no ledger row.
 func (d *DB) EnsureLLMUsageTable() error {
-	tx, err := d.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback() //nolint:errcheck
-	if err := coordinateWithSchemaMigration(tx); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(llmUsageSchema); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return d.execEmbeddedMigrations(migrationLLMUsage, migrationLLMUsageFork)
 }
 
 // InsertLLMUsage appends one metering row. Best-effort: callers log and continue on
