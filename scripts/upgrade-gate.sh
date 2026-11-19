@@ -33,11 +33,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# Count of the top-level tests selected by PATTERN, from a run with -v: 120 (./db 64, ./db/dbtest 51, ./agent 1,
-# ./server 4): 94 upgrade tests (TestUpgrade*, TestConfigFileDSNIsNotUsed*) and the 26 migration runner tests
+# Count of the top-level tests selected by PATTERN, from a run with -v: 128 (./db 72, ./db/dbtest 51, ./agent 1,
+# ./server 4): 94 upgrade tests (TestUpgrade*, TestConfigFileDSNIsNotUsed*) and the 34 migration runner tests
 # of ./db (TestMigration*, TestLedger*, TestLoadMigrations*), so that none of those can skip unseen. Raise the
 # count with the tests, never lower it to make the gate pass.
-MIN_UPGRADE_TESTS=120
+MIN_UPGRADE_TESTS=128
 PATTERN='^(TestUpgrade|TestConfigFileDSNIsNotUsed|TestMigration|TestLedger|TestLoadMigrations)'
 PACKAGES=(./db ./db/dbtest ./agent ./server)
 

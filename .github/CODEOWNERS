@@ -6,3 +6,11 @@
 /db/migrate_pins_test.go   @mkilijanek
 /scripts/upgrade-gate.sh   @mkilijanek
 /.github/workflows/        @mkilijanek
+# The code that enforces immutability of the migrations and the checks around it.
+/db/migrate.go                                   @mkilijanek
+/db/db.go                                        @mkilijanek
+/db/schema.sql                                   @mkilijanek
+/.gitattributes                                  @mkilijanek
+/.github/CODEOWNERS                              @mkilijanek
+/db/upgrade_gatescript_test.go                   @mkilijanek
+/db/testdata/upgrade/rollback-cleanup-ledger.sql @mkilijanek
