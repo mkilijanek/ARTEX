@@ -1,39 +1,26 @@
 package db
 
 import (
-	"database/sql"
 	"encoding/json"
-	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/mkilijanek/artex/db/dbtest"
 )
 
 // TestFindingTicketIDColumnIsIdempotent covers a fresh start, an upgrade of a
 // database that predates the column, and a second start: the column exists,
 // every finding is empty after the upgrade and a stored value survives a restart.
 func TestFindingTicketIDColumnIsIdempotent(t *testing.T) {
-	// Own database: dropping the column must not affect any other test.
-	base := testDSN(t)
-	u, err := url.Parse(base)
-	if err != nil {
-		t.Fatal(err)
-	}
-	u.Path = strings.TrimSuffix(u.Path, "/") + "_ticket_upgrade"
-	dsn := u.String()
-	upgradeDB := strings.TrimPrefix(u.Path, "/")
-	adminURL := *u
-	adminURL.Path = "/postgres"
-	t.Cleanup(func() {
-		admin, err := sql.Open("pgx", adminURL.String())
-		if err != nil {
-			t.Errorf("drop %s: %v", upgradeDB, err)
-			return
-		}
-		defer admin.Close()
-		if _, err := admin.Exec(`DROP DATABASE IF EXISTS "` + upgradeDB + `" WITH (FORCE)`); err != nil {
-			t.Errorf("drop %s: %v", upgradeDB, err)
-		}
-	})
+	// Own database: dropping the column must not affect any other test. It is a temporary
+	// database of the upgrade tests (<base>_upg_ticket_upgrade): the guard of package dbtest
+	// runs before its create and drop, a stale one is dropped first, and the leftover check
+	// of TestMain fails the run if it is still there at the end. testDSN skips the test
+	// when no server is configured, like the other database tests of this package; any
+	// failure after that (a refused DSN, a failed Open) fails the test.
+	testDSN(t)
+	srv := dbtest.RequireServer(t)
+	dsn := dbtest.TempDatabase(t, srv, "ticket_upgrade").DSN
 	d, err := Open(dsn)
 	if err != nil {
 		t.Fatal(err)

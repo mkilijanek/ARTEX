@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -22,11 +23,13 @@ const archiveTaskID = 701
 // that supplies a value for a column that is NOT NULL now and absent from packages
 // written before it existed. json_populate_recordset inserts NULL for an absent key
 // and ignores column defaults, so every such column needs one (db/finding_comments_
-// archive.go and db/task_archives_restore.go carry them). Empty today: since the r0509
-// shape no column was added to an archived table (the only difference is the new
-// table finding_comments, which an old package does not have a key for). A column
-// added later without an entry here fails TestUpgradeArchiveColumnsSurviveUpgrade.
-var archiveRestoreDefaults = map[string]string{}
+// archive.go and db/task_archives_restore.go carry them). One entry today:
+// findings.ticket_id (added after r0512; a package written by an older binary has no
+// key for it). A column added later without an entry here fails
+// TestUpgradeArchiveColumnsSurviveUpgrade.
+var archiveRestoreDefaults = map[string]string{
+	"findings.ticket_id": "normalizeArchivedFindingTicketIDs (db/finding_traffic_archive.go:92) turns a missing key or null into '', called by db/task_archives_restore.go:243",
+}
 
 // archiveNewTableRestore documents why a table that is absent from the old shape needs
 // no column defaults: the old package has no key for it and the restore path treats a
@@ -63,6 +66,16 @@ func archiveOldDB(t *testing.T, tmp *dbtest.Temp) *DB {
 var archiveKnownRestoreDiffs = []string{
 	"table explorations: column updated_at values changed",
 	"table tasks: column updated_at values changed",
+}
+
+// archiveKnownUpgradeDiffs are the differences between the archived tables before
+// archiving (r0509 shape) and after restore that come from the schema upgrade itself,
+// not from archive or restore: a column the r0509 shape lacks. The restored value is
+// checked separately (TestUpgradeArchiveRestoresAfterSchemaUpgrade). The test pins them
+// exactly, as it does archiveKnownRestoreDiffs.
+//   - findings.ticket_id: added by db/schema.sql:1149 (startup).
+var archiveKnownUpgradeDiffs = []string{
+	"table findings: column ticket_id added",
 }
 
 // archiveTableDigests keeps the tables of the snapshot (minus the new table
@@ -132,6 +145,9 @@ func TestUpgradeArchiveRestoresAfterSchemaUpgrade(t *testing.T) {
 	}
 	delete(snapshot.Tables, "finding_comments")
 	delete(snapshot.DataCounts, "finding_comments")
+	if bytes.Contains(snapshot.Tables["findings"], []byte(`"ticket_id"`)) {
+		t.Fatal("precondition: a package written on the r0509 shape must have no ticket_id key in findings")
+	}
 	tables := make([]string, 0, len(snapshot.Tables))
 	for name := range snapshot.Tables {
 		tables = append(tables, name)
@@ -208,7 +224,7 @@ func TestUpgradeArchiveRestoresAfterSchemaUpgrade(t *testing.T) {
 	}
 	after := archiveTableDigests(afterAll, tables, skip)
 	diff := dbtest.DiffDigests(before, after)
-	for _, known := range archiveKnownRestoreDiffs {
+	for _, known := range append(append([]string{}, archiveKnownRestoreDiffs...), archiveKnownUpgradeDiffs...) {
 		found := false
 		for i, line := range diff {
 			if line == known {
@@ -223,6 +239,14 @@ func TestUpgradeArchiveRestoresAfterSchemaUpgrade(t *testing.T) {
 	}
 	if len(diff) > 0 {
 		t.Errorf("the archived tables differ after archive, upgrade and restore (%d differences):\n  %s", len(diff), strings.Join(diff, "\n  "))
+	}
+	// The package has no ticket_id key (r0509): the restore path fills the NOT NULL column
+	// with the empty default (db/task_archives_restore.go:243) for every restored finding.
+	if n := atomicCount(t, tmp, `SELECT count(*) FROM findings WHERE task_id=`+strconv.Itoa(archiveTaskID)); n == 0 {
+		t.Error("the restored task has no findings: the ticket_id default was not exercised")
+	}
+	if n := atomicCount(t, tmp, `SELECT count(*) FROM findings WHERE ticket_id <> ''`); n != 0 {
+		t.Errorf("%d findings restored from an old package have a non-empty ticket_id", n)
 	}
 	dbtest.AssertNoSecret(t, "log output", logs())
 	var live sql.NullTime

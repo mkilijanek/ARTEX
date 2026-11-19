@@ -22,7 +22,7 @@ fixture of synthetic rows:
 | Shape | What it is |
 |---|---|
 | `r0509` | `db/schema.sql` as released in 0.5.9m, 0.5.10m and 0.5.11m (identical bytes) |
-| `r0512` | `db/schema.sql` as released in 0.5.12m (differs from `main` by no DDL) |
+| `r0512` | `db/schema.sql` as released in 0.5.12m (the current schema adds `findings.ticket_id` to it) |
 | `legacy` | **synthetic**: `r0509` plus `legacy-mutations.sql`, which puts back the old forms that the upgrade branches of `schema.sql` look for. It is not a recorded release |
 
 Checks (test names are in `db/`, `db/dbtest/` and `server/`):
@@ -42,7 +42,8 @@ Checks (test names are in `db/`, `db/dbtest/` and `server/`):
   catalog, the table digests and the sequence values as they were.
 - **Locking.** Four concurrent `Open` calls give the result of one; `Open` waits while a
   transaction holds the advisory lock; the key is `7337741001`.
-- **Archives.** A format-3 task archive built on an `r0509` database restores after the upgrade; a
+- **Archives.** A format-3 task archive built on an `r0509` database restores after the upgrade (the restore
+  path fills the new NOT NULL column `findings.ticket_id` with `''`); a
   column guard fails when an archived column is dropped, renamed, retyped, or made NOT NULL without a
   restore default.
 - **Startup writers outside `schema.sql`** (`server/upgrade_seed_test.go`): the seeders that run
@@ -110,14 +111,35 @@ message of that test):
 
 1. Record the previous release's `db/schema.sql` as a new fixture by commit id:
    `git show <commit>:db/schema.sql > db/testdata/upgrade/schema-<sha12>.sql`. Add it to `recordedShapes` in
-   `db/upgrade_fixture_test.go` and to `manifest.json`. Never edit a fixture.
-2. Extend the data fixtures and `expected-changes.json` for the new shape.
+   `db/upgrade_fixture_test.go` and to `manifest.json`. Never edit a fixture. Skip this step when that release
+   is already a recorded shape (its schema hash is already in `recordedShapes`) and the schema has not changed
+   since it was released.
+2. Extend the data fixtures and `expected-changes.json` for the new shape. Run `go test ./db -run
+   '^TestUpgradeRowsPreserved'`: it lists every difference that has no entry. A new column with a constant
+   default needs one `value` entry (`"column_added": true`) per row of that table in the fixture of each shape
+   (for `findings.ticket_id`: 2 rows, 3 shapes, 6 entries); a data fixture needs a change only when a table has
+   no rows yet.
 3. Regenerate the Go DDL fixture and the reference catalog in a PostgreSQL 16 container:
    `ARTEX_UPGRADE_REGENERATE=1 go test ./db -run TestRegenerateUpgradeReference`
-   (with `ARTEX_PG_DSN` set as above; the test logs the new hashes).
+   (with `ARTEX_PG_DSN` set as above; the test logs the new hashes). The files are written into the working
+   tree the test runs in: from a container, copy them back out.
 4. Update the three sha256 constants in `db/schema_gate_test.go` and the `current` entry of `manifest.json`.
+5. Do what the schema change needs beyond the matrix, none of which the gate failure names:
+   - A new NOT NULL column of a table in a task archive needs an entry in `archiveRestoreDefaults`
+     (`db/upgrade_archive_test.go`) naming the normaliser of the restore path that fills it (`TestUpgradeArchiveColumnsSurviveUpgrade`
+     fails otherwise), and the digest difference "column ... added" is listed in `archiveKnownUpgradeDiffs`.
+   - A test that opens a database of its own must take it from `dbtest.TempDatabase` (name
+     `<DB>_upg_<case>`), so that the guard covers it and the leftover check finds it.
+   - Re-check the `file:line` causes in `expected-changes.json` that point into `db/schema.sql` below the edited line.
+   - Raise `MIN_UPGRADE_TESTS` in `scripts/upgrade-gate.sh` when tests were added, and update the counts and shape
+     descriptions in this file and in the CHANGELOG entry.
 
 Then run the gate. Review the regenerated reference as a diff: it is the new definition of "a correct database".
+
+The suite has been exercised by one real schema change, `findings.ticket_id` (merged from `main` before 0.5.13m).
+The procedure required: no new fixture (0.5.12m was already recorded), one regenerated reference line,
+three pinned hashes, six expected-changes entries, one archive restore default, and moving the one test that
+opened its own database onto `dbtest.TempDatabase`.
 
 ## The expected-changes file
 

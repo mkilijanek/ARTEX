@@ -13,10 +13,10 @@
      ]}
   ],
   "current": {
-    "schema_sql_sha256": "7996d35963a0eb882e339ea410058452ba9aadc653399edaa3b51858c4fec1f7",
+    "schema_sql_sha256": "951f3d0c88597f494b5fc1a87ca6694daa9d35e490d3f131d4fb36a2f49f963a",
     "goddl_fixture": "goddl-4bfc9dbe09c3.sql",
     "goddl_sha256": "4bfc9dbe09c30629946c5b1918d67f164de08e9dd7b9857f8aeb95b9ad875624",
     "reference": "reference-catalog-pg16.txt",
-    "reference_sha256": "a74819449e16309f8d372c4b5697d76efb35c6a6b28fca60f3f32aca3d68fb87"
+    "reference_sha256": "511b7806720b74403fdb24eacc7cb67e1827cad48875872465b1d9c627f9f21c"
   }
 }

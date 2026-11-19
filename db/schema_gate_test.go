@@ -12,9 +12,9 @@ import (
 // in test source and in testdata/upgrade/manifest.json ("current"); the test needs
 // no database, so it fails fast on a plain `go test ./db`.
 const (
-	currentSchemaSQLSHA256 = "7996d35963a0eb882e339ea410058452ba9aadc653399edaa3b51858c4fec1f7"
+	currentSchemaSQLSHA256 = "951f3d0c88597f494b5fc1a87ca6694daa9d35e490d3f131d4fb36a2f49f963a"
 	currentGoDDLSHA256     = "4bfc9dbe09c30629946c5b1918d67f164de08e9dd7b9857f8aeb95b9ad875624"
-	currentReferenceSHA256 = "a74819449e16309f8d372c4b5697d76efb35c6a6b28fca60f3f32aca3d68fb87"
+	currentReferenceSHA256 = "511b7806720b74403fdb24eacc7cb67e1827cad48875872465b1d9c627f9f21c"
 )
 
 const referenceFile = "reference-catalog-pg16.txt"
@@ -26,10 +26,15 @@ catalog changed. Every schema change needs the recorded procedure (docs/schema-u
   1. Record the previous release's db/schema.sql as a new fixture by commit id:
        git show <commit>:db/schema.sql > db/testdata/upgrade/schema-<sha12>.sql
      add it to recordedShapes in db/upgrade_fixture_test.go and to manifest.json. Never edit a fixture.
-  2. Extend the data fixtures and the expected-changes file for the new shape.
+     Skip this when that release is already a recorded shape and the schema has not changed since it.
+  2. Extend the data fixtures and the expected-changes file for the new shape (go test ./db -run
+     '^TestUpgradeRowsPreserved' lists the differences that have no entry).
   3. Regenerate the goddl fixture and the reference catalog in a PostgreSQL 16 container:
        ARTEX_UPGRADE_REGENERATE=1 go test ./db -run TestRegenerateUpgradeReference
-  4. Update the three sha256 constants in db/schema_gate_test.go and the "current" entry of manifest.json.`
+  4. Update the three sha256 constants in db/schema_gate_test.go and the "current" entry of manifest.json.
+  5. A new NOT NULL column of an archived table needs an archiveRestoreDefaults entry and an
+     archiveKnownUpgradeDiffs entry (db/upgrade_archive_test.go); re-check the file:line causes in the
+     expected-changes file; raise MIN_UPGRADE_TESTS in scripts/upgrade-gate.sh if tests were added.`
 
 // goDDLText is the Go DDL that startup runs after schema.sql (EnsureLLMRecordsTable,
 // EnsureLLMUsageTable), as one text: the content of the goddl-<sha12>.sql fixture.

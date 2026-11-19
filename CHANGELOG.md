@@ -200,8 +200,11 @@ All notable changes to this project are documented in this file. The format is b
   schema-change gate pins `db/schema.sql`, the Go DDL and the reference by hash. New:
   `scripts/upgrade-gate.sh` (fails on a skipped or missing upgrade test) and a CI step that runs
   it, plus `.gitattributes` rules that keep the hashed files byte-exact. Refers to #24 and does
-  not close it: there are still no versioned migrations, migration order or checksums. See
-  `docs/schema-upgrade.md` and `docs/adr/0003-schema-upgrade-validation.md`.
+  not close it: there are still no versioned migrations, migration order or checksums. The
+  suite was exercised by a real schema change, `findings.ticket_id` (see above): it needed
+  a regenerated reference (one line), three pinned hashes, six expected-changes entries and one
+  archive restore default. See `docs/schema-upgrade.md` and
+  `docs/adr/0003-schema-upgrade-validation.md`.
 - **Database tests read the database only from `ARTEX_PG_DSN`.** A test binary never uses the
   config file. With the variable unset, the existing database tests skip and the upgrade tests
   fail. Developers who ran `go test` against the database named in `config.json` must now set
