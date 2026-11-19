@@ -1138,11 +1138,15 @@ CREATE TABLE IF NOT EXISTS findings (
     status      TEXT NOT NULL DEFAULT 'pending',
     -- Detailed vulnerability report (Markdown); empty by default, read/shown only on the detail page, kept out of list APIs to avoid payload bloat.
     report      TEXT NOT NULL DEFAULT '',
+    -- Operator-entered reference to an external ticketing system. Free one-line text (validated server-side),
+    -- never shown to agents or LLM prompts.
+    ticket_id   TEXT NOT NULL DEFAULT '',
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending';
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS name   TEXT NOT NULL DEFAULT '';
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS report TEXT NOT NULL DEFAULT '';
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS ticket_id TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_findings_task ON findings(task_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_findings_time ON findings(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_findings_status ON findings(status, created_at DESC);

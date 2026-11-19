@@ -687,6 +687,8 @@ export const api = {
   findingLineage: (id: string) => get<{ nodes: TaskNode[]; edges: Edge[] }>(`/exploration/findings/${id}/lineage`),
   setFindingStatus: (id: string, status: FindingStatus) => patch<Finding>(`/exploration/findings/${id}`, { status }),
   setFindingSeverity: (id: string, severity: Severity) => patch<Finding>(`/exploration/findings/${id}`, { severity }),
+  setFindingTicketId: (id: string, ticketId: string) =>
+    patch<Finding>(`/exploration/findings/${id}`, { ticket_id: ticketId }),
   // Save a vulnerability's name/class/severity in one call (inline edit in the findings list); only present fields are sent.
   updateFinding: (
     id: string,

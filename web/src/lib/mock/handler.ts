@@ -8,6 +8,7 @@ import {
   isCompanyScopeKind,
   normalizeCompanyScopeValue,
 } from "../company-scope";
+import { normalizeTicketId, ticketIdErrorMessage } from "../finding-ticket";
 import type {
   Activity,
   ArchiveBatchItem,
@@ -2154,10 +2155,13 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     const f = mockFindings.find((x) => x.id === seg[2]);
     if (!f) return {};
     if (m === "PATCH") {
+      const ticket = typeof b.ticket_id === "string" ? normalizeTicketId(b.ticket_id) : undefined;
+      if (ticket && !ticket.ok) throw new Error(ticketIdErrorMessage(ticket.reason));
       if (typeof b.status === "string") f.status = b.status as typeof f.status;
       if (typeof b.severity === "string") f.severity = b.severity as typeof f.severity;
       if (typeof b.name === "string") f.name = b.name;
       if (typeof b.vulnclass === "string") f.vulnclass = b.vulnclass;
+      if (ticket?.ok) f.ticket_id = ticket.value;
     }
     const contextTaskId = q.get("context_task");
     const contextTask = contextTaskId ? mockTasks.find((item) => item.id === contextTaskId) : undefined;

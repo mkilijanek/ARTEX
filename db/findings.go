@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // DBFinding is a row in the standalone findings table. It persists across task
@@ -34,6 +36,9 @@ type DBFinding struct {
 	Report          string // detailed report (Markdown); only populated by GetFinding, not by list queries
 	CreatedAt       time.Time
 	TaskDescription string // populated via LEFT JOIN on tasks
+	// TicketID is operator metadata (reference to an external ticketing system). It is excluded from JSON on
+	// purpose: DBFinding is serialised whole into LLM prompts (chat mentions), and agents must never see it.
+	TicketID string `json:"-"`
 }
 
 // Finding triage states (findings.status).
@@ -57,6 +62,26 @@ func ValidFindingStatus(s string) bool {
 		return true
 	}
 	return false
+}
+
+// MaxFindingTicketIDRunes is the longest accepted ticket id, counted in Unicode code points.
+const MaxFindingTicketIDRunes = 128
+
+// NormalizeFindingTicketID trims s and reports whether it is a valid ticket id: one line of free text
+// of at most MaxFindingTicketIDRunes code points, valid UTF-8, without control characters or line
+// breaks. The empty string is valid and means "no ticket". There is no format or uniqueness rule.
+func NormalizeFindingTicketID(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	if !utf8.ValidString(s) || utf8.RuneCountInString(s) > MaxFindingTicketIDRunes {
+		return "", false
+	}
+	for _, r := range s {
+		// U+2028/U+2029 are line breaks but not control characters.
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
+			return "", false
+		}
+	}
+	return s, true
 }
 
 // Finding severity levels (findings.severity).
@@ -105,7 +130,7 @@ func (d *DB) AddFinding(taskID, nodeID int64, vulnclass, name, severity, summary
 const findingSelectCols = `f.id, f.task_id, f.node_id, f.vulnclass, COALESCE(f.name, ''), f.severity, f.summary,
 	       f.evidence, f.worker, f.asset_ids, COALESCE(f.status, 'pending'), f.created_at,
 	       COALESCE(t.description, '') AS task_description, f.evidence_version, f.report_evidence_version,
- (SELECT count(*) FROM finding_traffic_bindings b WHERE b.finding_id=f.id)`
+ (SELECT count(*) FROM finding_traffic_bindings b WHERE b.finding_id=f.id), f.ticket_id`
 
 // scanFindings materializes rows selected via findingSelectCols.
 func scanFindings(rows interface {
@@ -118,7 +143,7 @@ func scanFindings(rows interface {
 		f := &DBFinding{}
 		var aidsJSON string
 		if err := rows.Scan(&f.ID, &f.TaskID, &f.NodeID, &f.VulnClass, &f.Name, &f.Severity,
-			&f.Summary, &f.Evidence, &f.Worker, &aidsJSON, &f.Status, &f.CreatedAt, &f.TaskDescription, &f.EvidenceVersion, &f.ReportEvidenceVersion, &f.TrafficCount); err != nil {
+			&f.Summary, &f.Evidence, &f.Worker, &aidsJSON, &f.Status, &f.CreatedAt, &f.TaskDescription, &f.EvidenceVersion, &f.ReportEvidenceVersion, &f.TrafficCount, &f.TicketID); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(aidsJSON), &f.AssetIDs)
@@ -519,7 +544,7 @@ func (d *DB) ListFindingsForExport(f FindingFilter, ids []int64) ([]*DBFinding, 
 		var aidsJSON string
 		if err := rows.Scan(&f.ID, &f.TaskID, &f.NodeID, &f.VulnClass, &f.Name, &f.Severity,
 			&f.Summary, &f.Evidence, &f.Worker, &aidsJSON, &f.Status, &f.CreatedAt,
-			&f.TaskDescription, &f.EvidenceVersion, &f.ReportEvidenceVersion, &f.TrafficCount, &f.Report); err != nil {
+			&f.TaskDescription, &f.EvidenceVersion, &f.ReportEvidenceVersion, &f.TrafficCount, &f.TicketID, &f.Report); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(aidsJSON), &f.AssetIDs)
@@ -649,7 +674,7 @@ func (d *DB) GetFinding(id int64) (*DBFinding, error) {
 		WHERE f.id = $1`, id).Scan(
 		&f.ID, &f.TaskID, &f.NodeID, &f.VulnClass, &f.Name, &f.Severity,
 		&f.Summary, &f.Evidence, &f.Worker, &aidsJSON, &f.Status, &f.CreatedAt,
-		&f.TaskDescription, &f.EvidenceVersion, &f.ReportEvidenceVersion, &f.TrafficCount, &f.Report)
+		&f.TaskDescription, &f.EvidenceVersion, &f.ReportEvidenceVersion, &f.TrafficCount, &f.TicketID, &f.Report)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -763,6 +788,18 @@ func (d *DB) SetFindingVulnClass(id int64, vulnclass string) (int64, error) {
 	return d.setFindingCol(id, "vulnclass", "vulnclass", vulnclass)
 }
 
+// SetFindingTicketID stores one finding's ticket id. The caller validates it with
+// NormalizeFindingTicketID. Unlike the other setters it does not mirror into the
+// originating node payload: that payload is what agents read, and the ticket id
+// is operator-only. Returns rows affected (0 when no finding has that id).
+func (d *DB) SetFindingTicketID(id int64, ticketID string) (int64, error) {
+	res, err := d.Exec(`UPDATE findings SET ticket_id=$1 WHERE id=$2`, ticketID, id)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // FindingMeta is the standalone-row data (id, triage state, anchored assets) the
 // per-task view grafts onto its exploration-node findings.
 type FindingMeta struct {
@@ -770,6 +807,7 @@ type FindingMeta struct {
 
 	ID       int64
 	Status   string
+	TicketID string
 	AssetIDs []int64
 }
 
@@ -789,7 +827,7 @@ func (d *DB) FindingMetaByNodeID(taskID int64) (map[int64]FindingMeta, error) {
 	if taskID <= 0 {
 		return out, nil
 	}
-	rows, err := d.Query(`SELECT node_id, id, COALESCE(status,'pending'), asset_ids, (SELECT count(*) FROM finding_traffic_bindings b WHERE b.finding_id=findings.id) FROM findings
+	rows, err := d.Query(`SELECT node_id, id, COALESCE(status,'pending'), asset_ids, (SELECT count(*) FROM finding_traffic_bindings b WHERE b.finding_id=findings.id), ticket_id FROM findings
 		WHERE task_id=$1 AND node_id IS NOT NULL`, taskID)
 	if err != nil {
 		return out, err
@@ -799,7 +837,7 @@ func (d *DB) FindingMetaByNodeID(taskID int64) (map[int64]FindingMeta, error) {
 		var nid int64
 		var m FindingMeta
 		var aidsJSON string
-		if err := rows.Scan(&nid, &m.ID, &m.Status, &aidsJSON, &m.TrafficCount); err != nil {
+		if err := rows.Scan(&nid, &m.ID, &m.Status, &aidsJSON, &m.TrafficCount, &m.TicketID); err != nil {
 			return out, err
 		}
 		_ = json.Unmarshal([]byte(aidsJSON), &m.AssetIDs)
