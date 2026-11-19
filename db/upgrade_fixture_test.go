@@ -40,6 +40,11 @@ var recordedShapes = []recordedShape{
 	{"r0512", "schema-7996d35963a0.sql", "7996d35963a0eb882e339ea410058452ba9aadc653399edaa3b51858c4fec1f7", "goddl-4bfc9dbe09c3.sql", "4bfc9dbe09c30629946c5b1918d67f164de08e9dd7b9857f8aeb95b9ad875624", []releaseCommit{
 		{"v0.5.12m", "450c877f91024fecd2f2023363db1d44cafd7fbc"},
 	}},
+	// r0513 is the last release before the migration runner: its db/schema.sql is the schema that is
+	// now frozen (docs/phase-d2-stage2-plan.md 3.1), and it ran the same Go DDL as the older releases.
+	{"r0513", "schema-951f3d0c8859.sql", "951f3d0c88597f494b5fc1a87ca6694daa9d35e490d3f131d4fb36a2f49f963a", "goddl-4bfc9dbe09c3.sql", "4bfc9dbe09c30629946c5b1918d67f164de08e9dd7b9857f8aeb95b9ad875624", []releaseCommit{
+		{"v0.5.13m", "b160905d0d17ec398296609a0d39263f5b72f761"},
+	}},
 }
 
 func sha256Hex(b []byte) string {
@@ -64,6 +69,11 @@ type manifestFile struct {
 		SchemaSQLSHA256 string `json:"schema_sql_sha256"`
 		Reference       string `json:"reference"`
 		ReferenceSHA256 string `json:"reference_sha256"`
+		Migrations      []struct {
+			Version int    `json:"version"`
+			Name    string `json:"name"`
+			SHA256  string `json:"sha256"`
+		} `json:"migrations"`
 	} `json:"current"`
 }
 
@@ -106,6 +116,27 @@ func TestUpgradeFixtureChecksums(t *testing.T) {
 		if want := "goddl-" + s.goddlSHA[:12] + ".sql"; s.goddl != want {
 			t.Errorf("%s: file name %s does not carry the first 12 hex digits of its sha256 (%s)", s.shape, s.goddl, want)
 		}
+	}
+}
+
+// The release v0.5.13m is the one whose schema.sql is the frozen db/schema.sql: while the schema is
+// frozen, the newest recorded shape holds exactly its bytes. A lockstep edit of schema.sql
+// (docs/phase-d2-stage2-plan.md 3.1) ends that equality on purpose: this test is then changed in the same
+// commit, to compare with the shape of the release that carried the edit.
+func TestUpgradeFrozenSchemaIsTheNewestRecordedShape(t *testing.T) {
+	newest := recordedShapes[len(recordedShapes)-1]
+	if newest.shape != "r0513" {
+		t.Fatalf("the newest recorded shape is %s, want r0513", newest.shape)
+	}
+	if newest.sha256 != currentSchemaSQLSHA256 {
+		t.Errorf("shape %s pins schema sha256 %s, the frozen schema.sql is pinned as %s", newest.shape, newest.sha256, currentSchemaSQLSHA256)
+	}
+	fixture, err := os.ReadFile(filepath.Join(upgradeDir, newest.file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(fixture) != schemaSQL {
+		t.Errorf("%s differs from the embedded db/schema.sql, which must stay byte-identical to the release v0.5.13m while it is frozen", newest.file)
 	}
 }
 

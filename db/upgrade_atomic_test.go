@@ -264,98 +264,137 @@ func TestUpgradeLockKeyIsUnchanged(t *testing.T) {
 	}
 }
 
-// AC7(a): four concurrent Open calls on one r0509 database all succeed and leave
-// the catalog and the row digests (timestamp columns excluded, they are set by now())
-// that one Open leaves. Without the lock, concurrent CREATE TABLE IF NOT EXISTS on the
-// objects new since r0509 (finding_comments and its index) collide in the catalog.
+// AC7(a), AC13: four concurrent Open calls, on an empty database and on one of shape r0513 (a database a
+// release without the ledger left behind), all succeed, adopt the migration baseline ONCE and leave the
+// catalog and the row digests (timestamp columns excluded, they are set by now()) that one Open leaves.
+// Without the lock, concurrent CREATE TABLE IF NOT EXISTS on the objects new since r0509 (finding_comments and
+// its index) collide in the catalog, and two adoptions would collide on the ledger.
 //
-// Sequences are compared separately: every Open runs upserts that advance sequences
-// without adding rows (INSERT ... ON CONFLICT consumes a nextval), so four Opens
-// leave the sequences higher than one. They must not be lower.
+// One adoption means: exactly one "adopted baseline" log line, and a ledger of the four baseline rows that
+// share one applied_at (adoption is one transaction, now() is its start time); the other three starts find
+// the complete ledger and log "up to date". Sequences are compared separately: every Open runs upserts that
+// advance sequences without adding rows (INSERT ... ON CONFLICT consumes a nextval), so four Opens leave the
+// sequences higher than one. They must not be lower.
 func TestUpgradeConcurrentOpenMatchesSingleOpen(t *testing.T) {
-	srv := dbtest.RequireServer(t)
-	single := dbtest.TempDatabase(t, srv, "conc1")
-	multi := dbtest.TempDatabase(t, srv, "conc4")
-	for _, tmp := range []*dbtest.Temp{single, multi} {
-		tmp.Load(t, "r0509 schema", atomicSchema(t, "r0509"))
-		tmp.Load(t, "violation base rows", atomicFixture(t, "violation-base.sql"))
+	var r0513 matrixShape
+	for _, sh := range matrixShapes {
+		if sh.name == "r0513" {
+			r0513 = sh
+		}
 	}
-	startup(t, single.DSN)
+	if r0513.name == "" {
+		t.Fatal("no matrix shape r0513")
+	}
+	for _, tc := range []struct {
+		name  string
+		shape *matrixShape // nil: an empty database
+	}{
+		{"fresh", nil},
+		{"r0513", &r0513},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			logs := dbtest.CaptureLog(t)
+			srv := dbtest.RequireServer(t)
+			var single, multi *dbtest.Temp
+			if tc.shape == nil {
+				single = dbtest.TempDatabase(t, srv, "conc1_"+tc.name)
+				multi = dbtest.TempDatabase(t, srv, "conc4_"+tc.name)
+			} else {
+				one, four := *tc.shape, *tc.shape
+				one.name, four.name = "conc1_"+tc.name, "conc4_"+tc.name
+				single, multi = buildShape(t, srv, one), buildShape(t, srv, four)
+			}
+			startup(t, single.DSN)
+			logs1 := logs()
 
-	const workers = 4
-	type result struct {
-		d   *DB
-		err error
-	}
-	results := make([]result, workers)
-	release := make(chan struct{})
-	done := make(chan int, workers)
-	for i := 0; i < workers; i++ {
-		go func(i int) {
-			<-release
-			d, err := Open(multi.DSN)
-			results[i] = result{d, err}
-			done <- i
-		}(i)
-	}
-	close(release)
-	timeout := time.After(3 * time.Minute)
-	for i := 0; i < workers; i++ {
-		select {
-		case <-done:
-		case <-timeout:
-			t.Fatalf("only %d of %d concurrent Open calls returned within 3 minutes", i, workers)
-		}
-	}
-	for i, r := range results {
-		if r.err != nil {
-			t.Errorf("concurrent Open %d failed: %s", i, dbtest.AtomicErrorSummary(r.err))
-			continue
-		}
-		defer r.d.Close()
-	}
-	if t.Failed() {
-		return
-	}
-	if err := results[0].d.EnsureLLMRecordsTable(); err != nil {
-		t.Fatalf("EnsureLLMRecordsTable failed (%s)", dbtest.AtomicErrorSummary(err))
-	}
-	if err := results[0].d.EnsureLLMUsageTable(); err != nil {
-		t.Fatalf("EnsureLLMUsageTable failed (%s)", dbtest.AtomicErrorSummary(err))
-	}
+			const workers = 4
+			type result struct {
+				d   *DB
+				err error
+			}
+			results := make([]result, workers)
+			release := make(chan struct{})
+			done := make(chan int, workers)
+			for i := 0; i < workers; i++ {
+				go func(i int) {
+					<-release
+					d, err := Open(multi.DSN)
+					results[i] = result{d, err}
+					done <- i
+				}(i)
+			}
+			close(release)
+			timeout := time.After(3 * time.Minute)
+			for i := 0; i < workers; i++ {
+				select {
+				case <-done:
+				case <-timeout:
+					t.Fatalf("only %d of %d concurrent Open calls returned within 3 minutes", i, workers)
+				}
+			}
+			for i, r := range results {
+				if r.err != nil {
+					t.Errorf("concurrent Open %d failed: %s", i, dbtest.AtomicErrorSummary(r.err))
+					continue
+				}
+				defer r.d.Close()
+			}
+			if t.Failed() {
+				return
+			}
 
-	ctx := context.Background()
-	if diff := dbtest.DiffLines(dbtest.Lines(single.Catalog(t, single.Conn(t))), dbtest.Lines(multi.Catalog(t, multi.Conn(t)))); len(diff) > 0 {
-		t.Errorf("the catalog after %d concurrent Opens differs from one Open (%d objects):\n  %s", workers, len(diff), strings.Join(diff, "\n  "))
-	}
-	one, err := dbtest.AtomicDataDigests(ctx, single.Conn(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	many, err := dbtest.AtomicDataDigests(ctx, multi.Conn(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if diff := dbtest.DiffDigests(one, many); len(diff) > 0 {
-		t.Errorf("the rows after %d concurrent Opens differ from one Open (%d differences):\n  %s", workers, len(diff), strings.Join(diff, "\n  "))
-	}
-	seqOne, err := dbtest.TakeDigests(ctx, single.Conn(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	seqMany, err := dbtest.TakeDigests(ctx, multi.Conn(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for name, v := range seqOne.Sequences {
-		if got, ok := seqMany.Sequences[name]; !ok || got < v {
-			t.Errorf("sequence %s is %d after %d concurrent Opens, below %d after one Open", name, got, workers, v)
-		}
+			// One adoption, however many starts: one log line, one ledger, one applied_at.
+			concurrent := strings.TrimPrefix(logs(), logs1)
+			if n := strings.Count(concurrent, "[migrate] adopted baseline in"); n != 1 {
+				t.Errorf("%d concurrent starts logged %d baseline adoptions, want 1", workers, n)
+			}
+			if n := strings.Count(concurrent, "[migrate] up to date"); n != workers {
+				t.Errorf("%d concurrent starts logged %d \"up to date\" lines, want %d", workers, n, workers)
+			}
+			ledger := readLedger(t, multi.Conn(t))
+			requireBaselineLedger(t, ledger)
+			for _, row := range ledger[1:] {
+				if !row.appliedAt.Equal(ledger[0].appliedAt) {
+					t.Errorf("ledger version %04d has applied_at %v, version %04d %v: the baseline was not adopted in one transaction",
+						row.version, row.appliedAt, ledger[0].version, ledger[0].appliedAt)
+				}
+			}
+
+			ctx := context.Background()
+			if diff := dbtest.DiffLines(dbtest.Lines(single.Catalog(t, single.Conn(t))), dbtest.Lines(multi.Catalog(t, multi.Conn(t)))); len(diff) > 0 {
+				t.Errorf("the catalog after %d concurrent Opens differs from one Open (%d objects):\n  %s", workers, len(diff), strings.Join(diff, "\n  "))
+			}
+			one, err := dbtest.AtomicDataDigests(ctx, single.Conn(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			many, err := dbtest.AtomicDataDigests(ctx, multi.Conn(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if diff := dbtest.DiffDigests(one, many); len(diff) > 0 {
+				t.Errorf("the rows after %d concurrent Opens differ from one Open (%d differences):\n  %s", workers, len(diff), strings.Join(diff, "\n  "))
+			}
+			seqOne, err := dbtest.TakeDigests(ctx, single.Conn(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			seqMany, err := dbtest.TakeDigests(ctx, multi.Conn(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for name, v := range seqOne.Sequences {
+				if got, ok := seqMany.Sequences[name]; !ok || got < v {
+					t.Errorf("sequence %s is %d after %d concurrent Opens, below %d after one Open", name, got, workers, v)
+				}
+			}
+		})
 	}
 }
 
-// AC7(b): Open waits while another transaction holds pg_advisory_xact_lock(key) and
-// finishes after that transaction ends.
+// AC7(b), AC13: Open waits while another transaction holds pg_advisory_xact_lock(key) and
+// finishes after that transaction ends, with the baseline adopted.
 //
 // The test does not guess with sleeps. It (1) holds the lock in an open transaction,
 // (2) polls pg_locks until Open's session shows up as a waiter for the same key (up
@@ -458,4 +497,6 @@ func TestUpgradeLockBlocksOpenUntilTransactionEnds(t *testing.T) {
 	if !atomicTableExists(t, tmp, "finding_comments") {
 		t.Error("Open returned without applying the schema")
 	}
+	// The preflight, the schema and the adoption all ran after the wait: the ledger is the baseline.
+	requireBaselineLedger(t, readLedger(t, tmp.Conn(t)))
 }

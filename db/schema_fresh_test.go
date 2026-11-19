@@ -10,10 +10,10 @@ import (
 	"github.com/mkilijanek/artex/db/dbtest"
 )
 
-// startup is what a running server does to the schema, in order: Open (schema.sql and
-// seedBuiltins; the llm tables come from the embedded migrations) and the two Ensure wrapper
-// calls, which re-run those migrations and keep the tests that call them valid. It never skips:
-// a database that cannot be opened is a failure. An error is reported through
+// startup is what a running server does to the schema: Open (the migration preflight, schema.sql,
+// the baseline adoption of the migration runner with its ledger, seedBuiltins). The llm tables come
+// from the embedded migrations, so there is no Ensure call after it. It never skips: a database that
+// cannot be opened is a failure. An error is reported through
 // dbtest.AtomicErrorSummary (SQLSTATE and object names, a fixed text for a connection
 // error): a PostgreSQL message can quote the row that violated a constraint, which matters
 // when the database is a copy of a real one (the dry run).
@@ -24,12 +24,6 @@ func startup(t testing.TB, dsn string) *DB {
 		t.Fatalf("startup: Open failed (%s)", dbtest.AtomicErrorSummary(err))
 	}
 	t.Cleanup(func() { d.Close() })
-	if err := d.EnsureLLMRecordsTable(); err != nil {
-		t.Fatalf("startup: EnsureLLMRecordsTable failed (%s)", dbtest.AtomicErrorSummary(err))
-	}
-	if err := d.EnsureLLMUsageTable(); err != nil {
-		t.Fatalf("startup: EnsureLLMUsageTable failed (%s)", dbtest.AtomicErrorSummary(err))
-	}
 	return d
 }
 
@@ -47,9 +41,9 @@ func loadReference(t *testing.T) []string {
 	return lines
 }
 
-// expectedTables is 55 CREATE TABLE statements in schema.sql plus llm_records and
-// llm_usage, which EnsureLLM*Table create after Open (docs/phase-d2-plan.md 2.1).
-const expectedTables = 57
+// expectedTables is 55 CREATE TABLE statements in schema.sql, llm_records and llm_usage (migrations
+// 0001 and 0002) and the ledger schema_migrations (docs/phase-d2-plan.md 2.1, docs/phase-d2-stage2-plan.md 3.2).
+const expectedTables = 58
 
 // AC2: startup on an empty database succeeds and the catalog listing equals the
 // committed reference.
@@ -111,7 +105,8 @@ func TestUpgradeFailedComparisonDoesNotLeakRowsOrPassword(t *testing.T) {
 }
 
 const referenceHeader = `# ARTEX schema reference catalog, PostgreSQL 16 only (docs/phase-d2-plan.md section 5.2).
-# State listed: a fresh database after Open, EnsureLLMRecordsTable and EnsureLLMUsageTable.
+# State listed: a fresh database after Open alone (schema.sql, the baseline migrations 0001, 0002, 0003, 5001
+# and the ledger table schema_migrations; no Ensure call).
 # One line per object: kind name sha256(definition). Sorted. Column order is not listed on purpose
 # (restore uses the same row type on both sides of INSERT ... SELECT *).
 # Listed: tables (kind, persistence), columns (type, nullability, default, collation, identity,

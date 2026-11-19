@@ -22,7 +22,8 @@ fixture of synthetic rows:
 | Shape | What it is |
 |---|---|
 | `r0509` | `db/schema.sql` as released in 0.5.9m, 0.5.10m and 0.5.11m (identical bytes) |
-| `r0512` | `db/schema.sql` as released in 0.5.12m (the current schema adds `findings.ticket_id` to it) |
+| `r0512` | `db/schema.sql` as released in 0.5.12m (0.5.13m adds `findings.ticket_id` to it) |
+| `r0513` | `db/schema.sql` as released in 0.5.13m: the schema that is now frozen, and the last release without the migration ledger |
 | `legacy` | **synthetic**: `r0509` plus `legacy-mutations.sql`, which puts back the old forms that the upgrade branches of `schema.sql` look for. It is not a recorded release |
 
 Checks (test names are in `db/`, `db/dbtest/` and `server/`):
@@ -31,8 +32,9 @@ Checks (test names are in `db/`, `db/dbtest/` and `server/`):
   test source and in `db/testdata/upgrade/manifest.json`; a test fails if a hashed file holds a
   CR byte, and `TestGitHistoryFixtures` compares each fixture with
   `git show <commit>:db/schema.sql` by commit id.
-- **Fresh database** after startup (`Open`, `EnsureLLMRecordsTable`, `EnsureLLMUsageTable`)
-  has the catalog listed in `db/testdata/upgrade/reference-catalog-pg16.txt`.
+- **Fresh database** after startup (`Open` alone: it adopts the baseline migrations and creates the ledger table
+  `schema_migrations`) has the catalog listed in `db/testdata/upgrade/reference-catalog-pg16.txt` and the ledger
+  versions 0001, 0002, 0003 and 5001.
 - **Upgrade keeps rows.** For each shape, startup removes no row and changes no value except
   what `expected-changes.json` lists exactly (see below). The fixture must have rows in every table or
   a stated exemption. Sequences do not go backwards.
@@ -49,7 +51,7 @@ Checks (test names are in `db/`, `db/dbtest/` and `server/`):
 - **Startup writers outside `schema.sql`** (`server/upgrade_seed_test.go`): the seeders that run
   at server start, run twice on an upgraded database.
 - **Schema-change gate** (`TestUpgradeSchemaChangeGate`, no database needed): `db/schema.sql`,
-  the Go DDL constants and the reference catalog are pinned by hash.
+  the reference catalog and the list of embedded migrations are pinned by hash.
 - **Test safety.** A guard (`db/dbtest/guard.go`) runs before every create, load and drop. Fixture rows
   carry the marker `CANARY-D2-ROW`; tests check that neither it nor the server password reaches any output.
 
@@ -94,11 +96,17 @@ ARTEX_PG_DSN='postgres://USER:PASS@HOST:5432/DB?sslmode=disable' scripts/upgrade
   second run its own `DB`.
 - With `ARTEX_PG_DSN` unset the existing database tests skip and the upgrade tests **fail**; nothing falls back
   to the config file.
-- `scripts/upgrade-gate.sh` runs the upgrade tests with `go test -json`, and fails unless `go test` exits 0, at
+- `scripts/upgrade-gate.sh` runs the upgrade tests and the migration runner tests (`TestUpgrade*`, `TestMigration*`,
+  `TestLedger*`, `TestLoadMigrations*`) with `go test -json`, and fails unless `go test` exits 0, at
   least `MIN_UPGRADE_TESTS` top-level tests passed and **none** skipped (a skipped test reads as passed
-  in plain `go test`). It then runs `TestGitHistoryFixtures`. Without a `.git` directory the comparison is
+  in plain `go test`). It then runs `TestGitHistoryFixtures` and the migration tag check: every file of
+  `db/migrations/` that a release tag (`v*`) contains must exist byte-identical at `HEAD`, and the upstream files
+  (numbered below 5000) must equal the pinned upstream commit `278de8b2e09a3702f77bbbd065ef35e4b7fdb1d0` when
+  that object is in the repository (it is never fetched). Without a `.git` directory these comparisons are
   reported `NOT RUN`; `UPGRADE_GATE_REQUIRE_GIT=1` turns that into a failure (hosted CI sets it). Raise
-  `MIN_UPGRADE_TESTS` with the tests, never lower it to make the gate pass.
+  `MIN_UPGRADE_TESTS` with the tests, never lower it to make the gate pass. `scripts/upgrade-gate.sh
+  --migration-tags [REPO_DIR]` runs only the tag check, with no database; `TestUpgradeGateMigrationTagCheck`
+  tries it on synthetic repositories.
 - CI runs the gate as the step "Schema upgrade test gate" after `go test -p 1 ./...`.
 
 Whole suite: `go test -p 1 ./...` with the same variable. Four `db` tests
@@ -108,41 +116,64 @@ fresh database for each full run.
 
 ## Changing the schema
 
-Any change to `db/schema.sql`, the Go DDL constants (`llmRecordsSchema`, `llmRecordsMigrate`, `llmUsageSchema`)
-or the reference catalog fails `TestUpgradeSchemaChangeGate` until this procedure is done (it is the failure
-message of that test):
+`db/schema.sql` is **frozen** at the bytes of release 0.5.13m (sha256 `951f3d0c...f963a`). Every later schema change is
+a numbered migration in `db/migrations/`, recorded in the ledger table `schema_migrations` with its sha256 (see
+`db/migrate.go` for the runner and its rules). A change to `db/schema.sql`, a migration or the reference catalog
+fails `TestUpgradeSchemaChangeGate` or the migration pin tests until this procedure is done (it is the failure
+message of the gate test):
 
-1. Record the previous release's `db/schema.sql` as a new fixture by commit id:
-   `git show <commit>:db/schema.sql > db/testdata/upgrade/schema-<sha12>.sql`. Add it to `recordedShapes` in
-   `db/upgrade_fixture_test.go` and to `manifest.json`. Never edit a fixture. Skip this step when that release
-   is already a recorded shape (its schema hash is already in `recordedShapes`) and the schema has not changed
-   since it was released.
-2. Extend the data fixtures and `expected-changes.json` for the new shape. Run `go test ./db -run
-   '^TestUpgradeRowsPreserved'`: it lists every difference that has no entry. A new column with a constant
-   default needs one `value` entry (`"column_added": true`) per row of that table in the fixture of each shape
-   (for `findings.ticket_id`: 2 rows, 3 shapes, 6 entries); a data fixture needs a change only when a table has
-   no rows yet.
-3. Regenerate the Go DDL fixture and the reference catalog in a PostgreSQL 16 container:
+1. Add `db/migrations/5NNN_<slug>.sql` with the next free number **on `main`** (never reserve numbers on a branch;
+   a collision is resolved by renumbering the unmerged file). First line `-- downgrade-safe: yes|no: <reason>`.
+   No `CONCURRENTLY`, no `VACUUM` (the loader rejects them outside comments). Idempotent where natural. A migration
+   that is on `main` is never edited: a new one corrects it. A migration must not change an object that
+   `schema.sql` re-creates on every start (the CHECK pairs, the triggers, the four functions, the data statements)
+   unless step 3 is done in the same commit.
+2. Add the file to `migrationPins` (name, sha256, downgrade-safe flag) in `db/migrate_pins_test.go` and to
+   `current.migrations` in `manifest.json`. Upstream files (`0001`-`4999`) also get their blob id.
+3. Only for an object that `schema.sql` re-creates on every start: edit that statement in `schema.sql` in the **same
+   commit** as the migration that changes it (the only allowed edit of `schema.sql`), update the `schema.sql` sha256
+   (`db/schema_gate_test.go` and `manifest.json` `current`) and change `TestUpgradeFrozenSchemaIsTheNewestRecordedShape`,
+   which holds the equality of `schema.sql` with the `r0513` fixture while the schema is frozen.
+4. Record the previous release as a shape if its state is not recorded yet:
+   `git show <commit>:db/schema.sql > db/testdata/upgrade/schema-<sha12>.sql`, its Go DDL fixture (`goddl_*` of its
+   `manifest.json` entry) and, for a release that ran the runner, its applied migrations. Add it to `recordedShapes` in
+   `db/upgrade_fixture_test.go` and to `manifest.json`. Never edit a fixture. Skip this step when that release is
+   already a recorded shape.
+5. Extend the data fixtures and `expected-changes.json` for each shape, the added `schema_migrations` rows included.
+   Run `go test ./db -run '^TestUpgradeRowsPreserved'`: it lists every difference that has no entry. A new column
+   with a constant default needs one `value` entry (`"column_added": true`) per row of that table in the fixture of
+   each older shape; a data fixture needs a change only when a table has no rows yet.
+6. Regenerate the reference catalog in a PostgreSQL 16 container:
    `ARTEX_UPGRADE_REGENERATE=1 go test ./db -run TestRegenerateUpgradeReference`
-   (with `ARTEX_PG_DSN` set as above; the test logs the new hashes). The files are written into the working
-   tree the test runs in: from a container, copy them back out.
-4. Update the three sha256 constants in `db/schema_gate_test.go` and the `current` entry of `manifest.json`.
-5. Do what the schema change needs beyond the matrix, none of which the gate failure names:
+   (with `ARTEX_PG_DSN` set as above; the test logs the new hash). The file is written into the working
+   tree the test runs in: from a container, copy it back out. Review it as a diff: it is the new definition of "a
+   correct database". Update the reference sha256 in `db/schema_gate_test.go` and the `current` entry of
+   `manifest.json`.
+7. Do what the schema change needs beyond the matrix, none of which the gate failure names:
    - A new NOT NULL column of a table in a task archive needs an entry in `archiveRestoreDefaults`
      (`db/upgrade_archive_test.go`) naming the normaliser of the restore path that fills it (`TestUpgradeArchiveColumnsSurviveUpgrade`
      fails otherwise), and the digest difference "column ... added" is listed in `archiveKnownUpgradeDiffs`.
    - A test that opens a database of its own must take it from `dbtest.TempDatabase` (name
      `<DB>_upg_<case>`), so that the guard covers it and the leftover check finds it.
-   - Re-check the `file:line` causes in `expected-changes.json` that point into `db/schema.sql` below the edited line.
+   - Re-check the `file:line` causes in `expected-changes.json` that point into `db/schema.sql` or `db/migrate.go`
+     below an edited line.
    - Raise `MIN_UPGRADE_TESTS` in `scripts/upgrade-gate.sh` when tests were added, and update the counts and shape
      descriptions in this file and in the CHANGELOG entry.
+8. The CHANGELOG lists the migration with its downgrade-safe line.
 
-Then run the gate. Review the regenerated reference as a diff: it is the new definition of "a correct database".
+Then run the gate.
 
-The suite has been exercised by one real schema change, `findings.ticket_id` (merged from `main` before 0.5.13m).
-The procedure required: no new fixture (0.5.12m was already recorded), one regenerated reference line,
-three pinned hashes, six expected-changes entries, one archive restore default, and moving the one test that
-opened its own database onto `dbtest.TempDatabase`.
+Rollback of the first release with the ledger needs no step: 0.5.13m never reads `schema_migrations`. The optional
+cleanup that restores the exact catalog of a database that never had it is guarded: it drops the ledger only when
+the ledger holds exactly the baseline set (0001, 0002, 0003, 5001) and raises, changing nothing, otherwise. It is
+`db/testdata/upgrade/rollback-cleanup-ledger.sql`, run by `TestUpgradeRollbackCleanupDropsABaselineLedger` and
+`TestUpgradeRollbackCleanupRefusesAnyOtherLedger`, and rehearsed end to end by
+`TestUpgradeRollbackToTheReleaseWithoutTheLedgerAndForward`.
+
+The suite has been exercised by two real schema changes: `findings.ticket_id` (merged from `main` before 0.5.13m: no new
+fixture, one regenerated reference line, three pinned hashes, six expected-changes entries, one archive restore default,
+and moving the one test that opened its own database onto `dbtest.TempDatabase`) and the adoption of the migration
+ledger itself (a new shape `r0513`, the table `schema_migrations` in the reference, four `added` entries per shape).
 
 ## The expected-changes file
 
@@ -194,7 +225,9 @@ Other facts that the runs established and that an operator may notice:
 ## Dry run on a restored copy of a real database
 
 `TestDryRunRestoredCopy` runs startup twice on a copy of a real database and prints a report with row counts per
-table before and after and the catalog differences against the reference **by object name**. It prints no row value.
+table before and after, the state of the migration ledger before and after (`absent`, then the four baseline
+versions `0001 0002 0003 5001`; versions only, never a name or a checksum) and the catalog differences against the
+reference **by object name**. It prints no row value.
 It is not part of the gate: it needs its own server and does nothing unless `ARTEX_UPGRADECHECK_DSN` is set. It
 fails if startup removes rows from a table or if the second start changes a row count. One removal is expected and
 reported as such: the obsolete prompt variables (`EngagementTitle`, `CoverageGaps`, `Now`) that every start deletes

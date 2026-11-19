@@ -18,7 +18,11 @@
       {"kind": "value", "table": "tasks", "pk": {"id": "4"}, "column": "active_llm_profile_id", "before": null, "after": "2", "cause": "db/schema.sql:751-755", "class": "intended"},
       {"kind": "value", "table": "tasks", "pk": {"id": "4"}, "column": "updated_at", "before": "2026-01-01T00:00:00.000000Z", "after": "@startup", "cause": "db/schema.sql:751-755; db/schema.sql:557-559", "class": "intended"},
       {"kind": "added", "table": "task_llm_profiles", "pk": {"task_id": "4", "profile_id": "2"}, "cause": "db/schema.sql:745-750", "class": "intended"},
-      {"kind": "added", "table": "task_asset_links", "pk": {"task_id": "1", "asset_id": "3"}, "cause": "db/schema.sql:712-717", "class": "accepted", "note": "Accepted by the owner on 2026-11-19. Insert-only: re-creates a link that was deleted by hand while assets.task_ids still lists the task; assets.task_ids is the source of truth."}
+      {"kind": "added", "table": "task_asset_links", "pk": {"task_id": "1", "asset_id": "3"}, "cause": "db/schema.sql:712-717", "class": "accepted", "note": "Accepted by the owner on 2026-11-19. Insert-only: re-creates a link that was deleted by hand while assets.task_ids still lists the task; assets.task_ids is the source of truth."},
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "1"}, "cause": "db/migrate.go:537; db/migrate.go:546-557", "class": "intended"},
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "2"}, "cause": "db/migrate.go:537; db/migrate.go:546-557", "class": "intended"},
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "3"}, "cause": "db/migrate.go:537; db/migrate.go:546-557", "class": "intended"},
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5001"}, "cause": "db/migrate.go:537; db/migrate.go:546-557", "class": "intended"}
     ],
     "r0512": [
       {"kind": "deleted", "table": "agent_prompt_vars", "pk": {"id": "9"}, "cause": "db/db.go:280", "class": "intended"},
@@ -37,7 +41,32 @@
       {"kind": "value", "table": "tasks", "pk": {"id": "4"}, "column": "active_llm_profile_id", "before": null, "after": "2", "cause": "db/schema.sql:751-755", "class": "intended"},
       {"kind": "value", "table": "tasks", "pk": {"id": "4"}, "column": "updated_at", "before": "2026-01-01T00:00:00.000000Z", "after": "@startup", "cause": "db/schema.sql:751-755; db/schema.sql:557-559", "class": "intended"},
       {"kind": "added", "table": "task_llm_profiles", "pk": {"task_id": "4", "profile_id": "2"}, "cause": "db/schema.sql:745-750", "class": "intended"},
-      {"kind": "added", "table": "task_asset_links", "pk": {"task_id": "1", "asset_id": "3"}, "cause": "db/schema.sql:712-717", "class": "accepted", "note": "Accepted by the owner on 2026-11-19. Insert-only: re-creates a link that was deleted by hand while assets.task_ids still lists the task; assets.task_ids is the source of truth."}
+      {"kind": "added", "table": "task_asset_links", "pk": {"task_id": "1", "asset_id": "3"}, "cause": "db/schema.sql:712-717", "class": "accepted", "note": "Accepted by the owner on 2026-11-19. Insert-only: re-creates a link that was deleted by hand while assets.task_ids still lists the task; assets.task_ids is the source of truth."},
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "1"}, "cause": "db/migrate.go:537; db/migrate.go:546-557", "class": "intended"},
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "2"}, "cause": "db/migrate.go:537; db/migrate.go:546-557", "class": "intended"},
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "3"}, "cause": "db/migrate.go:537; db/migrate.go:546-557", "class": "intended"},
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5001"}, "cause": "db/migrate.go:537; db/migrate.go:546-557", "class": "intended"}
+    ],
+    "r0513": [
+      {"kind": "deleted", "table": "agent_prompt_vars", "pk": {"id": "9"}, "cause": "db/db.go:280", "class": "intended"},
+      {"kind": "deleted", "table": "agent_prompt_vars", "pk": {"id": "10"}, "cause": "db/db.go:280", "class": "intended"},
+      {"kind": "deleted", "table": "agent_prompt_vars", "pk": {"id": "11"}, "cause": "db/db.go:280", "class": "intended"},
+      {"kind": "value", "table": "agents", "pk": {"id": "1"}, "column": "updated_at", "before": "2026-01-01T00:00:00.000000Z", "after": "@startup", "cause": "db/db.go:258; db/schema.sql:830-832", "class": "intended"},
+      {"kind": "value", "table": "agents", "pk": {"id": "2"}, "column": "updated_at", "before": "2026-01-01T00:00:00.000000Z", "after": "@startup", "cause": "db/db.go:258; db/schema.sql:830-832", "class": "intended"},
+      {"kind": "value", "table": "agents", "pk": {"id": "3"}, "column": "updated_at", "before": "2026-01-01T00:00:00.000000Z", "after": "@startup", "cause": "db/db.go:258; db/schema.sql:830-832", "class": "intended"},
+      {"kind": "value", "table": "agents", "pk": {"id": "4"}, "column": "updated_at", "before": "2026-01-01T00:00:00.000000Z", "after": "@startup", "cause": "db/db.go:258; db/schema.sql:830-832", "class": "intended"},
+      {"kind": "value", "table": "agents", "pk": {"id": "5"}, "column": "updated_at", "before": "2026-01-01T00:00:00.000000Z", "after": "@startup", "cause": "db/db.go:258; db/schema.sql:830-832", "class": "intended"},
+      {"kind": "value", "table": "agents", "pk": {"id": "6"}, "column": "updated_at", "before": "2026-01-01T00:00:00.000000Z", "after": "@startup", "cause": "db/db.go:258; db/schema.sql:830-832", "class": "intended"},
+      {"kind": "value", "table": "agents", "pk": {"id": "4"}, "column": "name", "before": "CANARY-D2-ROW renamed worker", "after": "Worker", "cause": "db/db.go:258", "class": "accepted", "note": "Accepted by the owner on 2026-11-19. The product does not let a built-in agent be renamed (db/config.go:610), so only an out-of-band SQL edit is reverted."},
+      {"kind": "value", "table": "agents", "pk": {"id": "4"}, "column": "description", "before": "CANARY-D2-ROW operator description", "after": "Picks up one intent and executes it, writes discovered facts/vulnerabilities back to the knowledge graph, then stops.", "cause": "db/db.go:258", "class": "accepted", "note": "Accepted by the owner on 2026-11-19. The product does not let a built-in agent be renamed (db/config.go:610), so only an out-of-band SQL edit is reverted."},
+      {"kind": "value", "table": "tasks", "pk": {"id": "4"}, "column": "active_llm_profile_id", "before": null, "after": "2", "cause": "db/schema.sql:751-755", "class": "intended"},
+      {"kind": "value", "table": "tasks", "pk": {"id": "4"}, "column": "updated_at", "before": "2026-01-01T00:00:00.000000Z", "after": "@startup", "cause": "db/schema.sql:751-755; db/schema.sql:557-559", "class": "intended"},
+      {"kind": "added", "table": "task_llm_profiles", "pk": {"task_id": "4", "profile_id": "2"}, "cause": "db/schema.sql:745-750", "class": "intended"},
+      {"kind": "added", "table": "task_asset_links", "pk": {"task_id": "1", "asset_id": "3"}, "cause": "db/schema.sql:712-717", "class": "accepted", "note": "Accepted by the owner on 2026-11-19. Insert-only: re-creates a link that was deleted by hand while assets.task_ids still lists the task; assets.task_ids is the source of truth."},
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "1"}, "cause": "db/migrate.go:537; db/migrate.go:546-557", "class": "intended"},
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "2"}, "cause": "db/migrate.go:537; db/migrate.go:546-557", "class": "intended"},
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "3"}, "cause": "db/migrate.go:537; db/migrate.go:546-557", "class": "intended"},
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5001"}, "cause": "db/migrate.go:537; db/migrate.go:546-557", "class": "intended"}
     ],
     "legacy": [
       {"kind": "deleted", "table": "agent_prompt_vars", "pk": {"id": "9"}, "cause": "db/db.go:280", "class": "intended"},
@@ -66,7 +95,11 @@
       {"kind": "value", "table": "llm_profiles", "pk": {"id": "2"}, "column": "updated_at", "before": "2026-01-01T00:00:00.000000Z", "after": "@startup", "cause": "db/schema.sql:485-486; db/schema.sql:421-423", "class": "intended"},
       {"kind": "value", "table": "llm_profiles", "pk": {"id": "3"}, "column": "thinking_type", "column_added": true, "after": "", "cause": "db/schema.sql:484", "class": "intended"},
       {"kind": "added", "table": "task_asset_links", "pk": {"task_id": "1", "asset_id": "2"}, "cause": "db/schema.sql:712-717", "class": "intended"},
-      {"kind": "added", "table": "task_asset_links", "pk": {"task_id": "1", "asset_id": "3"}, "cause": "db/schema.sql:712-717", "class": "intended"}
+      {"kind": "added", "table": "task_asset_links", "pk": {"task_id": "1", "asset_id": "3"}, "cause": "db/schema.sql:712-717", "class": "intended"},
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "1"}, "cause": "db/migrate.go:537; db/migrate.go:546-557", "class": "intended"},
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "2"}, "cause": "db/migrate.go:537; db/migrate.go:546-557", "class": "intended"},
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "3"}, "cause": "db/migrate.go:537; db/migrate.go:546-557", "class": "intended"},
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5001"}, "cause": "db/migrate.go:537; db/migrate.go:546-557", "class": "intended"}
     ]
   }
 }

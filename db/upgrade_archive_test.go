@@ -40,8 +40,9 @@ var archiveNewTableRestore = map[string]string{
 }
 
 // archiveOldDB opens a pool on an r0509 database without calling Open: Open would
-// upgrade it. The Go DDL steps of startup (llm_records, llm_usage) run as a 0.5.9m
-// server did, because the snapshot reads both tables.
+// upgrade it. The llm tables (llm_records, llm_usage) are created through the Ensure wrappers
+// (the embedded migrations 0001, 0002 and 5001, in place of the Go DDL that a 0.5.9m server ran),
+// because the snapshot reads both tables.
 func archiveOldDB(t *testing.T, tmp *dbtest.Temp) *DB {
 	t.Helper()
 	d := &DB{tmp.Conn(t)}
