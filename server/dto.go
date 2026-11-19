@@ -322,6 +322,7 @@ type FindingDTO struct {
 	Summary   string `json:"summary"`
 	Evidence  string `json:"evidence"`
 	Report    string `json:"report,omitempty"` // detailed report (Markdown); returned only by the detail endpoint, empty in lists
+	TicketID  string `json:"ticket_id"`        // operator-entered external ticket reference; always present, "" when unset
 
 	IntentID        string            `json:"intent_id,omitempty"`
 	ParamID         string            `json:"param_id,omitempty"`
@@ -420,6 +421,7 @@ func findingDTOsForOwner(taskID, description string, in []*db.Node, meta map[int
 		if m, ok := meta[n.ID]; ok {
 			d.FindingID = i64s(m.ID)
 			d.Status = m.Status
+			d.TicketID = m.TicketID
 			d.TrafficCount = m.TrafficCount
 			d.Assets = findingAssetDTOs(m.AssetIDs, assets)
 		}
@@ -459,6 +461,7 @@ func findingFromDB(f *db.DBFinding, assets map[int64]*db.Asset) FindingDTO {
 		Summary:   f.Summary,
 		Evidence:  f.Evidence,
 		Report:    f.Report,
+		TicketID:  f.TicketID,
 		TS:        rfc3339(f.CreatedAt),
 	}
 	d.Assets = findingAssetDTOs(f.AssetIDs, assets)
