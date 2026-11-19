@@ -86,7 +86,7 @@ export function fmtTime(ts: string) {
   });
 }
 
-const COLUMN_COUNT = 9;
+const COLUMN_COUNT = 10;
 
 interface FindingsTableProps {
   items: Finding[];
@@ -142,7 +142,7 @@ export function FindingsTable({
 
   return (
     /* Fixed column widths keep expanded content from stretching the table; narrow screens scroll horizontally inside the table only. */
-    <Table className="min-w-[60rem] table-fixed">
+    <Table className="min-w-[68rem] table-fixed">
       <TableHeader>
         <TableRow>
           <TableHead className="w-8">
@@ -157,6 +157,7 @@ export function FindingsTable({
           <TableHead>Vulnerability</TableHead>
           <TableHead className="w-44">Asset</TableHead>
           <TableHead className="w-28">Status</TableHead>
+          <TableHead className="w-32">Ticket ID</TableHead>
           <TableHead className="w-32">Task</TableHead>
           <TableHead className="w-24">Time</TableHead>
           <TableHead className="w-48">Actions</TableHead>
@@ -252,6 +253,15 @@ export function FindingsTable({
                     </Select>
                   ) : (
                     <StatusBadge domain="finding" value={f.status} dot />
+                  )}
+                </TableCell>
+                <TableCell>
+                  {f.ticket_id ? (
+                    <span className="block truncate" title={f.ticket_id}>
+                      {f.ticket_id}
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground">—</span>
                   )}
                 </TableCell>
                 <TableCell>

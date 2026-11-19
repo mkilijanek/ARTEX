@@ -499,6 +499,7 @@ export interface Finding {
   name?: string; // vulnerability name; display falls back to vulnclass when empty
   severity: Severity;
   status: FindingStatus;
+  ticket_id: string; // external ticket reference (Jira, ServiceNow, ...); empty string when unset
   summary: string;
   evidence: string;
   report?: string; // detailed report (Markdown); returned only by the detail endpoint, empty in lists
