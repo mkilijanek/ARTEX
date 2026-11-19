@@ -329,7 +329,10 @@ func TestToolRAGCaps(t *testing.T) {
 	}
 	scored := 0
 	o = observeToolRAG(WithToolQuery(t.Context(), "alpha"), "worker", many, DeferredInfo{},
-		func(q string, tools []actool.CoreTool) ([]float64, error) { scored = len(tools); return bm25Score(q, tools) })
+		func(q string, tools []actool.CoreTool) ([]float64, error) {
+			scored = len(tools)
+			return bm25Score(q, tools)
+		})
 	if len(many) != 600 || scored != 512 || len(o.Ranking) != 256 || o.CandidateCount != 600-2 {
 		t.Errorf("tools=%d scored=%d ranking=%d candidates=%d", len(many), scored, len(o.Ranking), o.CandidateCount)
 	}
