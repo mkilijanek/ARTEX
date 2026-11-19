@@ -21,6 +21,7 @@ import {
   validateComment,
 } from "@/lib/finding-comments";
 import type { FindingComment } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 function fmtTime(ts: string) {
   return new Date(ts).toLocaleString("zh-CN");
@@ -39,10 +40,12 @@ export function FindingCommentsPanel({
   findingId,
   contextTask,
   readOnly = false,
+  className,
 }: {
   findingId: string;
   contextTask?: string;
   readOnly?: boolean;
+  className?: string;
 }) {
   const textareaId = React.useId();
   const draftMessageId = `${textareaId}-msg`;
@@ -123,61 +126,67 @@ export function FindingCommentsPanel({
   }
 
   return (
-    <Card className="min-w-0">
+    <Card className={cn("min-w-0", className)}>
       <CardHeader>
         <CardTitle className="text-sm">Comments</CardTitle>
         <CardDescription>Notes for analysts. Not sent to agents and not included in exports.</CardDescription>
       </CardHeader>
-      <CardContent className="flex min-w-0 flex-col gap-3">
-        {error ? (
-          <Alert variant="destructive">
-            <AlertDescription>
-              Failed to load comments: {error}
-              <Button variant="outline" size="sm" onClick={() => void load()}>
-                Retry
-              </Button>
-            </AlertDescription>
-          </Alert>
-        ) : null}
-        {!error && items === null ? <Skeleton className="h-16 w-full" /> : null}
-        {!error && items?.length === 0 ? (
-          <Empty>
-            <EmptyHeader>
-              <EmptyTitle>No comments yet</EmptyTitle>
-              <EmptyDescription>Add a note for the next analyst who opens this finding.</EmptyDescription>
-            </EmptyHeader>
-          </Empty>
-        ) : null}
-        {!error && items
-          ? items.map((item) => (
-              <div key={item.id} className="flex min-w-0 flex-col gap-1.5 rounded-lg border p-3">
-                <div className="flex flex-wrap items-center gap-x-2 text-muted-foreground text-xs">
-                  <span className="break-all">{authorLabel(item.author)}</span>
-                  <span>·</span>
-                  <span>{fmtTime(item.created_at)}</span>
+      <CardContent className="flex min-w-0 flex-col gap-3 lg:min-h-0 lg:flex-1">
+        {/* From lg up a height-bounded parent makes this area scroll; the input below stays in view. */}
+        <div
+          data-testid="comments-list"
+          className="flex min-w-0 flex-col gap-3 lg:min-h-32 lg:flex-1 lg:overflow-y-auto"
+        >
+          {error ? (
+            <Alert variant="destructive">
+              <AlertDescription>
+                Failed to load comments: {error}
+                <Button variant="outline" size="sm" onClick={() => void load()}>
+                  Retry
+                </Button>
+              </AlertDescription>
+            </Alert>
+          ) : null}
+          {!error && items === null ? <Skeleton className="h-16 w-full" /> : null}
+          {!error && items?.length === 0 ? (
+            <Empty>
+              <EmptyHeader>
+                <EmptyTitle>No comments yet</EmptyTitle>
+                <EmptyDescription>Add a note for the next analyst who opens this finding.</EmptyDescription>
+              </EmptyHeader>
+            </Empty>
+          ) : null}
+          {!error && items
+            ? items.map((item) => (
+                <div key={item.id} className="flex min-w-0 flex-col gap-1.5 rounded-lg border p-3">
+                  <div className="flex flex-wrap items-center gap-x-2 text-muted-foreground text-xs">
+                    <span className="break-all">{authorLabel(item.author)}</span>
+                    <span>·</span>
+                    <span>{fmtTime(item.created_at)}</span>
+                  </div>
+                  <p className="text-sm leading-relaxed whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+                    {item.body}
+                  </p>
                 </div>
-                <p className="text-sm leading-relaxed whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
-                  {item.body}
-                </p>
-              </div>
-            ))
-          : null}
-        {!error && cursor ? (
-          <div className="flex flex-wrap items-center gap-2">
-            <Button variant="outline" size="sm" disabled={loadingMore} onClick={() => void loadMore()}>
-              {loadingMore ? <Spinner data-icon="inline-start" aria-hidden="true" /> : null}
-              Load more
-            </Button>
-            {moreError ? (
-              <span className="text-destructive text-xs">
-                Failed to load more comments: {moreError}{" "}
-                <button type="button" className="underline" onClick={() => void load()}>
-                  Reload
-                </button>
-              </span>
-            ) : null}
-          </div>
-        ) : null}
+              ))
+            : null}
+          {!error && cursor ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="outline" size="sm" disabled={loadingMore} onClick={() => void loadMore()}>
+                {loadingMore ? <Spinner data-icon="inline-start" aria-hidden="true" /> : null}
+                Load more
+              </Button>
+              {moreError ? (
+                <span className="text-destructive text-xs">
+                  Failed to load more comments: {moreError}{" "}
+                  <button type="button" className="underline" onClick={() => void load()}>
+                    Reload
+                  </button>
+                </span>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
         {readOnly ? (
           <p className="text-muted-foreground text-sm">
             This finding is shown through an inherited task. Comments are read-only here; add them from the task that

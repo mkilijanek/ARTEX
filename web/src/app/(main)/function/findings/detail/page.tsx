@@ -280,17 +280,147 @@ function FindingDetailInner() {
       <div className="flex-1 p-4 lg:p-6">
         {/* Overview: left (digest + evidence) / right (status panel) */}
         <TabsContent value="overview" className="mt-0">
-          <div className="grid gap-4 lg:grid-cols-3">
-            {/* Left column */}
-            <div className="flex min-w-0 flex-col gap-4 lg:col-span-2">
-              <Card>
+          <div className="grid gap-4 lg:grid-cols-3 lg:grid-rows-[auto_1fr]">
+            {/* DOM order is the narrow (single column) order: Digest, Comments, Status, then the rest.
+                From lg up, explicit grid placement puts Digest and the rest in the left two columns and
+                the Status + Comments wrapper in the right column. */}
+            <Card className="min-w-0 lg:col-span-2 lg:col-start-1 lg:row-start-1">
+              <CardHeader>
+                <CardTitle className="text-sm">Digest</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-sm leading-relaxed whitespace-pre-wrap">{finding.summary || "(no digest)"}</p>
+              </CardContent>
+            </Card>
+
+            {/* Right column: status panel with the comments below it (sticky, bounded by the viewport) */}
+            <div className="flex min-w-0 flex-col gap-4 lg:sticky lg:top-24 lg:col-start-3 lg:row-span-2 lg:row-start-1 lg:max-h-[calc(100vh-7rem)] lg:self-start lg:overflow-y-auto">
+              <FindingCommentsPanel
+                key={id}
+                findingId={id}
+                contextTask={contextTaskId || undefined}
+                readOnly={finding.inherited}
+                className="lg:order-2 lg:min-h-0 lg:flex-1"
+              />
+              <Card className="h-fit shrink-0 lg:order-1">
                 <CardHeader>
-                  <CardTitle className="text-sm">Digest</CardTitle>
+                  <CardTitle className="text-sm">Status</CardTitle>
                 </CardHeader>
-                <CardContent>
-                  <p className="text-sm leading-relaxed whitespace-pre-wrap">{finding.summary || "(no digest)"}</p>
+                <CardContent className="divide-y">
+                  {/* Vulnerability ID */}
+                  <FieldRow label="Vulnerability ID">
+                    <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground">
+                      #{finding.id}
+                    </code>
+                  </FieldRow>
+
+                  {/* Severity */}
+                  <FieldRow label="Severity">
+                    {finding.inherited ? (
+                      <StatusBadge domain="severity" value={finding.severity} dot />
+                    ) : (
+                      <Select value={finding.severity} onValueChange={(v) => changeSeverity(v as Severity)}>
+                        <SelectTrigger size="sm" className="h-7 w-auto border-none px-1 shadow-none focus-visible:ring-0">
+                          <StatusBadge domain="severity" value={finding.severity} dot />
+                        </SelectTrigger>
+                        <SelectContent position="popper" align="end">
+                          <SelectGroup>
+                            {SEVERITIES.map((sv) => (
+                              <SelectItem key={sv} value={sv}>
+                                {statusMeta("severity", sv).label}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                    )}
+                  </FieldRow>
+
+                  {/* Triage status */}
+                  <FieldRow label="Triage status">
+                    {finding.inherited ? (
+                      <StatusBadge domain="finding" value={finding.status} dot />
+                    ) : (
+                      <Select value={finding.status} onValueChange={(v) => changeStatus(v as FindingStatus)}>
+                        <SelectTrigger size="sm" className="h-7 w-auto border-none px-1 shadow-none focus-visible:ring-0">
+                          <StatusBadge domain="finding" value={finding.status} dot />
+                        </SelectTrigger>
+                        <SelectContent position="popper" align="end">
+                          <SelectGroup>
+                            {FINDING_STATUSES.map((st) => (
+                              <SelectItem key={st} value={st}>
+                                {statusMeta("finding", st).label}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                    )}
+                  </FieldRow>
+
+                  {/* Ticket ID: manual reference to an external ticketing system */}
+                  <FieldRow label="Ticket ID">
+                    <TicketIdField
+                      value={finding.ticket_id ?? ""}
+                      readOnly={!!finding.inherited}
+                      onSave={changeTicketId}
+                    />
+                  </FieldRow>
+
+                  {/* Vulnerability type */}
+                  <FieldRow label="Vulnerability type">
+                    {finding.vulnclass ? (
+                      <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{finding.vulnclass}</code>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </FieldRow>
+
+                  {/* Assets */}
+                  <FieldRow label="Assets">
+                    {finding.assets && finding.assets.length > 0 ? (
+                      <div className="flex flex-wrap justify-end gap-1">
+                        {finding.assets.map((a) => (
+                          <code
+                            key={a.id}
+                            className="max-w-[16rem] truncate rounded bg-muted px-1.5 py-0.5 font-mono text-xs"
+                            title={`${a.type} · ${a.label}`}
+                          >
+                            {a.label}
+                          </code>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </FieldRow>
+
+                  {/* Task */}
+                  <FieldRow label="Task">
+                    {finding.task_id ? (
+                      <Link
+                        href={`/function/tasks/detail?id=${finding.task_id}`}
+                        className="inline-flex max-w-[min(16rem,100%)] min-w-0 items-center gap-1 text-primary hover:underline"
+                        title={finding.task_description}
+                      >
+                        <span className="truncate">{finding.task_description || `#${finding.task_id}`}</span>
+                        <ArrowUpRightIcon className="size-3 shrink-0" />
+                      </Link>
+                    ) : (
+                      <span className="text-muted-foreground">— (task deleted)</span>
+                    )}
+                  </FieldRow>
+
+                  {/* Found at */}
+                  <FieldRow label="Found at">
+                    <span className="tabular-nums">{fmtTime(finding.ts)}</span>
+                  </FieldRow>
                 </CardContent>
               </Card>
+            </div>
+
+            {/* Left column (below Digest): retest, evidence, traffic, report */}
+            <div className="flex min-w-0 flex-col gap-4 lg:col-span-2 lg:col-start-1 lg:row-start-2">
               <FindingRetestPanel key={id} findingId={id} readOnly={finding.inherited} onCompleted={load} />
               <Card>
                 <CardHeader>
@@ -332,130 +462,7 @@ function FindingDetailInner() {
                   )}
                 </CardContent>
               </Card>
-              <FindingCommentsPanel
-                key={id}
-                findingId={id}
-                contextTask={contextTaskId || undefined}
-                readOnly={finding.inherited}
-              />
             </div>
-
-            {/* Right column: status panel */}
-            <Card className="h-fit lg:sticky lg:top-24">
-              <CardHeader>
-                <CardTitle className="text-sm">Status</CardTitle>
-              </CardHeader>
-              <CardContent className="divide-y">
-                {/* Vulnerability ID */}
-                <FieldRow label="Vulnerability ID">
-                  <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground">
-                    #{finding.id}
-                  </code>
-                </FieldRow>
-
-                {/* Severity */}
-                <FieldRow label="Severity">
-                  {finding.inherited ? (
-                    <StatusBadge domain="severity" value={finding.severity} dot />
-                  ) : (
-                    <Select value={finding.severity} onValueChange={(v) => changeSeverity(v as Severity)}>
-                      <SelectTrigger size="sm" className="h-7 w-auto border-none px-1 shadow-none focus-visible:ring-0">
-                        <StatusBadge domain="severity" value={finding.severity} dot />
-                      </SelectTrigger>
-                      <SelectContent position="popper" align="end">
-                        <SelectGroup>
-                          {SEVERITIES.map((sv) => (
-                            <SelectItem key={sv} value={sv}>
-                              {statusMeta("severity", sv).label}
-                            </SelectItem>
-                          ))}
-                        </SelectGroup>
-                      </SelectContent>
-                    </Select>
-                  )}
-                </FieldRow>
-
-                {/* Triage status */}
-                <FieldRow label="Triage status">
-                  {finding.inherited ? (
-                    <StatusBadge domain="finding" value={finding.status} dot />
-                  ) : (
-                    <Select value={finding.status} onValueChange={(v) => changeStatus(v as FindingStatus)}>
-                      <SelectTrigger size="sm" className="h-7 w-auto border-none px-1 shadow-none focus-visible:ring-0">
-                        <StatusBadge domain="finding" value={finding.status} dot />
-                      </SelectTrigger>
-                      <SelectContent position="popper" align="end">
-                        <SelectGroup>
-                          {FINDING_STATUSES.map((st) => (
-                            <SelectItem key={st} value={st}>
-                              {statusMeta("finding", st).label}
-                            </SelectItem>
-                          ))}
-                        </SelectGroup>
-                      </SelectContent>
-                    </Select>
-                  )}
-                </FieldRow>
-
-                {/* Ticket ID: manual reference to an external ticketing system */}
-                <FieldRow label="Ticket ID">
-                  <TicketIdField
-                    value={finding.ticket_id ?? ""}
-                    readOnly={!!finding.inherited}
-                    onSave={changeTicketId}
-                  />
-                </FieldRow>
-
-                {/* Vulnerability type */}
-                <FieldRow label="Vulnerability type">
-                  {finding.vulnclass ? (
-                    <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{finding.vulnclass}</code>
-                  ) : (
-                    <span className="text-muted-foreground">—</span>
-                  )}
-                </FieldRow>
-
-                {/* Assets */}
-                <FieldRow label="Assets">
-                  {finding.assets && finding.assets.length > 0 ? (
-                    <div className="flex flex-wrap justify-end gap-1">
-                      {finding.assets.map((a) => (
-                        <code
-                          key={a.id}
-                          className="max-w-[16rem] truncate rounded bg-muted px-1.5 py-0.5 font-mono text-xs"
-                          title={`${a.type} · ${a.label}`}
-                        >
-                          {a.label}
-                        </code>
-                      ))}
-                    </div>
-                  ) : (
-                    <span className="text-muted-foreground">—</span>
-                  )}
-                </FieldRow>
-
-                {/* Task */}
-                <FieldRow label="Task">
-                  {finding.task_id ? (
-                    <Link
-                      href={`/function/tasks/detail?id=${finding.task_id}`}
-                      className="inline-flex max-w-[min(16rem,100%)] min-w-0 items-center gap-1 text-primary hover:underline"
-                      title={finding.task_description}
-                    >
-                      <span className="truncate">{finding.task_description || `#${finding.task_id}`}</span>
-                      <ArrowUpRightIcon className="size-3 shrink-0" />
-                    </Link>
-                  ) : (
-                    <span className="text-muted-foreground">— (task deleted)</span>
-                  )}
-                </FieldRow>
-
-                {/* Found at */}
-                <FieldRow label="Found at">
-                  <span className="tabular-nums">{fmtTime(finding.ts)}</span>
-                </FieldRow>
-              </CardContent>
-            </Card>
           </div>
         </TabsContent>
 

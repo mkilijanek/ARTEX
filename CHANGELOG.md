@@ -44,6 +44,9 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Changed
 
+- **Finding details: Comments moved under Status.** On the Overview tab the Comments panel
+  now sits in the right column directly below the Status card (the comment list scrolls
+  inside the column, which stays sticky), and on narrow screens directly below Digest.
 - **Image: no floating versions for the Playwright packages and sqlmap.** `@playwright/mcp`
   (0.0.86), `@playwright/cli` (0.1.25) and `playwright` (1.65.1) are installed at exact
   versions instead of `@latest`, and sqlmap is a checkout of release tag 1.10.11 instead
