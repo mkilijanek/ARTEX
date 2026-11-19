@@ -343,8 +343,8 @@ func TestFindingsExportIncludesTicketID(t *testing.T) {
 		t.Fatal(w.Code, w.Body)
 	}
 	for _, format := range []string{"json", "csv", "md-single", "md-zip"} {
-		if w := a.get(fmt.Sprintf("/api/exploration/findings/export?format=%s&scope=all", format)); w.Code != 200 {
-			t.Fatalf("%s without ticket: %d", format, w.Code)
+		if w := a.get(fmt.Sprintf("/api/exploration/findings/export?format=%s&scope=selected&ids=%d", format, a.finding)); w.Code != 200 {
+			t.Fatalf("%s without ticket: %d %s", format, w.Code, w.Body)
 		}
 	}
 }

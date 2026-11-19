@@ -1,7 +1,9 @@
 package db
 
 import (
+	"database/sql"
 	"encoding/json"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -10,18 +12,34 @@ import (
 // database that predates the column, and a second start: the column exists,
 // every finding is empty after the upgrade and a stored value survives a restart.
 func TestFindingTicketIDColumnIsIdempotent(t *testing.T) {
-	d, err := Open(testDSN(t))
+	// Own database: dropping the column must not affect any other test.
+	base := testDSN(t)
+	u, err := url.Parse(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.Path = strings.TrimSuffix(u.Path, "/") + "_ticket_upgrade"
+	dsn := u.String()
+	upgradeDB := strings.TrimPrefix(u.Path, "/")
+	adminURL := *u
+	adminURL.Path = "/postgres"
+	t.Cleanup(func() {
+		admin, err := sql.Open("pgx", adminURL.String())
+		if err != nil {
+			t.Errorf("drop %s: %v", upgradeDB, err)
+			return
+		}
+		defer admin.Close()
+		if _, err := admin.Exec(`DROP DATABASE IF EXISTS "` + upgradeDB + `" WITH (FORCE)`); err != nil {
+			t.Errorf("drop %s: %v", upgradeDB, err)
+		}
+	})
+	d, err := Open(dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer d.Close()
-	// Put the database in the pre-feature shape, restore the column on exit
-	// even if an assertion fails halfway.
-	t.Cleanup(func() {
-		if d2, err := Open(testDSN(t)); err == nil {
-			d2.Close()
-		}
-	})
+	// Put the throwaway database in the pre-feature shape.
 	if _, err := d.Exec(`ALTER TABLE findings DROP COLUMN IF EXISTS ticket_id`); err != nil {
 		t.Fatal(err)
 	}
@@ -29,9 +47,8 @@ func TestFindingTicketIDColumnIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.DeleteFinding(id)
 
-	upgraded, err := Open(testDSN(t))
+	upgraded, err := Open(dsn)
 	if err != nil {
 		t.Fatalf("startup on a database without the column: %v", err)
 	}
@@ -52,7 +69,7 @@ func TestFindingTicketIDColumnIsIdempotent(t *testing.T) {
 	if n, err := upgraded.SetFindingTicketID(id, "SEC-1234"); err != nil || n != 1 {
 		t.Fatalf("SetFindingTicketID: n=%d err=%v", n, err)
 	}
-	again, err := Open(testDSN(t))
+	again, err := Open(dsn)
 	if err != nil {
 		t.Fatalf("second startup: %v", err)
 	}
@@ -264,10 +281,17 @@ func TestFindingTicketIDArchiveRoundTrip(t *testing.T) {
 		name   string
 		mutate func(row map[string]any)
 		want   string
+		fail   bool
 	}{
-		{"kept", func(map[string]any) {}, "SEC-1234"},
-		{"legacy archive without the key", func(row map[string]any) { delete(row, "ticket_id") }, ""},
-		{"legacy archive with null", func(row map[string]any) { row["ticket_id"] = nil }, ""},
+		{"kept", func(map[string]any) {}, "SEC-1234", false},
+		{"legacy archive without the key", func(row map[string]any) { delete(row, "ticket_id") }, "", false},
+		{"legacy archive with null", func(row map[string]any) { row["ticket_id"] = nil }, "", false},
+		{"padded value is stored trimmed", func(row map[string]any) { row["ticket_id"] = "  SEC-9  " }, "SEC-9", false},
+		{"over-long", func(row map[string]any) { row["ticket_id"] = strings.Repeat("x", MaxFindingTicketIDRunes+1) }, "", true},
+		{"newline", func(row map[string]any) { row["ticket_id"] = "SEC-1\nSEC-2" }, "", true},
+		{"control character", func(row map[string]any) { row["ticket_id"] = "SEC\x1b[31m" }, "", true},
+		{"number", func(row map[string]any) { row["ticket_id"] = 42 }, "", true},
+		{"object", func(row map[string]any) { row["ticket_id"] = map[string]any{"a": "b"} }, "", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			task, err := d.CreateTask("ticket archive", "fixture", nil, 0, 0)
@@ -320,7 +344,17 @@ func TestFindingTicketIDArchiveRoundTrip(t *testing.T) {
 			if _, err = d.ClaimTaskArchiveJob(t.Context()); err != nil {
 				t.Fatal(err)
 			}
-			if _, err = d.RestoreTaskArchive(archive.ID, snapshot, 0); err != nil {
+			_, err = d.RestoreTaskArchive(archive.ID, snapshot, 0)
+			if tc.fail {
+				if err == nil {
+					t.Fatal("restore accepted an invalid ticket_id")
+				}
+				if strings.Contains(err.Error(), "SEC") || !strings.Contains(err.Error(), "ticket_id") {
+					t.Fatalf("restore error must name ticket_id and not echo the value: %v", err)
+				}
+				return
+			}
+			if err != nil {
 				t.Fatalf("restore: %v", err)
 			}
 			got, err := d.GetFinding(f.FindingID)
