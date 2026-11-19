@@ -18,11 +18,13 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
+import { MAX_TICKET_ID_LENGTH, normalizeTicketId, ticketIdErrorMessage } from "@/lib/finding-ticket";
 import { statusMeta } from "@/lib/status";
 import type { Finding, FindingStatus, Severity } from "@/lib/types";
 
@@ -52,6 +54,104 @@ function FieldRow({ label, children }: { label: string; children: React.ReactNod
       <span className="shrink-0 pt-0.5 text-xs text-muted-foreground">{label}</span>
       <div className="flex min-w-0 flex-col items-end gap-1 text-right text-sm">{children}</div>
     </div>
+  );
+}
+
+// TicketIdField shows the external ticket reference and edits it inline: Enter or blur saves, Esc cancels.
+// onSave does the optimistic update and rollback; it is only called when the trimmed value changed.
+function TicketIdField({
+  value,
+  readOnly,
+  onSave,
+}: {
+  value: string;
+  readOnly: boolean;
+  onSave: (next: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = React.useState(false);
+  const [draft, setDraft] = React.useState(value);
+  // Enter/Esc unmount the input, which can still deliver a blur; this guard keeps that from saving twice or undoing Esc.
+  const settled = React.useRef(false);
+  const displayRef = React.useRef<HTMLButtonElement>(null);
+  // Set when Enter or Esc closes the editor, so focus returns to the display control; blur must not steal focus.
+  const restoreFocus = React.useRef(false);
+  React.useEffect(() => {
+    if (!editing && restoreFocus.current) {
+      restoreFocus.current = false;
+      displayRef.current?.focus();
+    }
+  }, [editing]);
+
+  if (readOnly) {
+    return value ? (
+      <span className="max-w-full [overflow-wrap:anywhere]">{value}</span>
+    ) : (
+      <span className="text-muted-foreground">—</span>
+    );
+  }
+
+  if (!editing) {
+    return (
+      <button
+        ref={displayRef}
+        type="button"
+        aria-label={value ? `Ticket ID: ${value}. Edit` : "Ticket ID: not set. Edit"}
+        title="Click to edit the Ticket ID"
+        className="max-w-full rounded px-1 text-right whitespace-normal [overflow-wrap:anywhere] hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+        onClick={() => {
+          settled.current = false;
+          setDraft(value);
+          setEditing(true);
+        }}
+      >
+        {value || <span className="text-muted-foreground">Add ticket ID</span>}
+      </button>
+    );
+  }
+
+  // fromBlur: an invalid value is reported once and discarded (the editor closes with the previous value);
+  // on Enter the editor stays open and focused so the value can be corrected.
+  const commit = (fromBlur: boolean) => {
+    if (settled.current) return;
+    const result = normalizeTicketId(draft);
+    if (!result.ok) {
+      toast.error(ticketIdErrorMessage(result.reason));
+      if (fromBlur) {
+        settled.current = true;
+        setDraft(value);
+        setEditing(false);
+      }
+      return;
+    }
+    settled.current = true;
+    restoreFocus.current = !fromBlur;
+    setEditing(false);
+    if (result.value !== value) void onSave(result.value);
+  };
+
+  return (
+    <Input
+      autoFocus
+      aria-label="Ticket ID"
+      maxLength={MAX_TICKET_ID_LENGTH}
+      value={draft}
+      placeholder="e.g. SEC-1234"
+      className="h-7 w-56 max-w-full text-right"
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => commit(true)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          commit(false);
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          settled.current = true;
+          restoreFocus.current = true;
+          setDraft(value);
+          setEditing(false);
+        }
+      }}
+    />
   );
 }
 
@@ -106,6 +206,24 @@ function FindingDetailInner() {
         toast.success(`Status changed to "${statusMeta("finding", next).label}"`);
       } catch (e) {
         setFinding((cur) => (cur ? { ...cur, status: prev } : cur));
+        toast.error("Update failed: " + (e as Error).message);
+      }
+    },
+    [finding, id],
+  );
+
+  const changeTicketId = React.useCallback(
+    async (next: string) => {
+      if (!finding || finding.inherited) return;
+      const prev = finding.ticket_id ?? "";
+      if (next === prev) return;
+      setFinding({ ...finding, ticket_id: next });
+      try {
+        const updated = await api.setFindingTicketId(id, next);
+        setFinding(updated);
+        toast.success(next ? `Ticket ID set to "${next}"` : "Ticket ID cleared");
+      } catch (e) {
+        setFinding((cur) => (cur ? { ...cur, ticket_id: prev } : cur));
         toast.error("Update failed: " + (e as Error).message);
       }
     },
@@ -279,6 +397,15 @@ function FindingDetailInner() {
                   )}
                 </FieldRow>
 
+                {/* Ticket ID: manual reference to an external ticketing system */}
+                <FieldRow label="Ticket ID">
+                  <TicketIdField
+                    value={finding.ticket_id ?? ""}
+                    readOnly={!!finding.inherited}
+                    onSave={changeTicketId}
+                  />
+                </FieldRow>
+
                 {/* Vulnerability type */}
                 <FieldRow label="Vulnerability type">
                   {finding.vulnclass ? (
@@ -312,7 +439,7 @@ function FindingDetailInner() {
                   {finding.task_id ? (
                     <Link
                       href={`/function/tasks/detail?id=${finding.task_id}`}
-                      className="inline-flex max-w-[16rem] items-center gap-1 text-primary hover:underline"
+                      className="inline-flex max-w-[min(16rem,100%)] min-w-0 items-center gap-1 text-primary hover:underline"
                       title={finding.task_description}
                     >
                       <span className="truncate">{finding.task_description || `#${finding.task_id}`}</span>

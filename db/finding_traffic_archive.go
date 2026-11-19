@@ -83,3 +83,30 @@ func normalizeArchivedFindingVersions(raw json.RawMessage) (json.RawMessage, err
 	}
 	return json.Marshal(rows)
 }
+
+// normalizeArchivedFindingTicketIDs validates and normalises ticket_id of archived
+// findings. A missing key or null (archives written before the column existed) becomes
+// the empty default: json_populate_recordset would otherwise insert NULL into a NOT NULL
+// column. A string must pass NormalizeFindingTicketID; anything else refuses the restore.
+// Errors name the row index only, never the value.
+func normalizeArchivedFindingTicketIDs(raw json.RawMessage) (json.RawMessage, error) {
+	rows, err := decodeArchiveRows(raw)
+	if err != nil {
+		return nil, err
+	}
+	for i, row := range rows {
+		switch v := row["ticket_id"].(type) {
+		case nil:
+			row["ticket_id"] = ""
+		case string:
+			norm, ok := NormalizeFindingTicketID(v)
+			if !ok {
+				return nil, fmt.Errorf("archived finding row %d: invalid ticket_id", i)
+			}
+			row["ticket_id"] = norm
+		default:
+			return nil, fmt.Errorf("archived finding row %d: ticket_id is not a string", i)
+		}
+	}
+	return json.Marshal(rows)
+}

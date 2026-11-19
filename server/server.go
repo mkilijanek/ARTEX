@@ -2431,10 +2431,11 @@ func (s *Server) findingLineage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"nodes": taskNodeDTOs(nodes), "edges": edgeDTOs(edges)})
 }
 
-// patchFinding partially updates a finding: any subset of {status, severity}.
-// The id is the standalone findings-table id (DTO finding_id). Severity edits are
-// mirrored onto the originating exploration node so the per-task view stays in
-// sync. Returns the updated finding DTO.
+// patchFinding partially updates a finding: any subset of {status, severity, name,
+// vulnclass, ticket_id}. The id is the standalone findings-table id (DTO finding_id).
+// Severity edits are mirrored onto the originating exploration node so the per-task
+// view stays in sync; the ticket id is operator metadata and is deliberately not
+// (agents read the node payload). Returns the updated finding DTO.
 func (s *Server) patchFinding(w http.ResponseWriter, r *http.Request) {
 	id := int64(atoiDefault(r.PathValue("id"), 0))
 	if id <= 0 {
@@ -2446,14 +2447,25 @@ func (s *Server) patchFinding(w http.ResponseWriter, r *http.Request) {
 		Severity  *string `json:"severity"`
 		Name      *string `json:"name"`
 		VulnClass *string `json:"vulnclass"`
+		TicketID  *string `json:"ticket_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, 400, "bad json: "+err.Error())
 		return
 	}
-	if body.Status == nil && body.Severity == nil && body.Name == nil && body.VulnClass == nil {
-		writeErr(w, 400, "nothing to update: provide status/severity/name/vulnclass")
+	if body.Status == nil && body.Severity == nil && body.Name == nil && body.VulnClass == nil && body.TicketID == nil {
+		writeErr(w, 400, "nothing to update: provide status/severity/name/vulnclass/ticket_id")
 		return
+	}
+	// Validated before any write so a bad ticket id cannot leave a half-applied request.
+	// The message is fixed: it must not echo the value.
+	var ticketID string
+	if body.TicketID != nil {
+		var ok bool
+		if ticketID, ok = db.NormalizeFindingTicketID(*body.TicketID); !ok {
+			writeErr(w, 400, "invalid ticket_id: must be one line of text, at most 128 characters")
+			return
+		}
 	}
 	if body.Status != nil {
 		if !db.ValidFindingStatus(*body.Status) {
@@ -2504,6 +2516,17 @@ func (s *Server) patchFinding(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.VulnClass != nil {
 		n, err := s.m.pg.SetFindingVulnClass(id, strings.TrimSpace(*body.VulnClass))
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		if n == 0 {
+			writeErr(w, 404, "finding not found")
+			return
+		}
+	}
+	if body.TicketID != nil {
+		n, err := s.m.pg.SetFindingTicketID(id, ticketID)
 		if err != nil {
 			writeErr(w, 500, err.Error())
 			return

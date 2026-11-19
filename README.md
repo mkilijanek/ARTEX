@@ -302,6 +302,10 @@ Click "Retest" in the actions area of any row in the vulnerability list, or clic
 
 On first start, the new backend pre-creates an editable "Vulnerability Retest" (`retester`) agent; you can configure its prompt, LLM, run budget, and tools in Agent management. It uses its bound LLM by default, or the global active configuration when unbound. When a retest session completes successfully with a "Fixed" conclusion, the system automatically sets the vulnerability's handling status to "Fixed"; running, failed, stopped, or other conclusions keep the original status. Original evidence and reports are always preserved. You can also manually select "Fixed" from the status dropdown. While the same vulnerability is being retested, the existing session is reused; after a stop, failure, or service restart, you can start it again.
 
+### Finding ticket ID
+
+Each vulnerability can carry an optional "Ticket ID" that points to an external ticketing system (one line of text, up to 128 characters, no format rule). Click the field in the Status card of the vulnerability details to edit it: Enter or leaving the field saves, Esc cancels, and an empty value clears it. The value is shown in the vulnerability list, included in JSON, CSV and Markdown exports and in task archives, and is never sent to agents or models or included in outgoing notifications. The API field is `ticket_id` on `PATCH /api/exploration/findings/{id}`.
+
 ### Finding comments
 
 The "Comments" panel in the vulnerability details lets analysts add plain-text, append-only notes. Comments are attributed to the signed-in operator account, are kept across retests and status changes, travel with task archives, and are never sent to agents or included in exports. See [docs/finding-comments.md](docs/finding-comments.md) for the API, limits and rollback notes.
