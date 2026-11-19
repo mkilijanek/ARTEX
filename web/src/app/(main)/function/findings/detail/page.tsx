@@ -72,12 +72,19 @@ function TicketIdField({
   const [draft, setDraft] = React.useState(value);
   // Enter/Esc unmount the input, which can still deliver a blur; this guard keeps that from saving twice or undoing Esc.
   const settled = React.useRef(false);
+  const displayRef = React.useRef<HTMLButtonElement>(null);
+  // Set when Enter or Esc closes the editor, so focus returns to the display control; blur must not steal focus.
+  const restoreFocus = React.useRef(false);
+  React.useEffect(() => {
+    if (!editing && restoreFocus.current) {
+      restoreFocus.current = false;
+      displayRef.current?.focus();
+    }
+  }, [editing]);
 
   if (readOnly) {
     return value ? (
-      <span className="max-w-full [overflow-wrap:anywhere]">
-        {value}
-      </span>
+      <span className="max-w-full [overflow-wrap:anywhere]">{value}</span>
     ) : (
       <span className="text-muted-foreground">—</span>
     );
@@ -86,6 +93,7 @@ function TicketIdField({
   if (!editing) {
     return (
       <button
+        ref={displayRef}
         type="button"
         aria-label={value ? `Ticket ID: ${value}. Edit` : "Ticket ID: not set. Edit"}
         title="Click to edit the Ticket ID"
@@ -101,14 +109,22 @@ function TicketIdField({
     );
   }
 
-  const commit = () => {
+  // fromBlur: an invalid value is reported once and discarded (the editor closes with the previous value);
+  // on Enter the editor stays open and focused so the value can be corrected.
+  const commit = (fromBlur: boolean) => {
     if (settled.current) return;
     const result = normalizeTicketId(draft);
     if (!result.ok) {
       toast.error(ticketIdErrorMessage(result.reason));
+      if (fromBlur) {
+        settled.current = true;
+        setDraft(value);
+        setEditing(false);
+      }
       return;
     }
     settled.current = true;
+    restoreFocus.current = !fromBlur;
     setEditing(false);
     if (result.value !== value) void onSave(result.value);
   };
@@ -122,14 +138,15 @@ function TicketIdField({
       placeholder="e.g. SEC-1234"
       className="h-7 w-56 max-w-full text-right"
       onChange={(e) => setDraft(e.target.value)}
-      onBlur={commit}
+      onBlur={() => commit(true)}
       onKeyDown={(e) => {
         if (e.key === "Enter") {
           e.preventDefault();
-          commit();
+          commit(false);
         } else if (e.key === "Escape") {
           e.preventDefault();
           settled.current = true;
+          restoreFocus.current = true;
           setDraft(value);
           setEditing(false);
         }
@@ -422,7 +439,7 @@ function FindingDetailInner() {
                   {finding.task_id ? (
                     <Link
                       href={`/function/tasks/detail?id=${finding.task_id}`}
-                      className="inline-flex max-w-[16rem] items-center gap-1 text-primary hover:underline"
+                      className="inline-flex max-w-[min(16rem,100%)] min-w-0 items-center gap-1 text-primary hover:underline"
                       title={finding.task_description}
                     >
                       <span className="truncate">{finding.task_description || `#${finding.task_id}`}</span>
