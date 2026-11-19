@@ -796,7 +796,7 @@ func TestMigrationUnknownVersionAndOverride(t *testing.T) {
 	logs := dbtest.CaptureLog(t)
 	before := readLedger(t, conn)
 	startMigrated(t, tmp, embeddedMigrations())
-	if n := strings.Count(logs(), "WARNING"); n != 1 || !strings.Contains(logs(), "[migrate] WARNING: ARTEX_SCHEMA_ALLOW_NEWER=5999; unknown migration 5999 (5999_future.sql)") {
+	if n := strings.Count(logs(), "WARNING"); n != 1 || !strings.Contains(logs(), "[migrate] WARNING: ARTEX_SCHEMA_ALLOW_NEWER=5999; unknown migration 5999 (\"5999_future.sql\")") {
 		t.Errorf("want exactly one warning for 5999; log:\n%s", logs())
 	}
 	after := readLedger(t, conn)
@@ -1079,5 +1079,96 @@ func TestEnsureWrappersRunEmbeddedMigrations(t *testing.T) {
 	}
 	if migrationTableExists(t, d.DB, "schema_migrations") {
 		t.Error("the wrappers must not write a ledger")
+	}
+}
+
+// Ledger names come from the database: a row cannot inject a line break into an error or a log line.
+func TestMigrationLedgerNamesArePrintedQuoted(t *testing.T) {
+	tmp := migrationTemp(t, "quoted")
+	startMigrated(t, tmp, embeddedMigrations())
+	conn := tmp.Conn(t)
+	forged := "5999_x.sql\n[migrate] FORGED line"
+	quoted := `"5999_x.sql\n[migrate] FORGED line"`
+	if _, err := conn.Exec(`INSERT INTO schema_migrations(version, name, checksum) VALUES (5999, $1, 'abc')`, forged); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("ARTEX_SCHEMA_ALLOW_NEWER", "")
+	err := requireRefusal(t, tmp, embeddedMigrations(), "unknown", "5999", quoted)
+	if strings.Contains(err.Error(), "\n") {
+		t.Errorf("the refusal text contains a line break: %q", err)
+	}
+	var ref *migrationRefusal
+	if !errors.As(err, &ref) || strings.Contains(ref.logLine(), "\n") || !strings.Contains(ref.logLine(), quoted) {
+		t.Errorf("the refusal log line is not quoted: %q", ref.logLine())
+	}
+
+	t.Setenv("ARTEX_SCHEMA_ALLOW_NEWER", "5999")
+	logs := dbtest.CaptureLog(t)
+	startMigrated(t, tmp, embeddedMigrations())
+	if strings.Contains(logs(), "\n[migrate] FORGED") || !strings.Contains(logs(), quoted) {
+		t.Errorf("the warning is not quoted:\n%s", logs())
+	}
+}
+
+func TestMigrationLedgerRenamedRowIsPrintedQuoted(t *testing.T) {
+	tmp := migrationTemp(t, "quotedname")
+	startMigrated(t, tmp, embeddedMigrations())
+	conn := tmp.Conn(t)
+	if _, err := conn.Exec(`UPDATE schema_migrations SET name = E'0001_x.sql\n[migrate] FORGED', checksum = E'ab\ncd' WHERE version = 1`); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ARTEX_SCHEMA_ALLOW_NEWER", "")
+	err := requireRefusal(t, tmp, embeddedMigrations(), "changed", "0001", `"0001_x.sql\n[migrate] FORGED"`)
+	if strings.Contains(err.Error(), "\n") {
+		t.Errorf("the refusal text contains a line break: %q", err)
+	}
+	if _, err := conn.Exec(`UPDATE schema_migrations SET name = '0001_llm_records.sql' WHERE version = 1`); err != nil {
+		t.Fatal(err)
+	}
+	err = requireRefusal(t, tmp, embeddedMigrations(), "changed", "0001", `"ab\ncd"`)
+	if strings.Contains(err.Error(), "\n") {
+		t.Errorf("the checksum refusal text contains a line break: %q", err)
+	}
+}
+
+// Defence in depth behind the load-time lint: a file that ended the runner's transaction (built here
+// without the loader) fails before its ledger row is written, instead of recording it in autocommit.
+func TestMigrationExecFailsWhenTheFileEndedTheTransaction(t *testing.T) {
+	tmp := migrationTemp(t, "txended")
+	conn := tmp.Conn(t)
+	if _, err := conn.Exec(migrationLedgerTable); err != nil {
+		t.Fatal(err)
+	}
+	m := migration{version: 5998, name: "5998_ends_tx.sql", checksum: "x", sql: "CREATE TABLE tx_ended_probe (x int); COMMIT;"}
+	tx, err := conn.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = execMigration(context.Background(), tx, m)
+	tx.Rollback() //nolint:errcheck // the transaction is already over on the server
+	if err == nil || !strings.Contains(err.Error(), "5998_ends_tx.sql") || !strings.Contains(err.Error(), "transaction") {
+		t.Fatalf("want an error naming the file and the transaction, got: %v", err)
+	}
+	var n int
+	if err := conn.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("ledger rows = %d (err %v), want 0", n, err)
+	}
+}
+
+// A well-behaved migration still records its row through execMigration.
+func TestMigrationExecRecordsTheRowInsideTheTransaction(t *testing.T) {
+	tmp := migrationTemp(t, "txok")
+	conn := tmp.Conn(t)
+	if _, err := conn.Exec(migrationLedgerTable); err != nil {
+		t.Fatal(err)
+	}
+	m := migration{version: 5997, name: "5997_ok.sql", checksum: "x", sql: "CREATE TABLE tx_ok_probe (x int);"}
+	if err := runMigrationTx(context.Background(), conn, func(tx *sql.Tx) error { return execMigration(context.Background(), tx, m) }); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := conn.QueryRow(`SELECT count(*) FROM schema_migrations WHERE version = 5997`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("ledger rows = %d (err %v), want 1", n, err)
 	}
 }

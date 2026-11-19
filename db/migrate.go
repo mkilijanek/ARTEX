@@ -110,53 +110,166 @@ func migrationRange(version int) int {
 	return 0
 }
 
-// migrationCodeOnly removes SQL comments (-- to the end of the line, and nested /* */) and leaves
-// everything else, string literals included, so that the lint below looks at code only.
-func migrationCodeOnly(text string) string {
-	var out strings.Builder
-	inString := false
+// scanMigrationSQL makes two views of a migration file, both without comments (-- to the end of the
+// line, and nested /* */):
+//
+//	code  everything else verbatim, string literals and dollar-quoted bodies included (the lint for
+//	      CONCURRENTLY and VACUUM looks here, so that a word inside a DO block is still seen)
+//	top   the same with every string literal, quoted identifier and dollar-quoted body replaced by one
+//	      space, so that only the statements of the file itself are left (the transaction-control
+//	      lint looks here, where a PL/pgSQL BEGIN ... END cannot be taken for a transaction BEGIN)
+//
+// A dollar-quoted body ($$ ... $$ or $tag$ ... $tag$) is scanned the way PostgreSQL does: up to the
+// closing tag, with no comment, string or nesting rules, so a "--" inside it does not hide anything
+// after it. Not handled: a standard_conforming_strings = off file (backslash escapes in plain
+// '...' strings; only E'...' strings are read with them), and psql meta-commands (the runner does
+// not use psql).
+func scanMigrationSQL(text string) (code, top string) {
+	var c, t strings.Builder
+	isIdent := func(b byte) bool {
+		return b == '_' || b == '$' || b >= 0x80 || (b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+	}
 	blockDepth := 0
 	for i := 0; i < len(text); i++ {
-		c := text[i]
+		ch := text[i]
 		switch {
 		case blockDepth > 0:
-			if c == '/' && i+1 < len(text) && text[i+1] == '*' {
+			if ch == '/' && i+1 < len(text) && text[i+1] == '*' {
 				blockDepth++
 				i++
-			} else if c == '*' && i+1 < len(text) && text[i+1] == '/' {
+			} else if ch == '*' && i+1 < len(text) && text[i+1] == '/' {
 				blockDepth--
 				i++
+				if blockDepth == 0 {
+					c.WriteByte(' ')
+					t.WriteByte(' ')
+				}
 			}
-		case inString:
-			out.WriteByte(c)
-			if c == '\'' {
-				inString = false
+		case ch == '\'' || ch == '"':
+			// A string literal or a quoted identifier; '' and "" inside are two quotes in a row, which
+			// this loop reads as one literal ending and the next beginning.
+			escapes := ch == '\'' && i > 0 && (text[i-1] == 'E' || text[i-1] == 'e') && (i < 2 || !isIdent(text[i-2]))
+			j := i + 1
+			for j < len(text) && text[j] != ch {
+				if escapes && text[j] == '\\' {
+					j++
+				}
+				j++
 			}
-		case c == '\'':
-			inString = true
-			out.WriteByte(c)
-		case c == '-' && i+1 < len(text) && text[i+1] == '-':
+			if j >= len(text) {
+				j = len(text) - 1
+			}
+			c.WriteString(text[i : j+1])
+			t.WriteByte(' ')
+			i = j
+		case ch == '$' && (i == 0 || !isIdent(text[i-1])):
+			j := i + 1
+			if j < len(text) && !(text[j] == '$' || text[j] == '_' || text[j] >= 0x80 || (text[j] >= 'a' && text[j] <= 'z') || (text[j] >= 'A' && text[j] <= 'Z')) {
+				c.WriteByte(ch)
+				t.WriteByte(ch)
+				continue
+			}
+			for j < len(text) && text[j] != '$' && isIdent(text[j]) {
+				j++
+			}
+			if j >= len(text) || text[j] != '$' {
+				c.WriteByte(ch)
+				t.WriteByte(ch)
+				continue
+			}
+			tag := text[i : j+1]
+			end := strings.Index(text[j+1:], tag)
+			stop := len(text) - 1
+			if end >= 0 {
+				stop = j + 1 + end + len(tag) - 1
+			}
+			c.WriteString(text[i : stop+1])
+			t.WriteByte(' ')
+			i = stop
+		case ch == '-' && i+1 < len(text) && text[i+1] == '-':
 			for i < len(text) && text[i] != '\n' {
 				i++
 			}
-			out.WriteByte('\n')
-		case c == '/' && i+1 < len(text) && text[i+1] == '*':
+			c.WriteByte('\n')
+			t.WriteByte('\n')
+		case ch == '/' && i+1 < len(text) && text[i+1] == '*':
 			blockDepth = 1
 			i++
 		default:
-			out.WriteByte(c)
+			c.WriteByte(ch)
+			t.WriteByte(ch)
 		}
 	}
-	return out.String()
+	return c.String(), t.String()
+}
+
+// migrationCodeOnly is the "code" view of scanMigrationSQL: comments removed, the rest verbatim.
+func migrationCodeOnly(text string) string {
+	code, _ := scanMigrationSQL(text)
+	return code
 }
 
 // migrationForbiddenRE matches the statements that cannot run inside a transaction block.
 var migrationForbiddenRE = regexp.MustCompile(`(?i)\b(concurrently|vacuum)\b`)
 
+var (
+	migrationWordRE   = regexp.MustCompile(`[A-Za-z_]+`)
+	migrationAtomicRE = regexp.MustCompile(`(?i)\bBEGIN\s+ATOMIC\b`)
+)
+
+// migrationTransactionControl returns the first transaction-control statement of the file's own
+// statements (the "top" view of scanMigrationSQL), or "". The file is one simple-protocol Exec
+// inside the runner's transaction: a COMMIT or ROLLBACK ends that transaction (the SET LOCAL
+// lock_timeout is lost and the ledger row is written in autocommit), and a BEGIN, SAVEPOINT or the
+// like changes what the runner's own COMMIT means.
+//
+// It looks at the first word or two of every statement (split at ';') outside comments, string
+// literals, quoted identifiers and dollar-quoted bodies: COMMIT, ROLLBACK, SAVEPOINT, RELEASE, ABORT,
+// BEGIN, END, START TRANSACTION and PREPARE TRANSACTION. A PL/pgSQL BEGIN ... END is inside a dollar
+// body or a string and is not looked at; the BEGIN ATOMIC ... END body of an SQL-standard function
+// is skipped up to its END. What it does not catch: transaction control run from inside a body or
+// a procedure (CALL p() where p COMMITs; PostgreSQL itself refuses that inside a transaction block),
+// a statement built by EXECUTE, and a statement hidden behind a standard_conforming_strings = off
+// string. The runtime check in execMigration is the second line.
+func migrationTransactionControl(top string) string {
+	atomic := false
+	for _, stmt := range strings.Split(top, ";") {
+		words := migrationWordRE.FindAllString(stmt, 3)
+		if len(words) == 0 {
+			continue
+		}
+		first := strings.ToUpper(words[0])
+		second := ""
+		if len(words) > 1 {
+			second = strings.ToUpper(words[1])
+		}
+		if migrationAtomicRE.MatchString(stmt) {
+			atomic = true // CREATE FUNCTION ... BEGIN ATOMIC <statements>; END
+			continue
+		}
+		switch first {
+		case "COMMIT", "ROLLBACK", "SAVEPOINT", "RELEASE", "ABORT", "BEGIN":
+			return first
+		case "END":
+			if atomic {
+				atomic = false
+				continue
+			}
+			return first
+		case "START", "PREPARE":
+			if second == "TRANSACTION" {
+				return first + " TRANSACTION"
+			}
+		}
+	}
+	return ""
+}
+
 // loadMigrations reads every *.sql file at the root of fsys, sorted by version. A .sql file that
 // does not follow NNNN_slug.sql, a duplicated version, or a statement that cannot run inside the
-// migration transaction (CONCURRENTLY, VACUUM, outside comments) is an error, so a typo cannot
-// silently skip a migration and a migration cannot fail only on a real database.
+// migration transaction (CONCURRENTLY, VACUUM, outside comments) or that ends or nests the transaction
+// (COMMIT, BEGIN and the like, see migrationTransactionControl) is an error, so a typo cannot silently
+// skip a migration and a migration cannot fail only on a real database or leave a half-applied file.
 func loadMigrations(fsys fs.FS) ([]migration, error) {
 	entries, err := fs.ReadDir(fsys, ".")
 	if err != nil {
@@ -184,8 +297,12 @@ func loadMigrations(fsys fs.FS) ([]migration, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read migration %s: %w", e.Name(), err)
 		}
-		if word := migrationForbiddenRE.FindString(migrationCodeOnly(string(content))); word != "" {
+		code, top := scanMigrationSQL(string(content))
+		if word := migrationForbiddenRE.FindString(code); word != "" {
 			return nil, fmt.Errorf("migration file %s: %s is not allowed (a migration runs inside a transaction)", e.Name(), strings.ToUpper(word))
+		}
+		if stmt := migrationTransactionControl(top); stmt != "" {
+			return nil, fmt.Errorf("migration file %s: %s is not allowed (a migration runs inside the runner's transaction and must not control the transaction)", e.Name(), stmt)
 		}
 		sum := sha256.Sum256(content)
 		out = append(out, migration{version: version, name: e.Name(), sql: string(content), checksum: hex.EncodeToString(sum[:])})
@@ -226,6 +343,9 @@ func migrationErrorText(err error) string {
 			}
 		}
 		return text
+	}
+	if errors.Is(err, errMigrationEndedTx) {
+		return err.Error() // a fixed text of this package
 	}
 	var connErr *pgconn.ConnectError
 	var netErr *net.OpError
@@ -295,11 +415,12 @@ type migrationRefusal struct {
 
 func (e *migrationRefusal) Error() string { return e.reason }
 
-// logLine is the content-free log line: label, version and file only.
+// logLine is the content-free log line: label, version and file only. The file name is quoted: for
+// an unknown version it is the ledger's, which the database controls.
 func (e *migrationRefusal) logLine() string {
 	line := "[migrate] refused: " + migrationRefusalLabels[e.kind]
 	if e.version != 0 {
-		line += fmt.Sprintf(" (version %04d, %s)", e.version, e.file)
+		line += fmt.Sprintf(" (version %04d, %q)", e.version, e.file)
 	}
 	return line
 }
@@ -398,11 +519,11 @@ func checkLedger(ctx context.Context, q ledgerQueryer, ms []migration, allowNewe
 		}
 		if row.name != m.name {
 			return plan, &migrationRefusal{kind: migrationRefusalChanged, version: row.version, file: m.name,
-				reason: fmt.Sprintf("migration %04d: database records file %s but this binary has %s; published migrations must not be renamed", row.version, row.name, m.name)}
+				reason: fmt.Sprintf("migration %04d: database records file %q but this binary has %s; published migrations must not be renamed", row.version, row.name, m.name)}
 		}
 		if row.checksum != m.checksum {
 			return plan, &migrationRefusal{kind: migrationRefusalChanged, version: row.version, file: m.name,
-				reason: fmt.Sprintf("migration %04d (%s): checksum changed since it was applied (database %s, file %s); published migrations must not be edited",
+				reason: fmt.Sprintf("migration %04d (%s): checksum changed since it was applied (database %q, file %s); published migrations must not be edited",
 					row.version, m.name, shortChecksum(row.checksum), shortChecksum(m.checksum))}
 		}
 	}
@@ -412,7 +533,7 @@ func checkLedger(ctx context.Context, q ledgerQueryer, ms []migration, allowNewe
 		}
 		if allowNewer == 0 || row.version > allowNewer {
 			return plan, &migrationRefusal{kind: migrationRefusalUnknown, version: row.version, file: row.name,
-				reason: fmt.Sprintf("migration %04d (%s) is applied in the database but missing from this binary; run the release that applied it, "+
+				reason: fmt.Sprintf("migration %04d (%q) is applied in the database but missing from this binary; run the release that applied it, "+
 					"or set ARTEX_SCHEMA_ALLOW_NEWER=%04d to start anyway (see docs/schema-upgrade.md)", row.version, row.name, row.version)}
 		}
 		plan.unknown = append(plan.unknown, row)
@@ -431,7 +552,7 @@ func checkLedger(ctx context.Context, q ledgerQueryer, ms []migration, allowNewe
 		}
 		if n := newest[migrationRange(m.version)]; m.version < n.version {
 			return plan, &migrationRefusal{kind: migrationRefusalOrder, version: m.version, file: m.name,
-				reason: fmt.Sprintf("migration %s (%04d) is older than the applied migration %s (%04d); migrations must be appended, never inserted",
+				reason: fmt.Sprintf("migration %s (%04d) is older than the applied migration %q (%04d); migrations must be appended, never inserted",
 					m.name, m.version, n.name, n.version)}
 		}
 	}
@@ -492,15 +613,18 @@ type migrationConn interface {
 func runMigrationTx(ctx context.Context, conn migrationBeginner, fn func(*sql.Tx) error) error {
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return newMigrationError("begin transaction", err)
 	}
 	if _, err := tx.ExecContext(ctx, "SET LOCAL lock_timeout = '"+migrationLockTimeoutText()+"'"); err != nil {
-		return rollbackAfter(tx, err)
+		return rollbackAfter(tx, newMigrationError("set lock_timeout", err))
 	}
 	if err := fn(tx); err != nil {
 		return rollbackAfter(tx, err)
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return newMigrationError("commit", err)
+	}
+	return nil
 }
 
 // rollbackAfter rolls tx back and returns cause, joined with the rollback's own error when it has one.
@@ -528,11 +652,31 @@ func withMigrationRetry(ctx context.Context, conn migrationBeginner, sleep func(
 	}
 }
 
+// migrationTxMarker is a custom setting that execMigration sets with SET LOCAL before a file runs and
+// reads after it.
+const migrationTxMarker = "artex.migration_tx"
+
+// errMigrationEndedTx is returned when a migration file ended the transaction it runs in.
+var errMigrationEndedTx = errors.New("the file ended the migration transaction (COMMIT, ROLLBACK or the like); the ledger row was not written")
+
 // execMigration runs one migration file and its ledger row.
 func execMigration(ctx context.Context, tx *sql.Tx, m migration) error {
+	// The marker lives as long as the transaction (SET LOCAL). The loader rejects files that control the
+	// transaction; this is the second line: if the file ended it anyway, the marker is gone and the
+	// ledger row is not written in autocommit.
+	if _, err := tx.ExecContext(ctx, "SET LOCAL "+migrationTxMarker+" = 'on'"); err != nil {
+		return newMigrationErrorFor(m, err)
+	}
 	// No args: pgx sends it over the simple protocol, which allows several statements.
 	if _, err := tx.ExecContext(ctx, m.sql); err != nil {
 		return newMigrationErrorFor(m, err)
+	}
+	var open bool
+	if err := tx.QueryRowContext(ctx, "SELECT current_setting('"+migrationTxMarker+"', true) = 'on'").Scan(&open); err != nil {
+		return newMigrationErrorFor(m, fmt.Errorf("check transaction: %w", err))
+	}
+	if !open {
+		return newMigrationErrorFor(m, errMigrationEndedTx)
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version, name, checksum) VALUES ($1, $2, $3)`, m.version, m.name, m.checksum); err != nil {
 		return newMigrationErrorFor(m, fmt.Errorf("record: %w", err))
@@ -708,7 +852,7 @@ func logLedgerState(ctx context.Context, q ledgerQueryer) error {
 // ARTEX_SCHEMA_ALLOW_NEWER override.
 func logUnknownVersions(plan ledgerPlan, allowNewer int) {
 	for _, row := range plan.unknown {
-		log.Printf("[migrate] WARNING: ARTEX_SCHEMA_ALLOW_NEWER=%04d; unknown migration %04d (%s)", allowNewer, row.version, row.name)
+		log.Printf("[migrate] WARNING: ARTEX_SCHEMA_ALLOW_NEWER=%04d; unknown migration %04d (%q)", allowNewer, row.version, row.name)
 	}
 }
 
@@ -776,11 +920,16 @@ func (s *migrationStartup) run(d *DB) func(*sql.Conn) error {
 func (d *DB) execEmbeddedMigrations(names ...string) error {
 	tx, err := d.Begin()
 	if err != nil {
-		return err
+		return newMigrationError("embedded migrations: begin transaction", err)
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op after Commit
 	if err := coordinateWithSchemaMigration(tx); err != nil {
-		return err
+		return newMigrationError("embedded migrations: schema lock", err)
+	}
+	// Set after the schema lock, so that waiting for that lock keeps its old, unbounded behaviour (a
+	// slow start of another instance must not fail an Ensure call); it bounds the table locks of the DDL.
+	if _, err := tx.Exec("SET LOCAL lock_timeout = '" + migrationLockTimeoutText() + "'"); err != nil {
+		return newMigrationError("embedded migrations: set lock_timeout", err)
 	}
 	for _, name := range names {
 		content, err := fs.ReadFile(embeddedMigrations(), name)
@@ -791,5 +940,8 @@ func (d *DB) execEmbeddedMigrations(names ...string) error {
 			return newMigrationError("embedded migration "+name, err)
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return newMigrationError("embedded migrations: commit", err)
+	}
+	return nil
 }

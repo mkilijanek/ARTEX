@@ -23,6 +23,8 @@ type migrationFake struct {
 	events []string
 	script []error // one entry per execution of "SELECT inject"; nil = success
 	next   int
+
+	beginErr, setErr, commitErr error // failures of the transaction steps; nil = success
 }
 
 func (f *migrationFake) record(event string) {
@@ -69,11 +71,16 @@ func (c *migrationFakeConn) Begin() (driver.Tx, error) {
 	return c.BeginTx(context.Background(), driver.TxOptions{})
 }
 func (c *migrationFakeConn) BeginTx(context.Context, driver.TxOptions) (driver.Tx, error) {
+	if c.f.beginErr != nil {
+		return nil, c.f.beginErr
+	}
 	c.f.record("begin")
 	return &migrationFakeTx{c.f}, nil
 }
 func (c *migrationFakeConn) ExecContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Result, error) {
 	switch {
+	case strings.HasPrefix(query, "SET LOCAL lock_timeout") && c.f.setErr != nil:
+		return nil, c.f.setErr
 	case strings.HasPrefix(query, "SET LOCAL lock_timeout"):
 		c.f.record("set " + strings.TrimPrefix(query, "SET LOCAL "))
 	case query == "SELECT inject":
@@ -90,7 +97,10 @@ func (c *migrationFakeConn) ExecContext(_ context.Context, query string, _ []dri
 
 type migrationFakeTx struct{ f *migrationFake }
 
-func (tx *migrationFakeTx) Commit() error   { tx.f.record("commit"); return nil }
+func (tx *migrationFakeTx) Commit() error {
+	tx.f.record("commit")
+	return tx.f.commitErr
+}
 func (tx *migrationFakeTx) Rollback() error { tx.f.record("rollback"); return nil }
 
 func migrationFakeConnection(t *testing.T, script ...error) (*sql.Conn, *migrationFake) {
