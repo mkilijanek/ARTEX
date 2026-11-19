@@ -251,7 +251,7 @@ function FindingDetailInner() {
     <Tabs value={tab} onValueChange={setTab} className="flex flex-1 flex-col gap-0">
       {/* Sticky header */}
       <header className="z-10 flex flex-col gap-2 border-b bg-background/95 px-4 py-2.5 backdrop-blur lg:sticky lg:top-0 lg:px-6 lg:[html[data-navbar-style=sticky]_&]:top-12">
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
           <SidebarTrigger className="-ml-1" />
           <Button asChild variant="ghost" size="icon" className="size-7">
             <Link href="/function/findings">
@@ -259,7 +259,7 @@ function FindingDetailInner() {
             </Link>
           </Button>
           <ShieldAlertIcon className="size-4 text-muted-foreground" />
-          <h1 className="max-w-md truncate text-sm font-semibold" title={title}>
+          <h1 className="min-w-0 max-w-md truncate text-sm font-semibold" title={title}>
             {title}
           </h1>
           <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground">#{finding.id}</code>
@@ -301,7 +301,7 @@ function FindingDetailInner() {
                 findingId={id}
                 contextTask={contextTaskId || undefined}
                 readOnly={finding.inherited}
-                className="lg:order-2 lg:min-h-96 lg:flex-1"
+                className="lg:order-2 lg:min-h-72 lg:flex-1"
               />
               <Card className="h-fit shrink-0 lg:order-1">
                 <CardHeader>
