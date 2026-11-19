@@ -5,7 +5,7 @@
 - **Issues:** #24 (referenced, not closed)
 - **Plan:** `docs/phase-d2-plan.md` (not tracked), sections 0, 5 and 13
 - **Runbook:** [schema-upgrade.md](../schema-upgrade.md)
-- **Follow-up:** [0004-versioned-migrations-stage-2.md](0004-versioned-migrations-stage-2.md) (Proposed)
+- **Follow-up:** [0004-versioned-migrations-stage-2.md](0004-versioned-migrations-stage-2.md) (Accepted for the runner, S2-A). The validation suite now runs on the migration runner, and "no runtime detection" below no longer holds for the ledger cases (unknown, changed, out-of-order, empty or foreign ledger).
 
 ## Context
 
