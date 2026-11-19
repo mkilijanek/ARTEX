@@ -57,9 +57,9 @@ func archiveOldDB(t *testing.T, tmp *dbtest.Temp) *DB {
 // (db/task_archives_restore.go, restoreTaskStub and restoreExplorationStub), but the
 // BEFORE UPDATE triggers trg_tasks_upd and trg_exp_upd (set_updated_at,
 // db/schema.sql:7-10, :168, :558) overwrite it with now(). The difference exists with or
-// without a schema upgrade; it is reported as a candidate defect, not fixed here. The
-// test pins it exactly: any other difference fails, and so does the disappearance of
-// this one (then the entry must be removed).
+// without a schema upgrade; it is accepted by the owner on 2026-11-19 (backlog item: the
+// restore keeps the archived timestamps). The test pins it exactly: any other difference
+// fails, and so does the disappearance of these two (then the entries must be removed).
 var archiveKnownRestoreDiffs = []string{
 	"table explorations: column updated_at values changed",
 	"table tasks: column updated_at values changed",

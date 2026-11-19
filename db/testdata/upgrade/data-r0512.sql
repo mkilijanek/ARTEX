@@ -458,7 +458,8 @@ INSERT INTO llm_usage (id, task_id, exploration_id, worker, model, profile_name,
 -- One-time flags of db.Open: interactive_shell_default_v1 holds 'true' (db/db.go:286,290), the
 -- other four 'done' (db/db.go:331,352; 387,571; 582,620; 640,654). The server seeders write
 -- 'true' (server/orchestration.go:568-988, server/finding_*.go): the 19 keys of
--- flags-v0.5.12m.txt. Other keys are operator settings.
+-- flags-v0.5.12m.txt plus finding_workflow_tools_v3_host_search_description (server/finding_workflow.go:18, not
+-- in the flags file, see flags-README.txt): 25 startup keys in all. Other keys are operator settings.
 INSERT INTO settings (key, value) VALUES
  ('interactive_shell_default_v1', 'true'),
  ('asset_intercept_default_rules_v1', 'done'),
@@ -471,6 +472,7 @@ INSERT INTO settings (key, value) VALUES
  ('finding_retester_seed_v1', 'true'),
  ('finding_traffic_tools_v1', 'true'),
  ('finding_workflow_tools_v2_reporter', 'true'),
+ ('finding_workflow_tools_v3_host_search_description', 'true'),
  ('goal_met_unbind_default_v1', 'true'),
  ('goals_prompt_constraint_step_v1', 'true'),
  ('mainagent_prompt_goalless_intent_v1', 'true'),

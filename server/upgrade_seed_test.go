@@ -19,11 +19,17 @@ import (
 //
 // How the fixture state is made. The schema fixture of shape r0509 and the Go DDL are loaded
 // into a temporary database; then the startup of this commit runs once (it writes the
-// agents, prompts, tools, settings flags and intercept rules a 0.5.10m startup wrote: the
-// writers are identical to v0.5.10m's, see seed-r0509.sql); then seed-r0509.sql rewinds the
+// agents, prompts, tools, settings flags and intercept rules); then seed-r0509.sql rewinds the
 // two things 0.5.10m lacked (finding_comments, the source property) and adds the operator's
-// edits. The state is hashed per row and column, the startup runs again, and the changes are
+// edits. The rows are read per table and key, the startup runs again, and the changes are
 // compared with the exact lists below. No value is ever printed.
+//
+// What this is evidence of: the CURRENT seeders run on a state rewound to 0.5.10m. It is not
+// a database created by 0.5.10m. The startup writers of this commit are not those of v0.5.10m
+// (seedFactSourceSchema was added in server/orchestration.go, agent/promptcatalog.go changed
+// the default prompt texts, besides the module path; see the header of seed-r0509.sql), so the
+// rows the first run writes are the rows of this commit's seeders. The real-binary gap is
+// closed only by the dry run on a copy of a real database (docs/phase-d2-plan.md AC15).
 
 const (
 	upgradeFixtures = "../db/testdata/upgrade"
@@ -125,18 +131,18 @@ func r0509Instance(t *testing.T, label string) *dbtest.Temp {
 	return tmp
 }
 
-// observation is the content-free state of a database at one moment.
+// observation is the content-free state of a database at one moment: the rows (dbtest.TakeRows,
+// the implementation the upgrade matrix uses) and the digests with the sequence values.
 type observation struct {
-	rows   dbtest.RowState
+	rows   *dbtest.RowSnapshot
 	digest *dbtest.Digests
-	labels map[string]map[string]string // table -> pk text -> readable label
 }
 
 func observe(t *testing.T, tmp *dbtest.Temp) observation {
 	t.Helper()
 	conn := tmp.Conn(t)
 	ctx := context.Background()
-	rows, err := dbtest.TakeRowState(ctx, conn)
+	rows, err := dbtest.TakeRows(ctx, conn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,41 +150,81 @@ func observe(t *testing.T, tmp *dbtest.Temp) observation {
 	if err != nil {
 		t.Fatal(err)
 	}
-	labels := map[string]map[string]string{"agents": {}, "agent_prompt_vars": {}, "agent_prompts": {}}
-	for table, q := range map[string]string{
-		"agents":            `SELECT id, key FROM agents`,
-		"agent_prompt_vars": `SELECT p.id, a.key || '/' || p.var_name FROM agent_prompt_vars p JOIN agents a ON a.id = p.agent_id`,
-		"agent_prompts":     `SELECT p.id, a.key || '/v' || p.version FROM agent_prompts p JOIN agents a ON a.id = p.agent_id`,
-	} {
-		r, err := conn.QueryContext(ctx, q)
-		if err != nil {
-			t.Fatalf("labels of %s failed", table)
-		}
-		for r.Next() {
-			var id int64
-			var label string
-			if err := r.Scan(&id, &label); err != nil {
-				r.Close()
-				t.Fatalf("labels of %s: scan failed", table)
-			}
-			labels[table][fmt.Sprintf(`id=%d`, id)] = label
-		}
-		r.Close()
-	}
-	return observation{rows: rows, digest: dg, labels: labels}
+	return observation{rows: rows, digest: dg}
 }
 
-// entries renders the changes between two observations as exact strings; agent and prompt
-// rows are named by key instead of by serial id.
-func entries(before, after observation) []string {
-	var out []string
-	for _, c := range dbtest.DiffRowState(before.rows, after.rows) {
-		if lbl, ok := before.labels[c.Table][c.PK]; ok {
-			c.PK = lbl
-		} else if lbl, ok := after.labels[c.Table][c.PK]; ok {
-			c.PK = lbl
+// cell is a column of a row as text; "" for NULL or a column the row does not have.
+func cell(row map[string]*string, col string) string {
+	if v := row[col]; v != nil {
+		return *v
+	}
+	return ""
+}
+
+// rowLabel names a row for an entry: agents, their prompts and prompt variables by the agent
+// key (a serial id differs from run to run), tools by key, any other row by its primary key
+// as dbtest describes it (integers as they are, text as a hash). The label is structure, not
+// row content. The row is looked up before, then after.
+func rowLabel(before, after *dbtest.RowSnapshot, table, key string) string {
+	for _, snap := range []*dbtest.RowSnapshot{before, after} {
+		tbl := snap.Tables[table]
+		if tbl == nil {
+			continue
 		}
-		out = append(out, c.String())
+		row, ok := tbl.Rows[key]
+		if !ok {
+			continue
+		}
+		agentKey := func() string {
+			if a := snap.Tables["agents"]; a != nil {
+				return cell(a.Rows[cell(row, "agent_id")], "key")
+			}
+			return ""
+		}
+		switch table {
+		case "agents":
+			return cell(row, "key")
+		case "agent_prompt_vars":
+			return agentKey() + "/" + cell(row, "var_name")
+		case "agent_prompts":
+			return agentKey() + "/v" + cell(row, "version")
+		case "tools":
+			return fmt.Sprintf("key=%q", cell(row, "key"))
+		}
+		return tbl.DescribeKey(key)
+	}
+	return "?"
+}
+
+// entries renders the changes between two observations as exact strings, one per changed
+// column, deleted or added row, and table that appears or disappears. A table that appears
+// is "table-added" and, for each row it holds, "added"; a table that disappears is
+// "table-gone" only.
+func entries(before, after observation) []string {
+	b, a := before.rows, after.rows
+	var out []string
+	for _, n := range a.TableNames() {
+		if b.Tables[n] == nil {
+			out = append(out, "table-added "+n)
+		}
+	}
+	for _, n := range b.TableNames() {
+		if a.Tables[n] == nil {
+			out = append(out, "table-gone "+n)
+		}
+	}
+	for _, d := range dbtest.DiffRows(b, a) {
+		if a.Tables[d.Table] == nil {
+			continue // table-gone above
+		}
+		switch d.Kind {
+		case dbtest.DiffColumnRemoved:
+			out = append(out, fmt.Sprintf("column-removed %s %s", d.Table, d.Column))
+		case dbtest.DiffAdded, dbtest.DiffDeleted:
+			out = append(out, fmt.Sprintf("%s %s [%s]", d.Kind, d.Table, rowLabel(b, a, d.Table, d.Key)))
+		default:
+			out = append(out, fmt.Sprintf("%s %s [%s] %s", d.Kind, d.Table, rowLabel(b, a, d.Table, d.Key), d.Column))
+		}
 	}
 	sort.Strings(out)
 	return out
@@ -322,6 +368,29 @@ func TestUpgradeSeedFixtureHoldsTheOperatorState(t *testing.T) {
 			t.Errorf("%s lists %s, which startupFlagKeys lacks", flagsFixture, line)
 		}
 	}
+	// startupFlagKeys is the flags file (19 keys) and the six keys flags-README.txt lists, with
+	// the same file:line, and nothing else.
+	readme := map[string]string{}
+	for _, line := range strings.Split(fixtureText(t, filepath.Join(upgradeFixtures, "flags-README.txt")), "\n") {
+		if f := strings.Fields(line); len(f) == 2 && strings.Contains(f[1], ".go:") {
+			readme[f[0]] = f[1]
+		}
+	}
+	listed := map[string]bool{}
+	for _, k := range strings.Fields(fixtureText(t, filepath.Join(upgradeFixtures, flagsFixture))) {
+		listed[k] = true
+	}
+	for k, where := range readme {
+		if startupFlagKeys[k] != where {
+			t.Errorf("flags-README.txt lists %s at %s; startupFlagKeys says %q", k, where, startupFlagKeys[k])
+		}
+		listed[k] = true
+	}
+	for k := range startupFlagKeys {
+		if !listed[k] {
+			t.Errorf("startupFlagKeys has %s, which neither %s nor flags-README.txt lists", k, flagsFixture)
+		}
+	}
 	dbtest.AssertNoSecret(t, "startup log", logs())
 }
 
@@ -343,7 +412,9 @@ func TestUpgradeSeedWritersOnExistingInstanceTwice(t *testing.T) {
 		"table-added finding_comments",
 		// db/db.go:256-258: ON CONFLICT (key) DO UPDATE SET name = EXCLUDED.name, description =
 		// EXCLUDED.description overwrites the operator's rename and description on every start.
-		// OPERATOR-EDITED. CANDIDATE-DEFECT, awaiting user decision (fix, accept or re-plan).
+		// OPERATOR-EDITED. Accepted by the owner on 2026-11-19 (backlog item): the product does not
+		// let a built-in agent be renamed (db/config.go:610), so only an out-of-band SQL edit is
+		// reverted.
 		"value agents [planner] name",
 		"value agents [planner] description",
 		// db/db.go:280: DELETE FROM agent_prompt_vars WHERE var_name IN ('EngagementTitle',

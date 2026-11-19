@@ -19,6 +19,9 @@ func mxSnapshot(tables map[string]*TableRows) *RowSnapshot { return &RowSnapshot
 
 func mxTable(pk []string, cols []string, rows ...map[string]*string) *TableRows {
 	t := &TableRows{Cols: cols, PK: pk, Rows: map[string]map[string]*string{}, timestamps: map[string]bool{}}
+	for _, c := range cols {
+		t.timestamps[c] = c == "updated_at"
+	}
 	for _, r := range rows {
 		key, err := t.keyOf(r)
 		if err != nil {
@@ -55,7 +58,7 @@ func mxBefore() *RowSnapshot {
 
 func mxValueEntry(tbl, id, col string, b, a *string, class string) ExpectedChange {
 	return ExpectedChange{Kind: KindValue, Table: tbl, PK: map[string]string{"id": id}, Column: col,
-		Before: mxRaw(b), After: mxRaw(a), Cause: "db/db.go:258", Class: class}
+		Before: mxRaw(b), After: mxRaw(a), Cause: "db/db.go:258", Class: class, Note: "the owner decided"}
 }
 
 func TestUpgradeCompareRowsAcceptsExactlyTheListedChanges(t *testing.T) {
@@ -71,6 +74,47 @@ func TestUpgradeCompareRowsAcceptsExactlyTheListedChanges(t *testing.T) {
 	res := CompareRows(mxBefore(), after, changes, func(string) (bool, error) { return true, nil })
 	if !res.OK() {
 		t.Fatalf("an exact list was refused:\n%s", res.Report())
+	}
+}
+
+func TestUpgradeCompareRowsAddedEntryWithAPKNamesTheRow(t *testing.T) {
+	after := mxBefore()
+	after.Tables["notes"].Rows["8"] = mxRow("id", "8", "text", "new")
+	keyed := func(id string, class string) ExpectedChange {
+		return ExpectedChange{Kind: KindAdded, Table: "notes", PK: map[string]string{"id": id}, Cause: "db/schema.sql:712-717", Class: class}
+	}
+	if res := CompareRows(mxBefore(), after, []ExpectedChange{keyed("8", ClassIntended)}, nil); !res.OK() {
+		t.Fatalf("an added entry naming the added row was refused:\n%s", res.Report())
+	}
+	// "+1 row" must not be satisfied by a different row: the entry names row 9, row 8 was added.
+	res := CompareRows(mxBefore(), after, []ExpectedChange{keyed("9", ClassIntended)}, nil)
+	got := strings.Join(res.Problems, "\n")
+	for _, want := range []string{"table notes: 1 row(s) added, no entry", "entry 1 (added notes) was not confirmed by the run"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("a pk entry for another row: problems lack %q:\n%s", want, got)
+		}
+	}
+	// A pk entry for a row that existed before is not an addition.
+	res = CompareRows(mxBefore(), after, []ExpectedChange{keyed("7", ClassIntended), {Kind: KindAdded, Table: "notes", Count: 1, Cause: "db/schema.sql:712-717", Class: ClassIntended}}, nil)
+	if got := strings.Join(res.Problems, "\n"); !strings.Contains(got, "entry 1 (added notes) was not confirmed by the run") {
+		t.Errorf("a pk entry for an existing row was not reported as unconfirmed:\n%s", got)
+	}
+	// A pk entry and a count entry together: the count covers the rows no pk entry names.
+	after.Tables["notes"].Rows["9"] = mxRow("id", "9", "text", "new")
+	count := func(n int) ExpectedChange {
+		return ExpectedChange{Kind: KindAdded, Table: "notes", Count: n, Cause: "db/schema.sql:712-717", Class: ClassIntended}
+	}
+	if res := CompareRows(mxBefore(), after, []ExpectedChange{keyed("8", ClassIntended), count(1)}, nil); !res.OK() {
+		t.Fatalf("a pk entry plus a count for the rest was refused:\n%s", res.Report())
+	}
+	res = CompareRows(mxBefore(), after, []ExpectedChange{keyed("8", ClassIntended), count(2)}, nil)
+	if got := strings.Join(res.Problems, "\n"); !strings.Contains(got, "1 row(s) added, the entry says 2") {
+		t.Errorf("the count must cover only the rows no pk entry names:\n%s", got)
+	}
+	// A defect pk entry awaits the user, like any other defect entry.
+	res = CompareRows(mxBefore(), after, []ExpectedChange{keyed("8", ClassDefect), count(1)}, nil)
+	if res.OK() || len(res.Problems) != 0 || len(res.Awaiting) != 1 {
+		t.Errorf("a defect pk entry must await the user (problems %d, awaiting %d)", len(res.Problems), len(res.Awaiting))
 	}
 }
 
@@ -160,6 +204,16 @@ func TestUpgradeCompareRowsStartupMarkerNeedsAFreshTimestamp(t *testing.T) {
 	}
 }
 
+func TestUpgradeCompareRowsStartupMarkerIsForTimestamptzColumnsOnly(t *testing.T) {
+	after := mxBefore()
+	after.Tables["agents"].Rows["1"]["name"] = mxStr("2026-01-01T00:00:00.000000Z")
+	entry := mxValueEntry("agents", "1", "name", mxStr("Planner"), mxStr(AfterStartup), ClassIntended)
+	res := CompareRows(mxBefore(), after, []ExpectedChange{entry}, func(string) (bool, error) { return true, nil })
+	if got := strings.Join(res.Problems, "\n"); !strings.Contains(got, "@startup is valid for a timestamptz column only") {
+		t.Errorf("@startup was accepted for a text column:\n%s", res.Report())
+	}
+}
+
 func TestUpgradeCompareRowsColumnAddedEntries(t *testing.T) {
 	b := mxSnapshot(map[string]*TableRows{"p": mxTable([]string{"id"}, []string{"id"}, mxRow("id", "1"))})
 	a := mxSnapshot(map[string]*TableRows{"p": mxTable([]string{"id"}, []string{"id", "kind"}, mxRow("id", "1", "kind", "x"))})
@@ -223,28 +277,35 @@ func TestUpgradeExpectedChangesReaderRejectsMalformedEntries(t *testing.T) {
 		t.Fatalf("a valid file was refused: %v", err)
 	}
 	cases := map[string]string{
-		"unknown field":             `{"shapes":{"s":[{"kind":"added","table":"t","count":1,"cause":"db/db.go:1","class":"intended","why":"x"}]}}`,
-		"no cause":                  `{"shapes":{"s":[{"kind":"added","table":"t","count":1,"class":"intended"}]}}`,
-		"cause without a line":      `{"shapes":{"s":[{"kind":"added","table":"t","count":1,"cause":"db/db.go","class":"intended"}]}}`,
-		"unknown class":             `{"shapes":{"s":[{"kind":"added","table":"t","count":1,"cause":"db/db.go:1","class":"fine"}]}}`,
-		"unknown kind":              `{"shapes":{"s":[{"kind":"column","table":"t","cause":"db/db.go:1","class":"intended"}]}}`,
-		"whole-column value entry":  `{"shapes":{"s":[{"kind":"value","table":"t","column":"c","before":"a","after":"b","cause":"db/db.go:1","class":"intended"}]}}`,
-		"whole-table deleted entry": `{"shapes":{"s":[{"kind":"deleted","table":"t","cause":"db/db.go:1","class":"intended"}]}}`,
-		"value without before":      `{"shapes":{"s":[{"kind":"value","table":"t","pk":{"id":"1"},"column":"c","after":"b","cause":"db/db.go:1","class":"intended"}]}}`,
-		"added without count":       `{"shapes":{"s":[{"kind":"added","table":"t","cause":"db/db.go:1","class":"intended"}]}}`,
-		"added with a pk":           `{"shapes":{"s":[{"kind":"added","table":"t","count":1,"pk":{"id":"1"},"cause":"db/db.go:1","class":"intended"}]}}`,
-		"non-string value":          `{"shapes":{"s":[{"kind":"value","table":"t","pk":{"id":"1"},"column":"c","before":1,"after":"b","cause":"db/db.go:1","class":"intended"}]}}`,
-		"column_added with before":  `{"shapes":{"s":[{"kind":"value","table":"t","pk":{"id":"1"},"column":"c","column_added":true,"before":"a","after":"b","cause":"db/db.go:1","class":"intended"}]}}`,
-		"the same change twice":     `{"shapes":{"s":[{"kind":"added","table":"t","count":1,"cause":"db/db.go:1","class":"intended"},{"kind":"added","table":"t","count":2,"cause":"db/db.go:1","class":"intended"}]}}`,
-		"value without after":       `{"shapes":{"s":[{"kind":"value","table":"t","pk":{"id":"1"},"column":"c","before":"a","cause":"db/db.go:1","class":"intended"}]}}`,
+		"unknown field":              `{"shapes":{"s":[{"kind":"added","table":"t","count":1,"cause":"db/db.go:1","class":"intended","why":"x"}]}}`,
+		"no cause":                   `{"shapes":{"s":[{"kind":"added","table":"t","count":1,"class":"intended"}]}}`,
+		"cause without a line":       `{"shapes":{"s":[{"kind":"added","table":"t","count":1,"cause":"db/db.go","class":"intended"}]}}`,
+		"unknown class":              `{"shapes":{"s":[{"kind":"added","table":"t","count":1,"cause":"db/db.go:1","class":"fine"}]}}`,
+		"unknown kind":               `{"shapes":{"s":[{"kind":"column","table":"t","cause":"db/db.go:1","class":"intended"}]}}`,
+		"whole-column value entry":   `{"shapes":{"s":[{"kind":"value","table":"t","column":"c","before":"a","after":"b","cause":"db/db.go:1","class":"intended"}]}}`,
+		"whole-table deleted entry":  `{"shapes":{"s":[{"kind":"deleted","table":"t","cause":"db/db.go:1","class":"intended"}]}}`,
+		"value without before":       `{"shapes":{"s":[{"kind":"value","table":"t","pk":{"id":"1"},"column":"c","after":"b","cause":"db/db.go:1","class":"intended"}]}}`,
+		"added without count":        `{"shapes":{"s":[{"kind":"added","table":"t","cause":"db/db.go:1","class":"intended"}]}}`,
+		"added with a pk and count":  `{"shapes":{"s":[{"kind":"added","table":"t","count":1,"pk":{"id":"1"},"cause":"db/db.go:1","class":"intended"}]}}`,
+		"accepted without a note":    `{"shapes":{"s":[{"kind":"added","table":"t","count":1,"cause":"db/db.go:1","class":"accepted"}]}}`,
+		"accepted with a blank note": `{"shapes":{"s":[{"kind":"added","table":"t","count":1,"cause":"db/db.go:1","class":"accepted","note":"  "}]}}`,
+		"the same pk added twice":    `{"shapes":{"s":[{"kind":"added","table":"t","pk":{"id":"1"},"cause":"db/db.go:1","class":"intended"},{"kind":"added","table":"t","pk":{"id":"1"},"cause":"db/db.go:2","class":"intended"}]}}`,
+		"non-string value":           `{"shapes":{"s":[{"kind":"value","table":"t","pk":{"id":"1"},"column":"c","before":1,"after":"b","cause":"db/db.go:1","class":"intended"}]}}`,
+		"column_added with before":   `{"shapes":{"s":[{"kind":"value","table":"t","pk":{"id":"1"},"column":"c","column_added":true,"before":"a","after":"b","cause":"db/db.go:1","class":"intended"}]}}`,
+		"the same change twice":      `{"shapes":{"s":[{"kind":"added","table":"t","count":1,"cause":"db/db.go:1","class":"intended"},{"kind":"added","table":"t","count":2,"cause":"db/db.go:1","class":"intended"}]}}`,
+		"value without after":        `{"shapes":{"s":[{"kind":"value","table":"t","pk":{"id":"1"},"column":"c","before":"a","cause":"db/db.go:1","class":"intended"}]}}`,
 	}
 	for name, doc := range cases {
 		if _, err := ReadExpectedChanges(strings.NewReader(doc)); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
 	}
-	nulls := `{"shapes":{"s":[{"kind":"value","table":"t","pk":{"id":"1"},"column":"c","before":null,"after":"b","cause":"db/db.go:1; db/db.go:5-7","class":"accepted"}]}}`
+	nulls := `{"shapes":{"s":[{"kind":"value","table":"t","pk":{"id":"1"},"column":"c","before":null,"after":"b","cause":"db/db.go:1; db/db.go:5-7","class":"accepted","note":"the owner decided"}]}}`
 	if _, err := ReadExpectedChanges(strings.NewReader(nulls)); err != nil {
 		t.Errorf("a NULL before value was refused: %v", err)
+	}
+	keyed := `{"shapes":{"s":[{"kind":"added","table":"t","pk":{"id":"1"},"cause":"db/db.go:1","class":"intended"},{"kind":"added","table":"t","pk":{"id":"2"},"cause":"db/db.go:1","class":"intended"}]}}`
+	if _, err := ReadExpectedChanges(strings.NewReader(keyed)); err != nil {
+		t.Errorf("added entries that name their rows were refused: %v", err)
 	}
 }

@@ -52,6 +52,22 @@ func Lines(entries []Entry) []string {
 //
 // Out of scope, as the reference header states: owners, grants, comments, views,
 // user types, tablespaces. PostgreSQL 16 only.
+//
+// What the listing does not cover, so that a green comparison is not read as more than it is.
+// Two databases with an equal listing can still differ in:
+//   - sequence persistence (UNLOGGED sequences) and sequence values (the digests compare last_value,
+//     the listing does not);
+//   - table storage parameters (pg_class.reloptions, for example fillfactor, autovacuum settings);
+//   - row-level security: the relrowsecurity and relforcerowsecurity flags and the policies;
+//   - rewrite rules (pg_rewrite);
+//   - extended statistics (CREATE STATISTICS);
+//   - enum, domain and composite types (user types);
+//   - event triggers;
+//   - the index flags indisclustered and indisreplident (CLUSTER and REPLICA IDENTITY USING INDEX),
+//     and the table's replica identity setting;
+//   - owners, grants and default privileges;
+//   - comments (COMMENT ON ...);
+//   - tablespaces, and anything outside the public schema.
 var catalogQueries = []string{
 	// schemas other than public and the system schemas
 	`SELECT 'schema', nspname, '' FROM pg_namespace

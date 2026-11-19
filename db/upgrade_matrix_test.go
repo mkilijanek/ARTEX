@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -149,8 +150,14 @@ func sqlStateOf(err error) string {
 	return "no SQLSTATE: connection or driver error"
 }
 
+// startupSlack is how far after the database clock, read once startup is over, a timestamp
+// may lie and still count as written by startup (clock_timestamp() is read again for each
+// comparison, which is after startup).
+const startupSlack = "1 minute"
+
 // startupClock reads the database clock before startup and returns the check that a
-// timestamp text is not earlier than it (the "@startup" after value).
+// timestamp text lies between that moment and the database clock read after startup plus a
+// small slack (the "@startup" after value).
 func startupClock(t *testing.T, conn *sql.DB) dbtest.StartupCheck {
 	t.Helper()
 	var t0 string
@@ -159,10 +166,83 @@ func startupClock(t *testing.T, conn *sql.DB) dbtest.StartupCheck {
 	}
 	return func(after string) (bool, error) {
 		var fresh bool
-		if err := conn.QueryRow(`SELECT $1::timestamptz >= $2::timestamptz`, after, t0).Scan(&fresh); err != nil {
+		if err := conn.QueryRow(`SELECT $1::timestamptz >= $2::timestamptz
+			AND $1::timestamptz <= clock_timestamp() + interval '`+startupSlack+`'`, after, t0).Scan(&fresh); err != nil {
 			return false, fmt.Errorf("compare timestamps failed (%s)", sqlStateOf(err))
 		}
 		return fresh, nil
+	}
+}
+
+// The "@startup" marker has both bounds: a timestamp from before startup, and one from the
+// far future, are not a timestamp startup wrote.
+func TestUpgradeStartupMarkerBoundsTheTimestampOnBothSides(t *testing.T) {
+	srv := dbtest.RequireServer(t)
+	tmp := dbtest.TempDatabase(t, srv, "startupclock")
+	conn := tmp.Conn(t)
+	check := startupClock(t, conn)
+	at := func(expr string) string {
+		t.Helper()
+		var s string
+		if err := conn.QueryRow(`SELECT (` + expr + `)::text`).Scan(&s); err != nil {
+			t.Fatalf("read the database clock failed (%s)", sqlStateOf(err))
+		}
+		return s
+	}
+	for name, c := range map[string]struct {
+		ts   string
+		want bool
+	}{
+		"now":               {at(`clock_timestamp()`), true},
+		"before startup":    {at(`clock_timestamp() - interval '1 hour'`), false},
+		"far in the future": {at(`clock_timestamp() + interval '1 hour'`), false},
+		"infinity":          {"infinity", false},
+	} {
+		got, err := check(c.ts)
+		if err != nil || got != c.want {
+			t.Errorf("%s: check = %v, %v; want %v", name, got, err, c.want)
+		}
+	}
+}
+
+// to_char of an infinite timestamp is NULL; the row snapshot must keep infinity and NULL apart,
+// or a change from one to the other would not be a difference.
+func TestUpgradeRowSnapshotKeepsInfinityAndNullApart(t *testing.T) {
+	srv := dbtest.RequireServer(t)
+	tmp := dbtest.TempDatabase(t, srv, "rowsinf")
+	tmp.Load(t, "probe table", `CREATE TABLE probe (id int PRIMARY KEY, ts timestamptz, note text);
+		INSERT INTO probe VALUES (1, NULL, NULL), (2, 'infinity', 'infinity'), (3, '-infinity', ''),
+		  (4, '2026-01-02 03:04:05.678901+02', 'x');`)
+	conn := tmp.Conn(t)
+	snap := takeRows(t, conn)
+	rows := snap.Tables["probe"]
+	if rows == nil || !rows.IsTimestamp("ts") || rows.IsTimestamp("note") {
+		t.Fatal("the probe table or its column types were not read")
+	}
+	val := func(id, col string) string {
+		v := rows.Rows[id][col]
+		if v == nil {
+			return "<NULL>"
+		}
+		return *v
+	}
+	want := map[string]string{"1": "<NULL>", "2": "infinity", "3": "-infinity", "4": "2026-01-02T01:04:05.678901Z"}
+	for id, w := range want {
+		if got := val(id, "ts"); got != w {
+			t.Errorf("row %s: ts reads %q, want %q", id, got, w)
+		}
+	}
+	if val("1", "note") != "<NULL>" || val("2", "note") != "infinity" {
+		t.Error("a text column is not read as its text")
+	}
+	// A change from NULL to infinity is a difference.
+	before := takeRows(t, conn)
+	if _, err := conn.Exec(`UPDATE probe SET ts = 'infinity' WHERE id = 1`); err != nil {
+		t.Fatalf("update failed (%s)", sqlStateOf(err))
+	}
+	after := takeRows(t, conn)
+	if d := dbtest.DiffRows(before, after); len(d) != 1 || d[0].Column != "ts" {
+		t.Errorf("NULL -> infinity is not reported as one difference in ts: %d difference(s)", len(d))
 	}
 }
 
@@ -297,6 +377,104 @@ func TestUpgradeFixtureHasRowsInEveryTable(t *testing.T) {
 				if !known[tbl] {
 					t.Errorf("shape %s: exemption for %s, which is not a table of the schema", sh.name, tbl)
 				}
+			}
+		})
+	}
+}
+
+// startupKeyCount is the number of settings keys startup writes: the 19 `const flag` keys of
+// the flags files and the six that flags-README.txt lists.
+const startupKeyCount = 25
+
+// operatorSettingKeys are the settings rows of the data fixtures that no startup writer owns.
+var operatorSettingKeys = []string{"traffic_capture", "canary.operator_note"}
+
+var readmeKeyLine = regexp.MustCompile(`^([a-z0-9_]+) ([A-Za-z0-9_./-]+):([0-9]+)$`)
+
+// startupSettingsKeys returns the 25 startup keys for a flags file: its keys, and the six
+// listed in flags-README.txt. The README line of each of the six must point at a line that
+// holds the key.
+func startupSettingsKeys(t *testing.T, flagsFile string) []string {
+	t.Helper()
+	keys := strings.Fields(readUpgradeFile(t, flagsFile))
+	for _, line := range strings.Split(readUpgradeFile(t, "flags-README.txt"), "\n") {
+		m := readmeKeyLine.FindStringSubmatch(strings.TrimSpace(line))
+		if m == nil {
+			continue
+		}
+		key, file, lineNo := m[1], m[2], m[3]
+		b, err := os.ReadFile(filepath.Join("..", file))
+		if err != nil {
+			t.Errorf("flags-README.txt: %s: %v", file, err)
+			continue
+		}
+		n, _ := strconv.Atoi(lineNo)
+		lines := strings.Split(string(b), "\n")
+		if n < 1 || n > len(lines) || !strings.Contains(lines[n-1], `"`+key+`"`) {
+			t.Errorf("flags-README.txt: %s:%d does not hold the key %s", file, n, key)
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// AC3, fixture coverage: the settings rows of a data fixture are exactly the 25 startup keys
+// (the flag rows of every one-time seeder: a missing one would let that seeder run on the
+// fixture as a first-time run) and the two operator rows, nothing else.
+func TestUpgradeFixtureSettingsAreTheStartupKeys(t *testing.T) {
+	for _, sh := range matrixShapes {
+		sh := sh
+		t.Run(sh.name, func(t *testing.T) {
+			var flagsFile string
+			for _, rs := range recordedShapes {
+				if rs.shape == sh.recorded {
+					flagsFile = "flags-" + rs.releases[len(rs.releases)-1].tag + ".txt"
+				}
+			}
+			want := startupSettingsKeys(t, flagsFile)
+			if len(want) != startupKeyCount {
+				t.Fatalf("%s and flags-README.txt give %d startup keys, want %d", flagsFile, len(want), startupKeyCount)
+			}
+			want = append(want, operatorSettingKeys...)
+			sort.Strings(want)
+
+			srv := dbtest.RequireServer(t)
+			tmp := buildShape(t, srv, sh)
+			r, err := tmp.Conn(t).Query(`SELECT key FROM settings ORDER BY key`)
+			if err != nil {
+				t.Fatalf("read settings failed (%s)", sqlStateOf(err))
+			}
+			defer r.Close()
+			var got []string
+			for r.Next() {
+				var k string
+				if err := r.Scan(&k); err != nil {
+					t.Fatal("settings scan failed")
+				}
+				got = append(got, k)
+			}
+			if err := r.Err(); err != nil {
+				t.Fatalf("read settings failed (%s)", sqlStateOf(err))
+			}
+			if strings.Join(got, "\n") != strings.Join(want, "\n") {
+				have := map[string]bool{}
+				for _, k := range got {
+					have[k] = true
+				}
+				var missing, extra []string
+				for _, k := range want {
+					if !have[k] {
+						missing = append(missing, k)
+					}
+					delete(have, k)
+				}
+				for k := range have {
+					extra = append(extra, k)
+				}
+				sort.Strings(extra)
+				t.Errorf("shape %s: the fixture settings rows are not the %d startup keys and the operator rows.\nmissing: %s\nunexpected: %s",
+					sh.name, startupKeyCount, strings.Join(missing, ", "), strings.Join(extra, ", "))
 			}
 		})
 	}

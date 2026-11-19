@@ -25,6 +25,8 @@ const (
 // Entry classes. A defect entry names a difference the plan or the run found that nobody has
 // decided on: it makes the comparison fail ("awaiting user decision") until the user fixes
 // the code or reclassifies the entry. The implementer never picks intended or accepted alone.
+// An accepted entry is a difference the owner decided to keep; it must carry a note that says
+// so and why (a decision is recorded, not implied).
 const (
 	ClassIntended = "intended"
 	ClassAccepted = "accepted"
@@ -32,8 +34,10 @@ const (
 )
 
 // AfterStartup, as the after value of a value entry, stands for a timestamp that is not
-// earlier than the moment startup began. It is the only way to state the result of a
-// now()-valued column (the set_updated_at trigger): an exact value cannot be written down.
+// earlier than the moment startup began and not later than the database clock read after it
+// (plus a small slack). It is the only way to state the result of a now()-valued column (the
+// set_updated_at trigger): an exact value cannot be written down. It is valid for timestamptz
+// columns only.
 const AfterStartup = "@startup"
 
 // ExpectedChange is one entry. Before and After keep the difference between an absent field
@@ -49,6 +53,7 @@ type ExpectedChange struct {
 	Count       int               `json:"count,omitempty"`
 	Cause       string            `json:"cause"`
 	Class       string            `json:"class"`
+	Note        string            `json:"note,omitempty"` // required for class accepted: the decision and its reason
 }
 
 // ExpectedFile is expected-changes.json.
@@ -100,7 +105,11 @@ func (c ExpectedChange) Validate() error {
 		return fmt.Errorf("cause %q is not file:line (several: separated by \"; \")", c.Cause)
 	}
 	switch c.Class {
-	case ClassIntended, ClassAccepted, ClassDefect:
+	case ClassIntended, ClassDefect:
+	case ClassAccepted:
+		if strings.TrimSpace(c.Note) == "" {
+			return fmt.Errorf("an accepted entry needs a note that records the decision")
+		}
 	default:
 		return fmt.Errorf("class %q is none of intended, accepted, defect", c.Class)
 	}
@@ -136,11 +145,16 @@ func (c ExpectedChange) Validate() error {
 			return fmt.Errorf("a deleted entry has only table and pk")
 		}
 	case KindAdded:
-		if c.Count < 1 {
-			return fmt.Errorf("an added entry needs a count of at least 1")
+		// With a pk the entry names the one row that is added; without it, a number of rows.
+		if len(c.PK) > 0 {
+			if c.Count != 0 {
+				return fmt.Errorf("an added entry with a pk names one row; omit count")
+			}
+		} else if c.Count < 1 {
+			return fmt.Errorf("an added entry needs a pk (one row) or a count of at least 1")
 		}
-		if len(c.PK) != 0 || c.Column != "" || len(c.Before) != 0 || len(c.After) != 0 || c.ColumnAdded {
-			return fmt.Errorf("an added entry has only table and count")
+		if c.Column != "" || len(c.Before) != 0 || len(c.After) != 0 || c.ColumnAdded {
+			return fmt.Errorf("an added entry has only table and pk, or table and count")
 		}
 	default:
 		return fmt.Errorf("kind %q is none of value, deleted, added", c.Kind)
@@ -172,8 +186,8 @@ func (c ExpectedChange) identity() string {
 	return c.Kind + "|" + c.Table + "|" + strings.Join(keys, ",") + "|" + c.Column
 }
 
-// StartupCheck reports whether a timestamp text is not earlier than the start of the startup
-// being compared (the AfterStartup marker).
+// StartupCheck reports whether a timestamp text lies between the start of the startup being
+// compared and the database clock read after it, plus a small slack (the AfterStartup marker).
 type StartupCheck func(after string) (bool, error)
 
 // CompareResult is the outcome of CompareRows. Problems are differences the file does not
@@ -204,18 +218,21 @@ func (r CompareResult) Report() string {
 // CompareRows checks AC3: every row present before is present after, every value is
 // unchanged, and rows are added only as stated, except for exactly the listed entries. An
 // entry is matched on kind, table, primary key and column, and must also state the exact
-// value before and after (AfterStartup for a trigger-maintained timestamp). Every entry must
-// be confirmed by the run; a stale entry is a problem.
+// value before and after (AfterStartup for a trigger-maintained timestamp). An added entry
+// with a pk names that row; one with a count covers the added rows no pk entry names, and
+// their number must equal the count. Every entry must be confirmed by the run; a stale entry
+// is a problem.
 func CompareRows(before, after *RowSnapshot, changes []ExpectedChange, startup StartupCheck) CompareResult {
 	var res CompareResult
 	problem := func(format string, a ...any) { res.Problems = append(res.Problems, fmt.Sprintf(format, a...)) }
 
 	used := make([]bool, len(changes))
 	byID := map[string]int{}
-	addedByTable := map[string]int{}
+	addedByTable := map[string]int{} // count entries: the rows no pk entry names
+	addedByKey := map[string]int{}   // pk entries: table|row key
 	for i, c := range changes {
-		switch c.Kind {
-		case KindAdded:
+		switch {
+		case c.Kind == KindAdded && len(c.PK) == 0:
 			addedByTable[c.Table] = i
 		default:
 			t := metaOf(before, after, c.Table)
@@ -230,7 +247,11 @@ func CompareRows(before, after *RowSnapshot, changes []ExpectedChange, startup S
 				used[i] = true
 				continue
 			}
-			byID[c.Kind+"|"+c.Table+"|"+key+"|"+c.Column] = i
+			if c.Kind == KindAdded {
+				addedByKey[c.Table+"|"+key] = i
+			} else {
+				byID[c.Kind+"|"+c.Table+"|"+key+"|"+c.Column] = i
+			}
 		}
 	}
 	awaiting := func(i int) {
@@ -247,7 +268,7 @@ func CompareRows(before, after *RowSnapshot, changes []ExpectedChange, startup S
 					}
 				}
 			}
-			if c.Kind == KindAdded {
+			if c.Kind == KindAdded && c.Count > 0 {
 				what += fmt.Sprintf(" +%d", c.Count)
 			}
 			res.Awaiting = append(res.Awaiting, fmt.Sprintf("entry %d (%s; cause %s): awaiting user decision", i+1, what, c.Cause))
@@ -258,6 +279,11 @@ func CompareRows(before, after *RowSnapshot, changes []ExpectedChange, startup S
 	for _, d := range DiffRows(before, after) {
 		switch d.Kind {
 		case DiffAdded:
+			if i, ok := addedByKey[d.Table+"|"+d.Key]; ok {
+				used[i] = true
+				awaiting(i)
+				continue
+			}
 			added[d.Table]++
 		case DiffColumnRemoved:
 			problem("%s", d.Describe())
@@ -291,7 +317,10 @@ func CompareRows(before, after *RowSnapshot, changes []ExpectedChange, startup S
 			want, _, _ := decodeValue(c.After)
 			switch {
 			case want != nil && *want == AfterStartup:
-				if d.After == nil {
+				if t := metaOf(before, after, d.Table); t == nil || !t.IsTimestamp(d.Column) {
+					problem("entry %d (%s): %s is valid for a timestamptz column only", i+1, d.Describe(), AfterStartup)
+					ok = false
+				} else if d.After == nil {
 					problem("entry %d (%s): the value after is NULL, the entry says a timestamp from startup", i+1, d.Describe())
 					ok = false
 				} else if startup == nil {

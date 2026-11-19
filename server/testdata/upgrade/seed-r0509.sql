@@ -1,9 +1,15 @@
 -- Operator state of a 0.5.10m instance, applied on top of the state the startup
 -- writers of that release leave behind (docs/phase-d2-plan.md section 2.2, AC9).
 -- Every text value carries the row canary: it must never appear in test output.
--- The startup writers at v0.5.10m and at this commit are identical apart from the
--- module path (git diff v0.5.10m HEAD over agent/, server/, traffic/, db/db.go has no
--- other non-test line), so the rows they wrote at this commit are the rows 0.5.10m wrote.
+-- This is NOT a database created by 0.5.10m. The tests run the CURRENT startup writers on
+-- the r0509 schema, then rewind the state to what 0.5.10m left (below). The writers of this
+-- commit differ from those of v0.5.10m (git diff v0.5.10m HEAD over agent/, server/,
+-- traffic/, db/db.go): besides the module path, server/orchestration.go gained
+-- seedFactSourceSchema (the source property of record_fact), and agent/promptcatalog.go
+-- changed the default prompt texts (the untrusted-content block is gone from the templates,
+-- the pentest prompt gained the fact-source line). The rows the writers leave at this
+-- commit therefore differ from 0.5.10m's in those places; the evidence is "current seeders
+-- on a state rewound to 0.5.10m".
 
 -- 0.5.10m has no finding_comments table (the r0509 shape lacks it).
 DROP TABLE finding_comments;

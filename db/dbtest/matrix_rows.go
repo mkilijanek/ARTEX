@@ -30,10 +30,14 @@ type TableRows struct {
 	timestamps map[string]bool // timestamptz columns: read in UTC, microseconds, whatever the session time zone
 }
 
-// timestampFormat renders a timestamptz as UTC with microseconds, independent of the TimeZone
-// and DateStyle of the session, so that an expected value in the file reads the same on every
-// server.
+// timestampFormat renders a finite timestamptz as UTC with microseconds, independent of the
+// TimeZone and DateStyle of the session, so that an expected value in the file reads the same
+// on every server. 'infinity' and '-infinity' read as those words; NULL stays NULL.
 const timestampFormat = `YYYY-MM-DD"T"HH24:MI:SS.US"Z"`
+
+// IsTimestamp reports whether a column is of type timestamptz (read as UTC text with
+// microseconds, or 'infinity' / '-infinity').
+func (t *TableRows) IsTimestamp(col string) bool { return t.timestamps[col] }
 
 // RowSnapshot is the row content of the public schema.
 type RowSnapshot struct {
@@ -145,7 +149,10 @@ SELECT c.relname, a.attname
 		sel := make([]string, len(t.Cols))
 		for i, c := range t.Cols {
 			if t.timestamps[c] {
-				sel[i] = "to_char(" + quoteIdent(c) + " AT TIME ZONE 'UTC', '" + timestampFormat + "')"
+				// to_char of an infinite timestamp returns NULL, which would equal SQL NULL:
+				// an infinite value is read as its own text.
+				col := quoteIdent(c)
+				sel[i] = "CASE WHEN isfinite(" + col + ") THEN to_char(" + col + " AT TIME ZONE 'UTC', '" + timestampFormat + "') ELSE " + col + "::text END"
 			} else {
 				sel[i] = quoteIdent(c) + "::text"
 			}
