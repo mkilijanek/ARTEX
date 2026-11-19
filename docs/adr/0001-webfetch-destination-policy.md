@@ -127,7 +127,7 @@ Further rules:
 - **`EvaluateAssetGate` as the matcher.** Substring matching allows bypasses through
   userinfo, query text and label suffixes.
 - **A PreToolUse guard hook.** Planner and main-agent sessions have no guard hooks
-  (deferred to D.2).
+  (deferred to a D.1 follow-up).
 - **An SDK patch.** Not needed: the SDK already exposes `CheckRedirect`, `DialContext`
   and `DisableDirectRetry`.
 - **Blocking all loopback and private addresses.** This breaks lab targets and the
@@ -172,7 +172,7 @@ Further rules:
 2. The policy covers WebFetch and the custom http tool only. Bash and shell commands
    (bypass mode, proxy environment set), custom tools of kind `command` and `script`,
    MCP tools and WebSearch queries can reach any destination. The shell and
-   recording-proxy gate is planned for D.2 (plan D7, decision Q1).
+   recording-proxy gate is planned as a D.1 follow-up (plan D7, decision Q1).
 3. Loopback and private destinations other than ARTEX's own three ports are allowed by
    design.
 

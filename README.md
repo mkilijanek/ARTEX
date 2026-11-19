@@ -180,7 +180,7 @@ Daily cron example (03:20, operator crontab):
 
 ## Updating and upgrading
 
-> Upgrading only swaps the program and never touches data: the Postgres volume `pgdata`, `./data` (jwt.key / SQLite, etc.), and `./skills` are all preserved. **No manual database migration is needed**: `artex` idempotently re-runs `schema.sql` on every start (with `ADD COLUMN` / `CREATE INDEX IF NOT EXISTS`), i.e. "restart equals migrate". It is still recommended to back up `./data` and the database before upgrading.
+> Upgrading only swaps the program and never touches data: the Postgres volume `pgdata`, `./data` (jwt.key / SQLite, etc.), and `./skills` are all preserved. **No manual database migration is needed**: `artex` idempotently re-runs `schema.sql` on every start (with `ADD COLUMN` / `CREATE INDEX IF NOT EXISTS`), i.e. "restart equals migrate". It is still recommended to back up `./data` and the database before upgrading. How upgrades are validated, and what that does not cover: [docs/schema-upgrade.md](docs/schema-upgrade.md).
 
 ### Upgrading from a clone made before 2026-10-23
 
@@ -316,7 +316,7 @@ In this version, history is viewed via vulnerability details and sessions; it is
 
 - Backend: `go run ./cmd/artex` (without `-tags embedui`, the frontend is not embedded)
 - Frontend: `cd web && npm run dev` (`/api` is reverse-proxied to the backend, with hot reload)
-- Tests: `go test ./...`
+- Tests: `go test ./...`. Database tests take the database **only** from the `ARTEX_PG_DSN` environment variable (`postgres://USER:PASS@HOST:5432/DB?sslmode=disable`, a throw-away PostgreSQL 16 server) and never read `config.json`, so a test run cannot touch your own database; without the variable they skip, and the schema upgrade tests fail. Schema upgrade checks: `scripts/upgrade-gate.sh`, see [docs/schema-upgrade.md](docs/schema-upgrade.md).
 - Mock preview (no backend): `cd web && NEXT_PUBLIC_MOCK=1 npm run dev`
 
 ---
