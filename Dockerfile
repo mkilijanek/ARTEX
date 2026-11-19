@@ -58,14 +58,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 # Web-recon toolbox (drost-community take 1, #100): pinned release binaries installed
 # into /usr/local/bin so hunt workers can run them directly through their Bash tool.
-# Versions pinned per tool; upgrade deliberately. sqlmap is a python checkout (no
-# release binaries) symlinked into PATH.
+# Versions pinned per tool; upgrade deliberately. sqlmap is a python checkout of a
+# pinned release tag (no release binaries) symlinked into PATH.
 ARG NUCLEI_VERSION=v3.11.1
 ARG HTTPX_VERSION=v1.12.0
 ARG SUBFINDER_VERSION=v2.17.0
 ARG KATANA_VERSION=v1.8.0
 ARG FFUF_VERSION=v2.3.0
 ARG DALFOX_VERSION=v3.2.4
+# vulnx is ProjectDiscovery's vulnerability-intelligence CLI, the successor of cvemap
+# (the cvemap repository was renamed; the binary is `vulnx`).
+ARG VULNX_VERSION=v2.0.2
+ARG SQLMAP_VERSION=1.10.11
 RUN set -eux; \
     base="https://github.com"; \
     pd_fetch() { repo="$1"; ver="$2"; name="$3"; nov="${ver#v}"; \
@@ -78,6 +82,7 @@ RUN set -eux; \
     pd_fetch projectdiscovery/httpx "$HTTPX_VERSION" httpx; \
     pd_fetch projectdiscovery/subfinder "$SUBFINDER_VERSION" subfinder; \
     pd_fetch projectdiscovery/katana "$KATANA_VERSION" katana; \
+    pd_fetch projectdiscovery/vulnx "$VULNX_VERSION" vulnx; \
     tar_fetch() { url="$1"; name="$2"; \
       curl -fsSL "$url" -o /tmp/t.tgz \
       && mkdir -p /tmp/td && tar -xzf /tmp/t.tgz -C /tmp/td \
@@ -85,9 +90,10 @@ RUN set -eux; \
       && rm -rf /tmp/t.tgz /tmp/td; }; \
     tar_fetch "$base/ffuf/ffuf/releases/download/$FFUF_VERSION/ffuf_${FFUF_VERSION#v}_linux_${FFUF_ARCH}.tar.gz" ffuf; \
     tar_fetch "$base/hahwul/dalfox/releases/download/$DALFOX_VERSION/dalfox-${DALFOX_VERSION}-linux-${DALFOX_ARCH}-musl.tar.gz" dalfox; \
-    git clone --depth 1 https://github.com/sqlmapproject/sqlmap /opt/sqlmap; \
+    git clone --depth 1 --branch "$SQLMAP_VERSION" https://github.com/sqlmapproject/sqlmap /opt/sqlmap; \
     ln -s /opt/sqlmap/sqlmap.py /usr/local/bin/sqlmap; \
     nuclei -version >/dev/null; httpx -version; subfinder -version; katana -version; \
+    vulnx --help >/dev/null; \
     ffuf -V >/dev/null; dalfox --version >/dev/null 2>&1 || true; sqlmap --version >/dev/null
 
 # bbot recursive recon orchestrator (#117): blacklanternsecurity/bbot, AGPL-3.0
@@ -109,11 +115,15 @@ RUN set -eux; \
 
 # Preinstall Playwright MCP and CLI (globally) so no npx network download is needed at runtime.
 # @playwright/mcp: browser MCP runs directly via `npx @playwright/mcp` (installed globally, no -y/@latest needed).
+# All three packages are pinned to exact versions; upgrade them together and deliberately.
 # @playwright/cli: provides playwright-cli, verified with --help right after install.
 # Then install playwright (browser management) and preinstall chromium plus its system
 # dependencies via --with-deps, so MCP/CLI work on first start inside the container
 # without downloading browsers over the network.
-RUN npm install -g @playwright/mcp@latest @playwright/cli@latest playwright@latest \
+ARG PLAYWRIGHT_MCP_VERSION=0.0.86
+ARG PLAYWRIGHT_CLI_VERSION=0.1.25
+ARG PLAYWRIGHT_VERSION=1.65.1
+RUN npm install -g "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" "@playwright/cli@${PLAYWRIGHT_CLI_VERSION}" "playwright@${PLAYWRIGHT_VERSION}" \
     && playwright-cli --help \
     && playwright install --with-deps chromium \
     && rm -rf /var/lib/apt/lists/*
