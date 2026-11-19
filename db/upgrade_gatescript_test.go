@@ -34,8 +34,17 @@ func (r *gateRepo) git(args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// gateGitEnv is the caller's environment without the gate's own switches: the continuous-integration job sets
+// UPGRADE_GATE_REQUIRE_GIT=1 for the real gate, and a case here that expects "NOT RUN" must not inherit it.
 func gateGitEnv() []string {
-	return append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
+	env := make([]string, 0, len(os.Environ())+6)
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "UPGRADE_GATE_") || strings.HasPrefix(kv, "MIN_UPGRADE_TESTS=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	return append(env, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
 		"GIT_AUTHOR_NAME=gate test", "GIT_AUTHOR_EMAIL=gate-test@example.invalid",
 		"GIT_COMMITTER_NAME=gate test", "GIT_COMMITTER_EMAIL=gate-test@example.invalid")
 }
