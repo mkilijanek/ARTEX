@@ -155,6 +155,28 @@ func migrationTableExists(t *testing.T, q *sql.DB, name string) bool {
 	return exists
 }
 
+// requireEmbeddedLedger checks that rows are exactly the migrations of the embedded set (the four baseline
+// migrations and every later fork file), in version order, with the name and the sha256 of each embedded file.
+func requireEmbeddedLedger(t *testing.T, rows []appliedMigration) {
+	t.Helper()
+	ms, err := loadMigrations(embeddedMigrations())
+	if err != nil {
+		t.Fatal(err)
+	}
+	versions := make([]int, len(ms))
+	for i, m := range ms {
+		versions[i] = m.version
+	}
+	if !sameInts(ledgerVersions(rows), versions) {
+		t.Fatalf("schema_migrations versions = %v, want %v", ledgerVersions(rows), versions)
+	}
+	for i, m := range ms {
+		if rows[i].name != m.name || rows[i].checksum != m.checksum {
+			t.Errorf("schema_migrations row %d = %s %s, want %s %s", i, rows[i].name, rows[i].checksum, m.name, m.checksum)
+		}
+	}
+}
+
 // requireBaselineLedger checks that rows are exactly the four baseline migrations, with the
 // name and the sha256 of the embedded file.
 func requireBaselineLedger(t *testing.T, rows []appliedMigration) {
@@ -329,7 +351,7 @@ func TestOpenRecordsEmbeddedMigrations(t *testing.T) {
 		t.Fatalf("Open failed (%s)", dbtest.AtomicErrorSummary(err))
 	}
 	before := readLedger(t, d.DB)
-	requireBaselineLedger(t, before)
+	requireEmbeddedLedger(t, before)
 	d.Close()
 	assertReopenIsNoop(t, tmp, before)
 }
@@ -344,7 +366,7 @@ func assertReopenIsNoop(t *testing.T, tmp *dbtest.Temp, before []appliedMigratio
 	}
 	defer d.Close()
 	after := readLedger(t, d.DB)
-	requireBaselineLedger(t, after)
+	requireEmbeddedLedger(t, after)
 	for i := range before {
 		if !after[i].appliedAt.Equal(before[i].appliedAt) {
 			t.Errorf("migration %04d applied_at changed: %v -> %v", before[i].version, before[i].appliedAt, after[i].appliedAt)
@@ -376,21 +398,21 @@ func TestOpenMigratesFreshDatabase(t *testing.T) {
 		}
 	}
 	applied := readLedger(t, d.DB)
-	requireBaselineLedger(t, applied)
+	requireEmbeddedLedger(t, applied)
 	d.Close()
 	first := logs()
 	for _, want := range []string{
 		"[schema] schema.sql sha256=",
 		"[migrate] ledger absent: adopting baseline (4)",
 		"[migrate] adopted baseline in ",
-		"[migrate] up to date (upstream=0003, fork=5001)",
+		"[migrate] up to date (upstream=0003, fork=5002)",
 	} {
 		if !strings.Contains(first, want) {
 			t.Errorf("first start: log has no %q:\n%s", want, first)
 		}
 	}
 	assertReopenIsNoop(t, tmp, applied)
-	if second := strings.TrimPrefix(logs(), first); strings.Contains(second, "adopting baseline") || !strings.Contains(second, "[migrate] up to date (upstream=0003, fork=5001)") {
+	if second := strings.TrimPrefix(logs(), first); strings.Contains(second, "adopting baseline") || !strings.Contains(second, "[migrate] up to date (upstream=0003, fork=5002)") {
 		t.Errorf("second start: want an up-to-date line and no adoption; log:\n%s", second)
 	}
 }
@@ -419,7 +441,7 @@ func TestOpenAdoptsExistingTablesWithoutSchemaMigrations(t *testing.T) {
 		t.Fatalf("Open on existing tables failed (%s)", dbtest.AtomicErrorSummary(err))
 	}
 	applied := readLedger(t, d.DB)
-	requireBaselineLedger(t, applied)
+	requireEmbeddedLedger(t, applied)
 	var records, usage, cols int
 	if err := d.QueryRow(`SELECT count(*) FROM llm_records WHERE model = 'legacy'`).Scan(&records); err != nil {
 		t.Fatal(err)
@@ -574,7 +596,7 @@ CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT, checksum
 
 func TestLedgerRefusalOrder(t *testing.T) {
 	tmp := migrationTemp(t, "refusalorder")
-	set := migrationSet(t, fstest.MapFS{"5002_next.sql": migrationFile("SELECT 1;")})
+	set := migrationSet(t, fstest.MapFS{"5902_next.sql": migrationFile("SELECT 1;")})
 	ms, err := loadMigrations(set)
 	if err != nil {
 		t.Fatal(err)
@@ -606,7 +628,7 @@ func TestLedgerRefusalOrder(t *testing.T) {
 		{name: "unknown above the allowed version", rows: []ledgerRow{good(1), good(2), good(3), good(5001), unknown(5999)}, allowNewer: 5998, kind: "unknown", version: 5999},
 		{name: "order after an allowed unknown", rows: []ledgerRow{good(1), good(3), good(5001), unknown(5999)}, allowNewer: 5999, kind: "order", version: 2},
 		{name: "order alone, upstream range", rows: []ledgerRow{good(1), good(3), good(5001)}, kind: "order", version: 2},
-		{name: "order alone, fork range", rows: []ledgerRow{good(1), good(2), good(3), {5002, "5002_next.sql", byVersion[5002].checksum}, {5003, "5003_later.sql", "abcd1234"}}, allowNewer: 5003, kind: "order", version: 5001},
+		{name: "order alone, fork range", rows: []ledgerRow{good(1), good(2), good(3), {5902, "5902_next.sql", byVersion[5902].checksum}, {5903, "5903_later.sql", "abcd1234"}}, allowNewer: 5903, kind: "order", version: 5001},
 		{name: "fresh baseline with a pending fork migration", rows: []ledgerRow{good(1), good(2), good(3), good(5001)}},
 	}
 	for _, c := range cases {
@@ -685,26 +707,26 @@ func TestMigrationAdoptionIsAtomic(t *testing.T) {
 
 	// A restart with the embedded set adopts.
 	startMigrated(t, tmp, embeddedMigrations())
-	requireBaselineLedger(t, readLedger(t, tmp.Conn(t)))
+	requireEmbeddedLedger(t, readLedger(t, tmp.Conn(t)))
 }
 
-// AC6: the adoption set is frozen. A ledger-less database whose binary also ships a failing 5002
-// ends with exactly the four baseline rows: the extra file is not part of the adoption.
+// AC6: the adoption set is frozen. A ledger-less database whose binary also ships a failing 5902
+// ends with exactly the baseline and the shipped rows: the extra file is not part of the adoption.
 func TestMigrationAdoptionSetIsFrozen(t *testing.T) {
 	tmp := migrationTemp(t, "frozen")
-	fsys := migrationSet(t, fstest.MapFS{"5002_extra_fails.sql": migrationFile("CREATE TABLE migration_extra (x integer);\nSELECT 1/0;\n")})
+	fsys := migrationSet(t, fstest.MapFS{"5902_extra_fails.sql": migrationFile("CREATE TABLE migration_extra (x integer);\nSELECT 1/0;\n")})
 	d, err := openWithMigrations(tmp.DSN, fsys)
 	if err == nil {
 		d.Close()
-		t.Fatal("Open succeeded although 5002 fails")
+		t.Fatal("Open succeeded although 5902 fails")
 	}
-	if !strings.Contains(err.Error(), "5002") || !strings.Contains(err.Error(), "5002_extra_fails.sql") {
-		t.Errorf("error %q does not name 5002", err)
+	if !strings.Contains(err.Error(), "5902") || !strings.Contains(err.Error(), "5902_extra_fails.sql") {
+		t.Errorf("error %q does not name 5902", err)
 	}
 	conn := tmp.Conn(t)
-	requireBaselineLedger(t, readLedger(t, conn))
+	requireEmbeddedLedger(t, readLedger(t, conn))
 	if migrationTableExists(t, conn, "migration_extra") {
-		t.Error("migration_extra exists: the failed 5002 was not rolled back")
+		t.Error("migration_extra exists: the failed 5902 was not rolled back")
 	}
 }
 
@@ -714,17 +736,17 @@ func TestMigrationFailureAfterAdoption(t *testing.T) {
 	tmp := migrationTemp(t, "afteradopt")
 	ok := migrationFile("CREATE TABLE migration_ok (x integer);\n")
 	broken := migrationFile("CREATE TABLE migration_bad (x integer);\nSELECT 1/0;\n")
-	failing := migrationSet(t, fstest.MapFS{"5002_ok.sql": ok, "5003_bad.sql": broken})
+	failing := migrationSet(t, fstest.MapFS{"5902_ok.sql": ok, "5903_bad.sql": broken})
 
 	var first string
 	for attempt := 1; attempt <= 2; attempt++ {
 		d, err := openWithMigrations(tmp.DSN, failing)
 		if err == nil {
 			d.Close()
-			t.Fatalf("attempt %d: Open succeeded although 5003 fails", attempt)
+			t.Fatalf("attempt %d: Open succeeded although 5903 fails", attempt)
 		}
-		if !strings.Contains(err.Error(), "5003") || !strings.Contains(err.Error(), "5003_bad.sql") || strings.Contains(err.Error(), "5002") {
-			t.Errorf("attempt %d: error %q must name 5003 only", attempt, err)
+		if !strings.Contains(err.Error(), "5903") || !strings.Contains(err.Error(), "5903_bad.sql") || strings.Contains(err.Error(), "5902") {
+			t.Errorf("attempt %d: error %q must name 5903 only", attempt, err)
 		}
 		if attempt == 1 {
 			first = err.Error()
@@ -732,22 +754,22 @@ func TestMigrationFailureAfterAdoption(t *testing.T) {
 			t.Errorf("attempt 2: error %q differs from the first %q", err, first)
 		}
 		conn := tmp.Conn(t)
-		if got := ledgerVersions(readLedger(t, conn)); !sameInts(got, []int{1, 2, 3, 5001, 5002}) {
-			t.Fatalf("attempt %d: ledger versions = %v, want 1 2 3 5001 5002", attempt, got)
+		if got := ledgerVersions(readLedger(t, conn)); !sameInts(got, []int{1, 2, 3, 5001, 5002, 5902}) {
+			t.Fatalf("attempt %d: ledger versions = %v, want 1 2 3 5001 5002 5902", attempt, got)
 		}
 		if !migrationTableExists(t, conn, "migration_ok") || migrationTableExists(t, conn, "migration_bad") {
 			t.Fatalf("attempt %d: want migration_ok present and migration_bad absent", attempt)
 		}
 	}
 
-	corrected := migrationSet(t, fstest.MapFS{"5002_ok.sql": ok, "5003_bad.sql": migrationFile("CREATE TABLE migration_bad (x integer);\n")})
+	corrected := migrationSet(t, fstest.MapFS{"5902_ok.sql": ok, "5903_bad.sql": migrationFile("CREATE TABLE migration_bad (x integer);\n")})
 	startMigrated(t, tmp, corrected)
 	conn := tmp.Conn(t)
-	if got := ledgerVersions(readLedger(t, conn)); !sameInts(got, []int{1, 2, 3, 5001, 5002, 5003}) {
+	if got := ledgerVersions(readLedger(t, conn)); !sameInts(got, []int{1, 2, 3, 5001, 5002, 5902, 5903}) {
 		t.Errorf("after the correction: ledger versions = %v", got)
 	}
 	if !migrationTableExists(t, conn, "migration_bad") {
-		t.Error("the corrected 5003 did not run")
+		t.Error("the corrected 5903 did not run")
 	}
 }
 
@@ -811,7 +833,7 @@ func TestMigrationForeignLedgerIsRefusedEvenWithOverride(t *testing.T) {
 	conn := tmp.Conn(t)
 	// The ledger an upstream binary leaves: 0001 to 0005 and no fork row.
 	for _, q := range []string{
-		`DELETE FROM schema_migrations WHERE version = 5001`,
+		`DELETE FROM schema_migrations WHERE version >= 5000`,
 		`INSERT INTO schema_migrations(version, name, checksum) VALUES (4, '0004_llm_usage_ts_index.sql', 'f00d0004')`,
 		`INSERT INTO schema_migrations(version, name, checksum) VALUES (5, '0005_traffic_rewrite_rules.sql', 'f00d0005')`,
 	} {
@@ -826,19 +848,18 @@ func TestMigrationForeignLedgerIsRefusedEvenWithOverride(t *testing.T) {
 func TestMigrationOrderPerRange(t *testing.T) {
 	t.Run("fork: applied 5002, pending 5001", func(t *testing.T) {
 		tmp := migrationTemp(t, "ordera")
-		set := migrationSet(t, fstest.MapFS{"5002_next.sql": migrationFile("SELECT 1;")})
-		startMigrated(t, tmp, set)
+		startMigrated(t, tmp, embeddedMigrations())
 		if _, err := tmp.Conn(t).Exec(`DELETE FROM schema_migrations WHERE version = 5001`); err != nil {
 			t.Fatal(err)
 		}
-		requireRefusal(t, tmp, set, "order", migrationLLMUsageFork, "(5001)", "5002_next.sql", "(5002)", "never inserted")
+		requireRefusal(t, tmp, embeddedMigrations(), "order", migrationLLMUsageFork, "(5001)", "5002_tool_rag_observations.sql", "(5002)", "never inserted")
 	})
 	t.Run("upstream: applied baseline, pending 0004 runs after 5001", func(t *testing.T) {
 		tmp := migrationTemp(t, "orderb")
 		startMigrated(t, tmp, embeddedMigrations())
 		startMigrated(t, tmp, migrationSet(t, fstest.MapFS{"0004_next.sql": migrationFile("CREATE TABLE migration_next (x integer);")}))
 		rows := readLedger(t, tmp.Conn(t))
-		if !sameInts(ledgerVersions(rows), []int{1, 2, 3, 4, 5001}) {
+		if !sameInts(ledgerVersions(rows), []int{1, 2, 3, 4, 5001, 5002}) {
 			t.Fatalf("ledger versions = %v", ledgerVersions(rows))
 		}
 		if !rows[3].appliedAt.After(rows[4].appliedAt) {
@@ -923,7 +944,7 @@ func TestMigrationLockTimeoutNamesTheTable(t *testing.T) {
 
 	release()
 	startMigrated(t, tmp, embeddedMigrations())
-	requireBaselineLedger(t, readLedger(t, conn))
+	requireEmbeddedLedger(t, readLedger(t, conn))
 }
 
 // ---- AC17 (db part): a failing llm_usage migration fails Open ----
@@ -977,7 +998,7 @@ func TestMigrationRepeatedStartChangesNothing(t *testing.T) {
 // on every start, is reverted by the next start, and the repeated-start comparison sees it.
 func TestMigrationRevertedBySchemaSQLIsDetected(t *testing.T) {
 	tmp := migrationTemp(t, "revert")
-	reverting := migrationSet(t, fstest.MapFS{"5002_scope_check.sql": migrationFile(`
+	reverting := migrationSet(t, fstest.MapFS{"5902_scope_check.sql": migrationFile(`
 ALTER TABLE task_scope DROP CONSTRAINT IF EXISTS task_scope_kind_check;
 ALTER TABLE task_scope ADD CONSTRAINT task_scope_kind_check CHECK (kind IN ('company','root_domain','subdomain','ip','cidr','icp','keyword','asn'));
 `)})
@@ -999,18 +1020,18 @@ ALTER TABLE task_scope ADD CONSTRAINT task_scope_kind_check CHECK (kind IN ('com
 func TestMigrationFailureErrorAndLogsAreContentFree(t *testing.T) {
 	tmp := migrationTemp(t, "canary")
 	logs := dbtest.CaptureLog(t)
-	failing := migrationSet(t, fstest.MapFS{"5002_canary.sql": migrationFile("SELECT CAST('" + dbtest.RowCanary + "' AS integer);\n")})
+	failing := migrationSet(t, fstest.MapFS{"5902_canary.sql": migrationFile("SELECT CAST('" + dbtest.RowCanary + "' AS integer);\n")})
 	d, err := openWithMigrations(tmp.DSN, failing)
 	if err == nil {
 		d.Close()
-		t.Fatal("Open succeeded although 5002 casts a canary to an integer")
+		t.Fatal("Open succeeded although 5902 casts a canary to an integer")
 	}
 	// The driver's own message quotes the value: the sanitising is what keeps it out.
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) || pgErr.Code != "22P02" || !strings.Contains(pgErr.Message, dbtest.RowCanary) {
 		t.Fatalf("precondition: want SQLSTATE 22P02 quoting the canary in the driver error, got: %s", dbtest.AtomicErrorSummary(err))
 	}
-	if !strings.Contains(err.Error(), "SQLSTATE 22P02") || !strings.Contains(err.Error(), "5002_canary.sql") {
+	if !strings.Contains(err.Error(), "SQLSTATE 22P02") || !strings.Contains(err.Error(), "5902_canary.sql") {
 		t.Errorf("error %q must show the SQLSTATE and the file", err)
 	}
 	dbtest.AssertNoSecret(t, "error", err.Error())

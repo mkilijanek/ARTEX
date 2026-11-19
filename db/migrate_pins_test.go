@@ -44,6 +44,7 @@ var migrationPins = []migrationPin{
 	{"0002_llm_usage.sql", "3b3aece1c4c80bceef74d15652e1c97c972275d7c738a41938945f00588c8d39", "yes", "4fe0538e72a9780327bc7db1c4e14cecc97df49d"},
 	{"0003_task_scope_icp_index.sql", "318e3e91b55552ed3322cb7fdb515133dc279d6fd76e5d94498bf56de1692331", "yes", "d30d05ae9bf5039bd28fcc581774dfa27b524dc7"},
 	{"5001_llm_usage_fork_columns.sql", "d55ce9857b9ef9d526ecaeeeeada7750f156761d1ec6878e154c198c7c81553f", "yes", ""},
+	{"5002_tool_rag_observations.sql", "9fabb12a79280db7a102c57538bce03513feb0baa223d1d2771c28bca993a67c", "yes", ""},
 }
 
 var migrationDowngradeRE = regexp.MustCompile(`^-- downgrade-safe: (yes|no): \S.*$`)

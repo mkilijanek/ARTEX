@@ -353,8 +353,9 @@ func TestUpgradeConcurrentOpenMatchesSingleOpen(t *testing.T) {
 				t.Errorf("%d concurrent starts logged %d \"up to date\" lines, want %d", workers, n, workers)
 			}
 			ledger := readLedger(t, multi.Conn(t))
-			requireBaselineLedger(t, ledger)
-			for _, row := range ledger[1:] {
+			requireEmbeddedLedger(t, ledger)
+			// Only the baseline is one adoption transaction; every later file has its own.
+			for _, row := range ledger[1:len(baselineVersions)] {
 				if !row.appliedAt.Equal(ledger[0].appliedAt) {
 					t.Errorf("ledger version %04d has applied_at %v, version %04d %v: the baseline was not adopted in one transaction",
 						row.version, row.appliedAt, ledger[0].version, ledger[0].appliedAt)
@@ -498,5 +499,5 @@ func TestUpgradeLockBlocksOpenUntilTransactionEnds(t *testing.T) {
 		t.Error("Open returned without applying the schema")
 	}
 	// The preflight, the schema and the adoption all ran after the wait: the ledger is the baseline.
-	requireBaselineLedger(t, readLedger(t, tmp.Conn(t)))
+	requireEmbeddedLedger(t, readLedger(t, tmp.Conn(t)))
 }
