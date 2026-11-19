@@ -6,6 +6,18 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
+- Ticket ID on findings: an optional reference to an external ticketing system,
+  shown as a "Ticket ID" field in the Status card of the vulnerability details
+  (click to edit) and as a column in the findings list.
+  `PATCH /api/exploration/findings/{id}` accepts `ticket_id` (one line of text,
+  at most 128 characters, trimmed; an empty string clears it; `null` is treated
+  as absent). `ticket_id` is returned in the list, detail and JSON export; the
+  CSV export gets a new last column `Ticket ID` and the Markdown export a
+  `Ticket ID` line when the value is set. The `findings.ticket_id` column is
+  added automatically at startup. Task archives carry the value; older archives
+  restore with an empty value and an archive with an invalid value is refused.
+  The value is never given to agents or models and is not included in outgoing
+  notifications.
 - Analyst comments on findings: `GET`/`POST /api/exploration/findings/{id}/comments`
   and a "Comments" panel in the vulnerability details. Plain text, append-only,
   at most 10000 code points and 2000 comments per finding, attributed to the
