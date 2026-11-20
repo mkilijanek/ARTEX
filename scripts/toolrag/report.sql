@@ -257,6 +257,23 @@ WHERE ts >= :'t0'
 GROUP BY ROLLUP (agent_key)
 ORDER BY grouping(agent_key), agent_key;
 
+-- [A.7] Dominance: the candidate ranked first, per agent (projected rows with at least one nonzero score,
+-- first 20). One name first in nearly every row of an agent either fits that agent's work or is a description
+-- written to rank first; the report cannot tell which. pct_of_agent_rows is of the rows counted here.
+WITH scored AS (
+  SELECT agent_key, ranking[1] AS first_ranked
+  FROM tool_rag_observations
+  WHERE ts >= :'t0' AND outcome = 'projected' AND nonzero_count > 0 AND cardinality(ranking) > 0
+)
+SELECT agent_key, first_ranked,
+       count(*) AS rows_ranked_first,
+       sum(count(*)) OVER (PARTITION BY agent_key) AS agent_rows,
+       round(100.0 * count(*) / sum(count(*)) OVER (PARTITION BY agent_key), 1) AS pct_of_agent_rows
+FROM scored
+GROUP BY agent_key, first_ranked
+ORDER BY agent_key COLLATE "C", count(*) DESC, first_ranked COLLATE "C"
+LIMIT 20;
+
 -- B. Permission behaviour. The ranking runs on the list after the permission step, so a ranked tool is a
 -- permitted tool: that is proven by unit tests, not by a column. "Hides a permitted tool that was needed" is
 -- the miss rate of A. What the stored rows can still check is the subset relation below.
