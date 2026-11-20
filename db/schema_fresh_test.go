@@ -42,8 +42,9 @@ func loadReference(t *testing.T) []string {
 }
 
 // expectedTables is 55 CREATE TABLE statements in schema.sql, llm_records and llm_usage (migrations
-// 0001 and 0002) and the ledger schema_migrations (docs/phase-d2-plan.md 2.1, docs/phase-d2-stage2-plan.md 3.2).
-const expectedTables = 58
+// 0001 and 0002), the ledger schema_migrations (docs/phase-d2-plan.md 2.1, docs/phase-d2-stage2-plan.md 3.2) and
+// tool_rag_observations (migration 5002, docs/phase-d3-plan.md 3.6).
+const expectedTables = 59
 
 // AC2: startup on an empty database succeeds and the catalog listing equals the
 // committed reference.
@@ -105,7 +106,7 @@ func TestUpgradeFailedComparisonDoesNotLeakRowsOrPassword(t *testing.T) {
 }
 
 const referenceHeader = `# ARTEX schema reference catalog, PostgreSQL 16 only (docs/phase-d2-plan.md section 5.2).
-# State listed: a fresh database after Open alone (schema.sql, the baseline migrations 0001, 0002, 0003, 5001
+# State listed: a fresh database after Open alone (schema.sql, the embedded migrations 0001, 0002, 0003, 0004, 5001, 5002
 # and the ledger table schema_migrations; no Ensure call).
 # One line per object: kind name sha256(definition). Sorted. Column order is not listed on purpose
 # (restore uses the same row type on both sides of INSERT ... SELECT *).

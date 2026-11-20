@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -357,9 +358,11 @@ func TestUpgradeConcurrentOpenMatchesSingleOpen(t *testing.T) {
 			}
 			ledger := readLedger(t, multi.Conn(t))
 			requireEmbeddedLedger(t, ledger)
+			// Only the baseline is one adoption transaction; 0004 and every later file is applied on its own, after
+			// the adoption, in its own transaction.
 			for _, row := range ledger[1:] {
-				if row.version == 4 {
-					continue // 0004 is applied on its own, after the adoption, in its own transaction
+				if !slices.Contains(baselineVersions, row.version) {
+					continue
 				}
 				if !row.appliedAt.Equal(ledger[0].appliedAt) {
 					t.Errorf("ledger version %04d has applied_at %v, version %04d %v: the baseline was not adopted in one transaction",
@@ -503,6 +506,6 @@ func TestUpgradeLockBlocksOpenUntilTransactionEnds(t *testing.T) {
 	if !atomicTableExists(t, tmp, "finding_comments") {
 		t.Error("Open returned without applying the schema")
 	}
-	// The preflight, the schema and the adoption all ran after the wait: the ledger is the baseline and 0004.
+	// The preflight, the schema and the adoption all ran after the wait: the ledger is the baseline, 0004 and 5002.
 	requireEmbeddedLedger(t, readLedger(t, tmp.Conn(t)))
 }

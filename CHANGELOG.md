@@ -60,6 +60,31 @@ All notable changes to this project are documented in this file. The format is b
 - Log lines `[envelope] neutralised=<n> surface=<planner|worker|compactor>` and
   `[facts] record_refused reason=invalid_source`. Neither carries data, the nonce or
   the refused value.
+- **Tool RAG observation mode (Phase D.3, pull request 1; issue 25).** Upstream's lexical Tool RAG (`f3a20ef`,
+  `e640c1b`) is ported as **observation only**. For every planner round and worker run, the BM25 ranking of the bound
+  tool list is computed next to the real list, and one row records what a filter would have kept, the counts, and which
+  tools the model called. **The tool list the model receives is never changed and nothing is blocked; there is no
+  filter mode in this release.** The main agent, chat and runs without a task id are not observed.
+  - `ARTEX_TOOL_RAG`: unset, empty or `observe` observe (the default); `off`, `0`, `false`, `no` do nothing; `1`,
+    `true`, `on`, `yes` and `filter` observe and log one warning; any other value observes and logs one warning that
+    does not show the value. `ARTEX_TOOL_RAG_TOPK` (default 12) sets the k that the rows compare against. Both are
+    passed through `docker-compose.yml`; an empty value means the default.
+  - **New table `tool_rag_observations`, migration `5002_tool_rag_observations.sql`.**
+    `-- downgrade-safe: yes: additive table, older binaries do not read it`. An older binary still refuses the ledger
+    entry `5002` unless it is started with `ARTEX_SCHEMA_ALLOW_NEWER=5002`; the guarded drop is in
+    `docs/schema-upgrade.md`.
+  - **Content-free rows.** Counts and tool names only: no goal, query, description, argument, result or hash. Tool
+    names, MCP and custom tool names included, are stored as they are (names over 128 bytes, not UTF-8 or with a
+    control character become `_unknown`). Rows are deleted with their task and when the task is archived; a restored
+    archive does not bring them back. No API, export or archive reads the table.
+  - A write per planner round and worker run is **on by default**, asynchronous and bounded (queue of 256, 2 s per
+    insert); a failure never fails a task. Scoring adds about 0.3 ms before the first model request of a run for 40
+    tools (one machine). **Shutdown can take up to 3 seconds longer** while queued rows are written.
+  - Log lines, all tagged `[tool-rag]` and content free: the mode at start, the two warnings, one line per problem kind
+    at most once a minute (`observation drop|insert error|timeout|invalid row|writer panic|scorer error|observer
+    panic|flush panic; <n> since start`), and `writer stopped: written=... dropped_shutdown=... task_gone=...
+    invalid_row=... writer_panic=...` at shutdown. See `docs/tool-rag-observation.md` and
+    `docs/adr/0005-tool-rag-observation.md`.
 
 ### Changed
 
@@ -178,6 +203,12 @@ All notable changes to this project are documented in this file. The format is b
   `schema_migrations` are unsupported.
 - Not in this release: a drift report (a same-named object with another definition is not detected); the first
   migration that changes the schema (upstream `0004`, an index on `llm_usage`, comes next); upstream `0005`.
+- **Tool RAG observation (migration `5002`).** The first start of this release also creates the table
+  `tool_rag_observations`; the ledger then ends with `5002` (six rows: `0001 0002 0003 0004 5001 5002`). `5002` is **downgrade-safe: yes** (additive
+  table, older binaries do not read it), but an older binary refuses an unknown ledger entry: start it with
+  `ARTEX_SCHEMA_ALLOW_NEWER=5002`, or drop the table first with the guarded recipe in `docs/schema-upgrade.md`
+  ("Migration 5002"). **Run that drop first, then the `0004` recipe, then the ledger cleanup**: both of those refuse while `5002` is recorded.
+  `ARTEX_TOOL_RAG=off` stops the writes; rows written so far stay until their task is deleted.
 
 ### Fixed
 
@@ -313,6 +344,14 @@ All notable changes to this project are documented in this file. The format is b
   config file. With the variable unset, the existing database tests skip and the upgrade tests
   fail. Developers who ran `go test` against the database named in `config.json` must now set
   the variable to a test server.
+- **Tool RAG observation tests (Phase D.3).** Unit tests for the ported ranking, the caps and the name rule (with a
+  golden-score test and an allocation bound), the wiring through `AugmentTools` (the returned list is identical in every
+  mode, the model request is byte-identical with the feature off and on), the call counter (including deferred MCP
+  tools through `ExecuteExtraTool`), the bounded writer and the shutdown drain, and database tests for the table,
+  deletion with the task, archiving and the content-free guarantee. The upgrade matrix has 59 tables and the gate
+  requires **142** passing tests with no skip (was 135 with `0004`); its pattern now also selects `TestToolRag*`, the
+  database tests of the table, so a skip of one fails the gate. New `db/testdata/upgrade/rollback-drop-5002.sql`; the
+  rollback tests run it before the ledger cleanup.
 
 ## [0.5.0] - 2026-11-04
 

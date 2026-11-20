@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -96,7 +97,7 @@ func TestUpgradeLedgerFreshOpenAdoptsTheBaselineWithoutEnsure(t *testing.T) {
 			t.Errorf("Open alone did not create %s", table)
 		}
 	}
-	for _, want := range []string{"[migrate] ledger absent: adopting baseline (4)", "[migrate] adopted baseline in", "[migrate] up to date (upstream=0004, fork=5001)"} {
+	for _, want := range []string{"[migrate] ledger absent: adopting baseline (4)", "[migrate] adopted baseline in", "[migrate] up to date (upstream=0004, fork=5002)"} {
 		if !strings.Contains(logs(), want) {
 			t.Errorf("the log has no %q line", want)
 		}
@@ -137,7 +138,7 @@ func TestUpgradeLedgerAdoptsEveryShape(t *testing.T) {
 			if ledgered {
 				var kept []appliedMigration
 				for _, row := range first {
-					if row.version != 4 {
+					if slices.Contains(baselineVersions, row.version) {
 						kept = append(kept, row)
 					}
 				}

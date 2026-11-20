@@ -15,13 +15,13 @@ import (
 	"sync"
 	"time"
 
+	actool "github.com/Autumn-27/norma/tool"
 	"github.com/mkilijanek/artex/agent"
 	pgdb "github.com/mkilijanek/artex/db"
 	"github.com/mkilijanek/artex/enrich"
 	"github.com/mkilijanek/artex/guard"
 	"github.com/mkilijanek/artex/intercept"
 	"github.com/mkilijanek/artex/traffic"
-	actool "github.com/Autumn-27/norma/tool"
 )
 
 // Task is one engagement: a description + goal + its own exploration store,
@@ -52,13 +52,13 @@ type Task struct {
 	LLMChainRevision   int64   `json:"-"`
 	LLMFailoverState   string  `json:"llm_failover_state,omitempty"`
 	// LLMRotate (#85): per-intent round-robin over the task's LLM chain heads.
-	LLMRotate  bool `json:"llm_rotate,omitempty"`
-	rotateMu   sync.Mutex
-	rotateNext int
-	LLMFailoverReason  string  `json:"llm_failover_reason,omitempty"`
-	SourceTaskIDs      []int64 `json:"source_task_ids,omitempty"`
-	CompanyIDs         []int64 `json:"company_ids,omitempty"`
-	Status             string  `json:"status"` // persisted lifecycle status (done/failed/timeout are terminal; empty/other is derived from runtime state)
+	LLMRotate         bool `json:"llm_rotate,omitempty"`
+	rotateMu          sync.Mutex
+	rotateNext        int
+	LLMFailoverReason string  `json:"llm_failover_reason,omitempty"`
+	SourceTaskIDs     []int64 `json:"source_task_ids,omitempty"`
+	CompanyIDs        []int64 `json:"company_ids,omitempty"`
+	Status            string  `json:"status"` // persisted lifecycle status (done/failed/timeout are terminal; empty/other is derived from runtime state)
 	// Task-level timeout (see docs/task-timeout-and-settle-design.md). DeadlineAt/FirstRunAt are unix seconds, 0 = unset/not yet run.
 	TimeoutSeconds       int                    `json:"timeout_seconds"`
 	PlanHeartbeatSeconds int                    `json:"plan_heartbeat_seconds"` // planner heartbeat trigger interval (seconds)
@@ -244,6 +244,7 @@ type Manager struct {
 	traffic     *traffic.Traffic       // process-wide recording proxy (may be nil)
 	enrich      *enrich.Engine         // engine-side asset auto-completion (DNS/HTTP)
 	interceptor *intercept.Interceptor // user-configured tool-call interception rules
+	toolRAG     *toolRAGWriter         // Tool RAG observation writer; stopped first in Close
 
 	companyMu sync.Mutex // serializes task/company-scope commits with live handle registration
 	// taskStateMu preserves commit order between PostgreSQL lifecycle writes and
@@ -389,7 +390,7 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 		pg.Close()
 		return nil, fmt.Errorf("recover finding retests: %w", err)
 	}
-	m := &Manager{dir: dir, pg: pg, assets: pg.Assets(), tasks: map[string]*Task{}, interceptor: intercept.New(pg)}
+	m := &Manager{dir: dir, pg: pg, assets: pg.Assets(), tasks: map[string]*Task{}, interceptor: intercept.New(pg), toolRAG: newToolRAGWriter(pg.InsertToolRAGObservation)}
 	if proxyAddr != "" {
 		tr, err := traffic.Open(filepath.Join(dir, "traffic"), proxyAddr)
 		if err != nil {
@@ -817,6 +818,9 @@ func (m *Manager) SetGlobalProxy(raw string) error {
 }
 
 func (m *Manager) Close() error {
+	// The observation writer stops first: it drains into the open database (bounded),
+	// and no insert can run once the pool below is closed. It takes no Manager lock.
+	m.toolRAG.Close()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.traffic != nil {

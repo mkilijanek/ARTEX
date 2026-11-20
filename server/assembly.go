@@ -191,6 +191,18 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 	})
 }
 
+// wireToolRAG connects Tool RAG observation to the manager's writer: every planner round
+// and worker run with a task id hands one row to it when the run's tools are cleaned up.
+// Observation only: nothing here changes the tools a run receives (ARTEX_TOOL_RAG=off
+// disables it).
+func wireToolRAG(m *Manager) {
+	if m.toolRAG == nil {
+		return
+	}
+	agent.SetToolRAGObserver(m.toolRAG.Enqueue)
+	agent.LogToolRAGMode()
+}
+
 func idSet(ids []int64) map[int64]bool {
 	m := make(map[int64]bool, len(ids))
 	for _, id := range ids {
