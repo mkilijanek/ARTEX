@@ -415,3 +415,34 @@ func TestPlannerToolQuery(t *testing.T) {
 		t.Error("empty inputs give a non-empty query")
 	}
 }
+
+// Equal scores between tools with different names are ordered by name, whatever
+// the input order: the stored ranking must not depend on catalog order. A higher
+// score still wins over a name that sorts first.
+func TestToolRAGTiesBetweenDistinctNamesOrderByName(t *testing.T) {
+	tools := []actool.CoreTool{
+		ragTool("zeta_tool", "x"), ragTool("alpha_tool", "x"), ragTool("mid_tool", "x"), ragTool("beta_tool", "x"),
+	}
+	byName := map[string]float64{"zeta_tool": 1, "alpha_tool": 1, "mid_tool": 2, "beta_tool": 1}
+	scorer := func(_ string, ts []actool.CoreTool) ([]float64, error) {
+		out := make([]float64, len(ts))
+		for i, tl := range ts {
+			out[i] = byName[tl.Name()]
+		}
+		return out, nil
+	}
+	want := []string{"mid_tool", "alpha_tool", "beta_tool", "zeta_tool"}
+	for _, order := range [][]int{{0, 1, 2, 3}, {3, 2, 1, 0}, {1, 3, 0, 2}} {
+		in := make([]actool.CoreTool, 0, len(order))
+		for _, i := range order {
+			in = append(in, tools[i])
+		}
+		ranked, err := rankTools("q", in, scorer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := ragNames(ranked); !slices.Equal(got, want) {
+			t.Errorf("input order %v: ranking %v, want %v", order, got, want)
+		}
+	}
+}
