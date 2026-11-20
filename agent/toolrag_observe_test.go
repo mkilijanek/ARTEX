@@ -733,6 +733,7 @@ func BenchmarkToolRAGObserve(b *testing.B) {
 		tools    []actool.CoreTool
 		queryLen int
 	}{
+		"typical":   {build(40, 300), 300}, // real descriptions are a few hundred bytes
 		"realistic": {build(40, 1024), 1024},
 		"capped":    {build(512, 8192), 4096},
 	} {
