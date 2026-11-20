@@ -54,6 +54,14 @@ func TestUpgradeRollback0004RecipeDropsTheIndexAndTheLedgerRow(t *testing.T) {
 		t.Errorf("after the recipe: %d granted and %d waiting locks on the key (err %v), want 0 and 0", granted, waiting, err)
 	}
 
+	// A second run on the rolled-back database raises and changes nothing.
+	before := captureMigrationState(t, tmp)
+	var pgErr *pgconn.PgError
+	if err := rollbackRun0004(t, tmp); err == nil || !errors.As(err, &pgErr) || pgErr.Code != "P0001" || !strings.Contains(pgErr.Message, "schema_migrations is not baseline + 0004") {
+		t.Errorf("a second run of the recipe did not raise the guard's exception (%v)", err)
+	}
+	requireMigrationStateUnchanged(t, "after the second run of the recipe", before, captureMigrationState(t, tmp))
+
 	// The previous binary starts without the override, and leaves the database as the recipe did.
 	t.Setenv("ARTEX_SCHEMA_ALLOW_NEWER", "")
 	startPrevious(t, tmp)
@@ -109,6 +117,16 @@ func TestUpgradeRollback0004RecipeRefusesAnyOtherLedger(t *testing.T) {
 		}
 		return out
 	}
+	renamed := func(version int, name string) []appliedMigration {
+		var out []appliedMigration
+		for _, r := range full {
+			if r.version == version {
+				r.name = name
+			}
+			out = append(out, r)
+		}
+		return out
+	}
 	extra := appliedMigration{version: 5002, name: "5002_synthetic.sql", checksum: "synthetic", appliedAt: full[0].appliedAt}
 	for _, tc := range []struct {
 		name string
@@ -118,6 +136,7 @@ func TestUpgradeRollback0004RecipeRefusesAnyOtherLedger(t *testing.T) {
 		{"5002 applied as well", append(append([]appliedMigration{}, full...), extra)},
 		{"0003 missing", without(3)},
 		{"5001 missing", without(5001)},
+		{"0004 recorded under another name", renamed(4, "0004_other_name.sql")},
 		{"ledger empty", nil},
 	} {
 		setLedger(tc.name, tc.rows)
