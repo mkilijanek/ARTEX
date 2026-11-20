@@ -33,12 +33,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# Count of the top-level tests selected by PATTERN, from a run with -v: 135 (./db 79, ./db/dbtest 51, ./agent 1,
-# ./server 4): 100 upgrade tests (TestUpgrade*, TestConfigFileDSNIsNotUsed*) and the 35 migration runner tests
-# of ./db (TestMigration*, TestLedger*, TestLoadMigrations*), so that none of those can skip unseen. Raise the
-# count with the tests, never lower it to make the gate pass.
-MIN_UPGRADE_TESTS=135
-PATTERN='^(TestUpgrade|TestConfigFileDSNIsNotUsed|TestMigration|TestLedger|TestLoadMigrations)'
+# Count of the top-level tests selected by PATTERN, from a run with -v: 142 (./db 86, ./db/dbtest 51, ./agent 1,
+# ./server 4): 100 upgrade tests (TestUpgrade*, TestConfigFileDSNIsNotUsed*), the 37 migration runner tests of ./db
+# (TestMigration*, TestLedger*, TestLoadMigrations*) and the 5 database tests of the tool RAG table (TestToolRag*),
+# so that none of those can skip unseen. Raise the count with the tests, never lower it to make the gate pass.
+MIN_UPGRADE_TESTS=142
+PATTERN='^(TestUpgrade|TestConfigFileDSNIsNotUsed|TestMigration|TestLedger|TestLoadMigrations|TestToolRag)'
 PACKAGES=(./db ./db/dbtest ./agent ./server)
 
 # The upstream commit the upstream migration files (0001-4999) were taken from; its blob ids are pinned in
