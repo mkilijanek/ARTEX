@@ -3,8 +3,8 @@
 Phase D.3, pull request 1. Design: [adr/0005-tool-rag-observation.md](adr/0005-tool-rag-observation.md). Issue 25.
 
 This page is for the operator. It says what the feature does, what it stores, how to switch it off, how to check
-that it is healthy, and how to roll it back. The report that computes the comparisons of the issue ships in the next
-pull request; this page is extended then.
+that it is healthy, and how to roll it back. The report that computes the comparisons of the issue is described in
+"The report" below, and the page ends with the place for the results of the observation window.
 
 ## What it is, and what it is not
 
@@ -248,6 +248,101 @@ was deleted in the window can remove its observation rows while its `llm_usage` 
 low; set such tasks aside. The task error rate is a proxy: a failure belongs to the observer only if a `[tool-rag]`
 line or a stack in `server_logs` says so.
 
+## The report
+
+`scripts/toolrag/report.sql` computes the four comparisons of the issue (retrieval quality, permission behaviour,
+locked versus unlockable tools, fallback) from the rows of `tool_rag_observations`, with coverage and data quality
+first. It is read-only: one `BEGIN READ ONLY` transaction that is rolled back, plain `SELECT`s, no temporary table,
+no function. It complements the day-14 SQL above (health of the observer); it does not repeat it. Run it when the
+window is over, or at any time to look.
+
+`t0` is the start of the window, as for the day-14 SQL. With Docker Compose:
+
+```bash
+docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 \
+  -v t0='2026-11-20 00:00:00+00' < scripts/toolrag/report.sql > tool-rag-report.txt
+```
+
+With plain `psql`:
+
+```bash
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v t0='2026-11-20 00:00:00+00' -f scripts/toolrag/report.sql > tool-rag-report.txt
+```
+
+The output is one small table per statement, in the order of the file. Every statement has a comment line
+`-- [id] title` in the file; the ids below are those. Tool names are printed as they are stored. A name can start with
+`=`, `+`, `-` or `@`, so if you load the output into a spreadsheet, quote it first.
+
+A "run" below is one row: a planner round or a worker run (a resumed worker intent writes more than one row).
+
+| Id | What it answers |
+|---|---|
+| 0.1, 0.2 | Rows per agent and outcome, distinct tasks, worker intents, first and last row (UTC) |
+| 0.3 | **Would-hide share**: how many runs had `would_hide_count > 0`, per agent, of the projected rows and of all rows |
+| 0.4 | Rows with `_unknown` or `_overflow` names, and rankings cut at the caps |
+| 0.5, 0.6 | Worker intents with model calls in `llm_usage` against those with an observation row; the unobserved ones |
+| A.1 | Miss rate at k = 4, 8, 12, 16 per agent: of the runs where a filter would hide anything and that called a ranked candidate, how many called one outside the top k. The denominators are in the same table |
+| A.1p | The same for planner rounds, per task, at the recorded k (planner queries barely change inside a task, so rounds are not pooled) |
+| A.2, A.3 | Called tools by class in the hiding runs, split into inside the top k, outside it and without a position; the names most often called while ranked outside |
+| A.4, A.5 | Rank position of called candidates in all projected rows; the share ranked after `nonzero_count` (inside the zero-score, alphabetical part) |
+| A.6 | The `no_signal` share among rows with a large enough catalog |
+| A.7 | The candidate ranked first, per agent (the dominance check for crafted descriptions) |
+| B.1 | Subset check: every called candidate must be in the stored ranking of its row. Expected: zero violations |
+| B.2, B.3 | Calls to names that were never candidates (keep, deferred, other), by class and by name |
+| C.1, C.2 | Deferred, locked and unlocked counts per agent; how much of the surface is rankable at all; calls to deferred tools |
+| C.3 | Bypass indicator for the call counter (below) |
+| C.4 | The counter against `tool_usage` for catalog tools, per run and tool |
+| D.1, D.2 | Outcomes other than `projected`, with shares; the size of the catalogs (is 20 the right small-catalog threshold) |
+| V.1 | The few numbers that decide whether a filter mode is worth building at all |
+
+**How to read the first numbers.**
+
+1. **0.3 first.** With the default tool bindings the rankable set is by estimate 8 to 11 tools, under `k` = 12, so
+   few or no runs should have `would_hide_count > 0`. If the share is near zero, upstream's projection would have
+   hidden nothing and the miss rates of section A are empty by construction: that is the finding, not a defect of the
+   report. Every miss rate is computed only over runs that could miss.
+2. **0.5 next.** `coverage_pct` is distinct intents with an observation row over distinct intents with worker model
+   calls, so it cannot exceed 100% (the numerator counts the intents that have a row). The day-14 query reads the same
+   number. Below 95% the rows are not a safe sample: look at 0.6 and at the log lines (day-14 query 3). A deleted
+   task lowers it (its rows cascade, its `llm_usage` rows stay).
+3. **0.4 and B.1.** `_overflow`, `_unknown` or a cut ranking mean positions are not known for some rows;
+   `violations_complete_ranking` should be zero. A non-zero value means a called candidate is missing from a ranking
+   that holds all candidates: the list the ranking saw and the list the run called from differ (a tool removed or
+   added after the point where the ranking is taken, for example by the finding-workflow step), or the recorder has a
+   defect. Position-based numbers are then suspect for those rows. `missing_in_truncated_ranking` is the explained
+   case (the stored ranking is cut at 256 names).
+4. **V.1 last.** It collects the numbers of the sections above, at the `k` each row recorded. This page does not set a
+   threshold for building a filter mode: the bar is defined after the data exists, in the results below.
+
+**C.3, the bypass indicator.** Deferred tools are called through `ExecuteExtraTool`, which should reach the wrapped tool
+the call counter sits in. If it did not, the counter would record zero deferred calls although the model used them.
+The stored data supports an indicator only: per run key (task, agent, intent), the deferred calls recorded against
+`llm_usage.tool_bytes`, where a key `ExecuteExtraTool` with result bytes above zero means one of its results was in
+a request. `ee_result_deferred_calls_zero` is the column to look at. It is **not** proof: a call the SDK refused for a
+locked tool never reaches the wrapper and still leaves a result, and a result stays in the history of later requests.
+It cannot say which tool was named, how many calls there were (`tool_bytes` holds sizes, and `tool_usage` does not
+record deferred tools), or anything about a run without `llm_usage` rows. Planner rounds cannot be told apart, so the
+planner is one key per task.
+
+**Limits of the report.**
+
+- **No counterfactual.** A miss means "the model used a tool a filter would have removed". It does not say what the
+  model would have done with the filtered list, nor whether the run would have succeeded.
+- **Lost rows.** Rows are lost when the process crashes, the queue is full, or at the shutdown deadline; the report
+  sees them only as lower coverage (0.5) and in the log lines.
+- **Planner and worker only.** The main agent, chat and reporter have no rows.
+- **The ranking is the one seen before later list changes.** It does not see tools the SDK adds, or what the
+  finding-workflow step does afterwards; calls to such tools show as class `other` (B.2).
+- **A run is a row.** Resumed worker intents have several; planner rows of one task are correlated. Counts of rows are
+  not counts of independent samples.
+- **The window.** Observation rows are stamped when the run ends, `llm_usage` and `tool_usage` rows when the call is
+  made, so runs that straddle `t0` can show as small differences in C.3 and C.4.
+- **Not computed:** the `[tool-rag]` log lines (dropped and failed writes, panics) and the scoring delay, which the
+  day-14 SQL reads; counts of `SearchExtraTools` and `ExecuteExtraTool` calls (no table holds them); which deferred
+  tool an `ExecuteExtraTool` call named.
+- **Verified on a fixture.** The report is tested on a hand-calculated fixture (`db/tool_rag_report_test.go`) and on
+  an empty database. Its results on real data have not been looked at yet.
+
 ## Rollback
 
 1. **Switch it off:** set `ARTEX_TOOL_RAG=off` and restart. No scoring,
@@ -297,4 +392,24 @@ What is lost on a rollback is the measurements, nothing else.
   the data must show is how often anything would be hidden at all. That estimate is from the default catalogs, not
   from a measurement.
 - The four comparisons of the issue (retrieval quality, permission behaviour, locked versus unlockable tools,
-  fallback) are computed by a report that ships in the next pull request. Until then, the SQL above is the check.
+  fallback) are computed by the report above. Its own limits are listed there.
+
+## Results of the observation window
+
+Not written yet. The conclusion is written after the observation window (14 days on the owner's instance with real
+tasks), from the owner's output of the report and of the day-14 SQL. Nothing below is a result; the fields are
+empty on purpose.
+
+- **Window:** start `t0` = `<to be filled>`, end = `<to be filled>`. Release and commit: `<to be filled>`.
+- **Run by / on:** `<to be filled>`. Report output kept at: `<to be filled>`.
+- **Health of the observer (day-14 SQL):** verdict `<HEALTHY | DEGRADED | ROLLBACK | UNKNOWN>`, evidence
+  `<to be filled>`.
+- **Coverage (0.5):** `<to be filled>`.
+- **Would-hide share (0.3):** `<to be filled>`.
+- **Miss rate at k = 12 and its denominator (A.1, V.1):** `<to be filled>`.
+- **Permission behaviour (B.1):** violations `<to be filled>`.
+- **Deferred tools (C.1 to C.4), bypass indicator:** `<to be filled>`.
+- **Fallback outcomes (D.1, D.2):** `<to be filled>`.
+- **Conclusion:** is a filter mode worth building? `<to be filled>`.
+- **Bar for a filter mode, if any, and what a separate plan must prove:** `<to be filled>`.
+- **Open points:** `<to be filled>`.
