@@ -43,6 +43,7 @@ var migrationPins = []migrationPin{
 	{"0001_llm_records.sql", "202d1b5f84f8091f5e676526b15fb66c888f39f73ddab60f46c251f19e19aa1e", "yes", "5b401d456857f707fbc25214ec9b4e5bc4b30157"},
 	{"0002_llm_usage.sql", "3b3aece1c4c80bceef74d15652e1c97c972275d7c738a41938945f00588c8d39", "yes", "4fe0538e72a9780327bc7db1c4e14cecc97df49d"},
 	{"0003_task_scope_icp_index.sql", "318e3e91b55552ed3322cb7fdb515133dc279d6fd76e5d94498bf56de1692331", "yes", "d30d05ae9bf5039bd28fcc581774dfa27b524dc7"},
+	{"0004_llm_usage_ts_index.sql", "1f27b2411ebb064b7b7cd4d0d8fdfc2021ad74082019e6c72e772f706a00d028", "yes", "f9c66d0019f2b3a9b991628b830b33cb49c3082b"},
 	{"5001_llm_usage_fork_columns.sql", "d55ce9857b9ef9d526ecaeeeeada7750f156761d1ec6878e154c198c7c81553f", "yes", ""},
 }
 
@@ -191,12 +192,12 @@ func TestMigrationPinsDetectChanges(t *testing.T) {
 		t.Error("an upstream-range file without a blob id was not detected")
 	}
 	forkWithBlob := append([]migrationPin(nil), migrationPins...)
-	forkWithBlob[3].blob = migrationPins[0].blob
+	forkWithBlob[4].blob = migrationPins[0].blob
 	if diffs := verifyMigrationPins(load(), forkWithBlob); len(diffs) == 0 {
 		t.Error("a fork file with a blob id was not detected")
 	}
 	flipped := append([]migrationPin(nil), migrationPins...)
-	flipped[3].downgradeSafe = "no"
+	flipped[4].downgradeSafe = "no"
 	if diffs := verifyMigrationPins(load(), flipped); len(diffs) == 0 {
 		t.Error("a downgrade-safe flag that differs from the header was not detected")
 	}
