@@ -48,6 +48,9 @@ var (
 	ErrDetectionNotRunning = errors.New("this detection run has ended or has not started; please start a new run from the finding details")
 	// ErrDetectionNotFound is returned for a run that does not exist or was deleted (a tombstone is not found).
 	ErrDetectionNotFound = errors.New("detection run does not exist")
+	// ErrDetectionArchiveActive is returned by a start for a finding whose task has an archive job that is queued or in
+	// progress (section 6.10): the purge would delete the finding under the run.
+	ErrDetectionArchiveActive = errors.New("this finding's task is being archived; a detection run cannot start until the archive job ends")
 	// ErrDetectionActive is returned when an active run is deleted.
 	ErrDetectionActive = errors.New("this detection run is still active; stop it before deleting it")
 	// ErrDetectionRunLimit is returned by a create when the finding holds the maximum number of runs.
@@ -326,6 +329,16 @@ func (d *DB) CreateFindingDetection(ctx context.Context, in CreateDetectionInput
 	f, err := lockDetectionFinding(ctx, tx, in.FindingID)
 	if err != nil {
 		return nil, nil, false, err
+	}
+	// The finding row is held: a purge that got the findings first has made us wait and find no finding, one that
+	// comes later sees the run we make. An archive job that is already queued or running must not get a new run.
+	var archiving bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM task_archives
+		WHERE task_id=$1 AND state IN ('archive_queued','archiving'))`, f.TaskID).Scan(&archiving); err != nil {
+		return nil, nil, false, fmt.Errorf("check the task's archive job: %w", err)
+	}
+	if archiving {
+		return nil, nil, false, ErrDetectionArchiveActive
 	}
 	active, err := scanDetection(tx.QueryRowContext(ctx, `SELECT `+detectionListCols+` FROM finding_detections
 		WHERE finding_id=$1 AND status IN ('pending','running')`, in.FindingID))

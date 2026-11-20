@@ -46,6 +46,9 @@ var (
 	ErrTaskArchiveState          = errors.New("task archive state does not allow this operation")
 	ErrTaskArchiveDeleteBlocked  = errors.New("task archive is required by another archive")
 	ErrTaskArchiveFormatMismatch = errors.New("task archive format is not supported")
+	// ErrTaskArchiveDetections refuses to archive a task whose findings have detection runs: archives do not carry
+	// the detection tables yet (docs/detector-plan.md section 6.10). The text is shown to the operator verbatim.
+	ErrTaskArchiveDetections = errors.New("this task has detection results, which task archives do not carry yet; delete them from the findings or upgrade to a release that archives them")
 )
 
 // TaskArchive is the compact PostgreSQL record retained while a task is cold.
@@ -257,6 +260,15 @@ LIMIT 1`, taskID).Scan(&dependent)
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
+	}
+	// Archives do not carry detection runs yet: refuse while the task row is held, before anything is written.
+	// The purge checks again (CompleteTaskArchive), because a run can be started between the two.
+	hasRuns, err := taskHasDetectionRuns(context.Background(), tx, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("check the task for detection runs: %w", err)
+	}
+	if hasRuns {
+		return nil, ErrTaskArchiveDetections
 	}
 	var sources []int64
 	rows, err := tx.Query(`SELECT source_task_id FROM task_relations WHERE task_id=$1 ORDER BY created_at, source_task_id`, taskID)
