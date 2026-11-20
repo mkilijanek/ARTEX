@@ -77,15 +77,22 @@ func (w *toolRAGWriter) run() {
 }
 
 // write inserts one row. Past the drain deadline the row is dropped and counted; an
-// insert cut by that deadline is a drop too, not a failure.
+// insert cut by that deadline is a drop too, not a failure. A panic is recovered here
+// (this goroutine has no caller to do it, and an unrecovered one ends the process):
+// counted, logged with its type only, and the writer moves on to the next row.
 func (w *toolRAGWriter) write(o *db.ToolRAGObservation) {
 	if w.ctx.Err() != nil {
 		w.droppedShutdown.Add(1)
 		return
 	}
+	defer func() {
+		if r := recover(); r != nil {
+			w.log.Report("writer panic", fmt.Sprintf("type %T", r))
+		}
+	}()
 	ctx, cancel := context.WithTimeout(w.ctx, toolRAGInsertTimeout)
+	defer cancel()
 	err := w.insert(ctx, o)
-	cancel()
 	var pgErr *pgconn.PgError
 	switch {
 	case err == nil:
@@ -94,6 +101,8 @@ func (w *toolRAGWriter) write(o *db.ToolRAGObservation) {
 		w.droppedShutdown.Add(1)
 	case isFKViolation(err):
 		w.taskGone.Add(1) // the task was deleted or archived while the row waited
+	case errors.Is(err, db.ErrToolRAGObservationInvalid):
+		w.log.Report("invalid row", "") // refused before any SQL: a defect of the sender, not of the database
 	case errors.Is(err, context.DeadlineExceeded):
 		w.log.Report("timeout", "")
 	case errors.As(err, &pgErr):
@@ -124,6 +133,8 @@ func (w *toolRAGWriter) Close() {
 	w.wg.Wait()
 	deadline.Stop()
 	w.cancel()
-	log.Printf("[tool-rag] writer stopped: written=%d dropped_shutdown=%d task_gone=%d",
-		w.written.Load(), w.droppedShutdown.Load(), w.taskGone.Load())
+	// The summary is taken when the goroutine has ended. A run that ends later still
+	// calls Enqueue: that row is counted in droppedShutdown but not printed again.
+	log.Printf("[tool-rag] writer stopped: written=%d dropped_shutdown=%d task_gone=%d invalid_row=%d writer_panic=%d",
+		w.written.Load(), w.droppedShutdown.Load(), w.taskGone.Load(), w.log.Count("invalid row"), w.log.Count("writer panic"))
 }
