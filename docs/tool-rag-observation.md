@@ -273,9 +273,10 @@ line or a stack in `server_logs` says so.
 
    It **refuses on any other ledger**: when `5002` is not the newest fork migration it raises and changes nothing, and
    the way back is the pre-upgrade dump.
-3. **Order with the ledger cleanup.** The older recipe `rollback-cleanup-ledger.sql` drops `schema_migrations` only when
-   the ledger holds exactly the baseline versions, so it refuses while `5002` is recorded. Run the `5002` drop
-   **first**, then the cleanup if you want it.
+3. **Order with the other recipes.** The recipe for `0004` (`rollback-0004-index.sql`) accepts only the ledger
+   `1 2 3 4 5001` and the older ledger cleanup (`rollback-cleanup-ledger.sql`) only `1 2 3 5001`, so both refuse while
+   `5002` is recorded. Run the `5002` drop **first**, then the `0004` recipe, then the cleanup, if you want them
+   (the table is in "Order of the recipes" in [schema-upgrade.md](schema-upgrade.md)).
 
 What is lost on a rollback is the measurements, nothing else.
 

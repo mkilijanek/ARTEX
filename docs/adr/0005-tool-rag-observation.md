@@ -126,10 +126,10 @@ The value would be `filter`, default off. Until then `1`, `true`, `on`, `yes` an
   the MCP and tool configuration, deleted with the task, read by nothing in this release.
 - **Access rule.** No route, export, archive or UI reads the table. A later reader must be admin-only once roles exist
   and must be named in its own plan.
-- **The first fork migration after the baseline.** `5002` is the first migration that changes the catalog. The ledger of
-  a started database now ends with `5002`, the reference catalog has one more table, and rolling back needs
-  `ARTEX_SCHEMA_ALLOW_NEWER=5002` or the guarded drop `db/testdata/upgrade/rollback-drop-5002.sql`, run before the
-  older ledger cleanup.
+- **The first fork migration after the baseline.** `5002` is the first fork migration that changes the catalog (upstream
+  `0004` added an index before it). The ledger of a started database now ends with `5002`, the reference catalog has one more table, and rolling back needs
+  `ARTEX_SCHEMA_ALLOW_NEWER=5002` or the guarded drop `db/testdata/upgrade/rollback-drop-5002.sql`, run first, before the
+  `0004` recipe and the older ledger cleanup.
 - **The fork diverges from upstream's `toolrag.go`** by the adaptations above. The pure functions stay close, and the
   upstream tests are ported with their assertions unchanged (one adapted).
 - **A known gap:** a panic in the scoring step outside the observer's own recover (for example a tool whose name lookup
