@@ -448,3 +448,20 @@ Cache effects:
 - The rendered planner system prompt is 13478 B against the 13500 B ceiling in
   `TestRenderedAgentPromptByteInventory`; the chat ceiling there was raised from 600 B
   to 1500 B because the untrusted-content block is now appended to chat prompts.
+
+## Tool RAG observation
+
+Phase D.3 adds a content-free record of what a lexical tool filter would have kept (observation only: the tools,
+schemas and request bytes the model receives are unchanged, and `ARTEX_TOOL_RAG=off` switches the record off). It adds
+no tokens. One row per planner round and worker run is written to `tool_rag_observations`: counts and tool names, no
+prompt, query, description or result text. Fields, outcomes and failure behaviour: [tool-rag-observation.md](tool-rag-observation.md);
+design: [adr/0005-tool-rag-observation.md](adr/0005-tool-rag-observation.md).
+
+Relation to the other tool measures:
+
+- `llm_usage.tool_bytes` counts schema and result bytes per physical model call, by tool name present in the request.
+  The observation counts, per run, the calls the model made and the class of each tool.
+- `tool_usage` has one row per call of a catalog tool. The observation also counts keep-set SDK tools, `Skill` and
+  deferred MCP tools called through `ExecuteExtraTool`, which `tool_usage` does not record.
+- **Not counted:** tools the SDK adds itself (`SearchExtraTools`, `ExecuteExtraTool`, WebFetch, background-task tools)
+  and calls the SDK refuses because the tool is locked.

@@ -51,6 +51,10 @@ a complete ledger.
 The write of `schema_migrations` is **not undone when you roll the binary back**. Binaries up to 0.5.13m never read
 the table and still start (see "Rollback").
 
+A release that ships migration `5002` (Tool RAG observation, Phase D.3) then applies it in its own transaction, so
+after a start the ledger holds **five** rows, the last one `5002`, and the database has one more table,
+`tool_rag_observations`. See "Migration 5002" below.
+
 A failure of an `llm_*` table migration (`0001`, `0002`, `5001`) now **stops the start**. Earlier releases only
 logged it and went on.
 
@@ -126,7 +130,8 @@ their own `schema.sql` (same bytes as 0.5.13m) and still start. The ledger stays
 To remove the table (only to restore the exact catalog of a database that never had it), stop every ARTEX instance and
 run the cleanup SQL below on the database that was rolled back. It drops the ledger **only when it holds exactly the
 baseline versions** (1, 2, 3, 5001) and otherwise raises an error and changes nothing: a later migration has run, or
-the ledger was edited, and then the right way back is the pre-upgrade dump. The next start of the new binary adopts the
+the ledger was edited, and then the right way back is the pre-upgrade dump. Once `5002` has been applied this recipe
+refuses: run the `5002` drop first (see "Migration 5002"). The next start of the new binary adopts the
 baseline again.
 
 ```sql
@@ -155,6 +160,38 @@ Do **not** drop `schema_migrations` by hand on a database that has later migrati
 migration applied") unless the override is set. Each fork migration states in its first line whether an older binary
 is safe on a database that has it (`-- downgrade-safe: yes|no: <reason>`), and the CHANGELOG repeats it. After a
 `no`, restore the pre-upgrade dump.
+
+### Migration 5002 (Tool RAG observation)
+
+`db/migrations/5002_tool_rag_observations.sql` creates the table `tool_rag_observations` and one index
+(`CREATE ... IF NOT EXISTS`, first line `-- downgrade-safe: yes: additive table, older binaries do not read it`). The
+table references `tasks(id) ON DELETE CASCADE`, so the migration takes a short lock on `tasks`. Design and runbook:
+[adr/0005-tool-rag-observation.md](adr/0005-tool-rag-observation.md), [tool-rag-observation.md](tool-rag-observation.md).
+
+- **Ledger.** After a start the ledger ends with `5002`: `0001`, `0002`, `0003`, `5001`, `5002`. The reference catalog
+  has one more table (59 tables).
+- **Older binary.** A binary that does not ship `5002` refuses the database ("unknown migration applied") unless it is
+  started with `ARTEX_SCHEMA_ALLOW_NEWER=5002`. The table is then ignored.
+- **Drop recipe.** To remove the table after going back, stop every ARTEX instance and run
+  `db/testdata/upgrade/rollback-drop-5002.sql` with `ON_ERROR_STOP`. It acts only when `5002` is the newest fork
+  migration in the ledger, and raises, changing nothing, on any other ledger (then restore the pre-upgrade dump):
+
+  ```sql
+  BEGIN;
+  SELECT pg_advisory_xact_lock(7337741001);
+  DO $$
+  BEGIN
+    IF (SELECT max(version) FROM schema_migrations WHERE version >= 5000) IS DISTINCT FROM 5002 THEN
+      RAISE EXCEPTION '5002 is not the newest fork migration: restore the pre-upgrade dump instead';
+    END IF;
+  END $$;
+  DELETE FROM schema_migrations WHERE version = 5002 AND name = '5002_tool_rag_observations.sql';
+  DROP TABLE IF EXISTS tool_rag_observations;
+  COMMIT;
+  ```
+
+- **Order.** Run this drop **before** the ledger cleanup above: the cleanup refuses while `5002` is recorded.
+- **Archives.** Task archiving deletes the task's rows of the table; restoring an archive does not bring them back.
 
 ### Restores
 
@@ -192,7 +229,7 @@ Checks (test names are in `db/`, `db/dbtest/` and `server/`):
   `git show <commit>:db/schema.sql` by commit id.
 - **Fresh database** after startup (`Open` alone: it adopts the baseline migrations and creates the ledger table
   `schema_migrations`) has the catalog listed in `db/testdata/upgrade/reference-catalog-pg16.txt` and the ledger
-  versions 0001, 0002, 0003 and 5001.
+  versions 0001, 0002, 0003, 5001 and 5002.
 - **Upgrade keeps rows.** For each shape, startup removes no row and changes no value except
   what `expected-changes.json` lists exactly (see below). The fixture must have rows in every table or
   a stated exemption. Sequences do not go backwards.
@@ -239,16 +276,16 @@ Checks (test names are in `db/`, `db/dbtest/` and `server/`):
   definition (`IF NOT EXISTS` checks names only), a hand-made object or a missing trigger. A drift report against the
   reference catalog was deferred to the backlog (ADR 0004). Only the recorded-shape suite and the dry run on a copy
   show such differences.
-- **The first non-baseline migration is not in this release.** The baseline files change nothing on a database a
-  release has started, so the runner has so far applied no migration that changes a catalog. The next pull request adds
-  upstream `0004` (an index on `llm_usage`). Upstream `0005` is not ported.
+- **Migration `5002` is the first fork migration after the baseline** (Phase D.3). The baseline files change nothing on
+  a database a release has started; `5002` adds a table. Upstream `0004` (an index on `llm_usage`) is a separate pull
+  request. Upstream `0005` is not ported.
 - **The load-time lint is textual, not a SQL parser.** It does not catch transaction control inside a procedure that is
   called (`CALL p()` where `p` commits; PostgreSQL itself refuses that inside a transaction block), a statement
   built with `EXECUTE`, a file written for `standard_conforming_strings = off`, or `psql` meta-commands. The
   runtime marker (see "Changing the schema") is the second line and detects a file that ended the transaction after it
   ran; the file's effects up to that point then stay committed.
-- Local gate evidence is on linux/amd64 with PostgreSQL 16; the last gate run after the fix round printed
-  `upgrade-gate: tests passed=128 skipped=0 failed=0 (minimum passed: 128), go test exit 0`. In that run the
+- Local gate evidence is on linux/amd64 with PostgreSQL 16; the last gate run (Phase D.3, with migration `5002`)
+  printed `upgrade-gate: tests passed=130 skipped=0 failed=0 (minimum passed: 130), go test exit 0`. In that run the
   git-history comparison and the migration tag check were `NOT RUN` (the container had no `.git`); they were run
   separately on the host, where the tag check found no release tag with a migration yet. The recorded shapes are
   `r0509`, `r0512`, `r0513` and the synthetic `legacy`.
@@ -294,7 +331,7 @@ ARTEX_PG_DSN='postgres://USER:PASS@HOST:5432/DB?sslmode=disable' scripts/upgrade
   tries it on synthetic repositories.
 - CI runs the gate as the step "Schema upgrade test gate" after `go test -p 1 ./...`.
 
-The gate currently expects **128** passing top-level tests and zero skips.
+The gate currently expects **130** passing top-level tests and zero skips.
 
 Whole suite: `go test -p 1 ./...` with the same variable. Four `db` tests
 (`TestCompanyScopeAttribution`, `TestPoolProfilesOrder`, `TestProfileRetryRoundTrip`,
@@ -369,6 +406,21 @@ message of the gate test):
 
 Then run the gate.
 
+**What the first fork migration after the baseline (`5002`) showed that the steps above do not say:**
+
+- A table that task archiving must clear goes into the delete list in `db/task_archives_restore.go` (the one that holds
+  `skill_usage` and `tool_usage`) when its rows hang on a task, because archiving keeps the `tasks` row and so a
+  foreign-key cascade does not fire. Add a test that archives and restores.
+- A new table raises the table count of the reference (`expectedTables` in `db/upgrade_matrix_test.go`: 58 to 59), and
+  each recorded shape needs an exemption for a table that does not exist before startup.
+- Ship a guarded drop recipe with the migration (`db/testdata/upgrade/rollback-drop-5002.sql`), test it, run it before
+  the ledger cleanup, and list it in `.github/CODEOWNERS` next to the cleanup SQL.
+- Tests that assumed a ledger of only the baseline rows must use the embedded set (`requireEmbeddedLedger`); the
+  ledger cleanup refuses once a later migration is applied, so rollback tests run the drop first.
+- Synthetic migrations in tests must stay clear of real fork numbers (they were renamed `5902` and `5903` because the
+  real `5002` collided).
+- Raise `MIN_UPGRADE_TESTS` for the new migration tests (128 to 130).
+
 Rollback of the first release with the ledger needs no step (see "Rollback" above). The cleanup SQL is
 `db/testdata/upgrade/rollback-cleanup-ledger.sql`, run by `TestUpgradeRollbackCleanupDropsABaselineLedger` and
 `TestUpgradeRollbackCleanupRefusesAnyOtherLedger`, and rehearsed end to end by
@@ -409,7 +461,8 @@ Every entry has:
 - `note`: required for `accepted`: the decision and who took it.
 
 Rows added to a table that does not exist before startup (the four rows of `schema_migrations`) are `added` entries
-with a `pk` each (`{"version": "1"}`, `{"version": "2"}`, `{"version": "3"}`, `{"version": "5001"}`).
+with a `pk` each (`{"version": "1"}`, `{"version": "2"}`, `{"version": "3"}`, `{"version": "5001"}`), and one more, `{"version": "5002"}`,
+for migration `5002`.
 
 Special forms: `"after": "@startup"` stands for a `timestamptz` not earlier than the start of startup (the `set_updated_at`
 trigger); `"column_added": true` on a `value` entry means the column does not exist before startup, so there is no
@@ -527,8 +580,8 @@ this rehearsal; it is covered by tests on recorded shapes.
 
 - **A drift report** (a same-named object with another definition, a hand-made object, a missing trigger). Deferred to
   the backlog on 2026-11-19; the recorded-shape suite and the dry run are the only evidence until then.
-- **The first migration that changes the schema.** The next pull request adds upstream `0004` (an index on `llm_usage`).
-  Upstream `0005` is not ported; it is planned for when the fork next ports an upstream migration numbered above it or
+- **Upstream `0004`** (an index on `llm_usage`) is a separate pull request; fork migration `5002` is in. Upstream `0005`
+  is not ported; it is planned for when the fork next ports an upstream migration numbered above it or
   the traffic-rewrite feature, whichever comes first.
 - Platforms other than linux/amd64 and PostgreSQL versions other than 16, and Windows checkouts (a CRLF conversion
   would change a checksum; `.gitattributes` forbids it).
