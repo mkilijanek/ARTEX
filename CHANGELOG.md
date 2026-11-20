@@ -62,8 +62,8 @@ All notable changes to this project are documented in this file. The format is b
   filter mode in this release.** The main agent, chat and runs without a task id are not observed.
   - `ARTEX_TOOL_RAG`: unset, empty or `observe` observe (the default); `off`, `0`, `false`, `no` do nothing; `1`,
     `true`, `on`, `yes` and `filter` observe and log one warning; any other value observes and logs one warning that
-    does not show the value. `ARTEX_TOOL_RAG_TOPK` (default 12) sets the k that the rows compare against. Under Docker
-    Compose the variables must be added to the service's `environment` first (the compose file does not pass them).
+    does not show the value. `ARTEX_TOOL_RAG_TOPK` (default 12) sets the k that the rows compare against. Both are
+    passed through `docker-compose.yml`; an empty value means the default.
   - **New table `tool_rag_observations`, migration `5002_tool_rag_observations.sql`.**
     `-- downgrade-safe: yes: additive table, older binaries do not read it`. An older binary still refuses the ledger
     entry `5002` unless it is started with `ARTEX_SCHEMA_ALLOW_NEWER=5002`; the guarded drop is in

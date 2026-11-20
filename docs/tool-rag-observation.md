@@ -83,10 +83,8 @@ have been hidden.
 
 At start the server logs `[tool-rag] mode=observe scorer=bm25-v1 k=12` or `[tool-rag] mode=off`, once per process.
 
-**Docker Compose.** `docker-compose.yml` of this release does not list `ARTEX_TOOL_RAG` or `ARTEX_TOOL_RAG_TOPK`
-under `environment`, so a value in `.env` does not reach the container. To set either under Compose, add the variable
-to the `environment` section of the `artex` service (for example in a `docker-compose.override.yml`), and check the
-`mode=` line in the log.
+**Docker Compose.** `docker-compose.yml` passes `ARTEX_TOOL_RAG` and `ARTEX_TOOL_RAG_TOPK` from `.env` to the
+container; an empty value means the default. After a change, check the `mode=` line in the log.
 
 ## Cost
 
@@ -251,7 +249,7 @@ line or a stack in `server_logs` says so.
 
 ## Rollback
 
-1. **Switch it off:** set `ARTEX_TOOL_RAG=off` and restart (under Compose, see the note in "The switch"). No scoring,
+1. **Switch it off:** set `ARTEX_TOOL_RAG=off` and restart. No scoring,
    no counter, no rows. Rows already written stay until their task goes.
 2. **Go back to the previous binary.** The table is additive, so the migration is marked `downgrade-safe: yes`, but an
    older binary refuses a ledger that holds a migration it does not ship (`5002`). Either start it with

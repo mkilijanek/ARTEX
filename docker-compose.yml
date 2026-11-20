@@ -41,6 +41,9 @@ services:
       ARTEX_COMPACTION_MEMO: ${ARTEX_COMPACTION_MEMO:-0}
       # Schema migrations: empty means not set. See docs/schema-upgrade.md before using it.
       ARTEX_SCHEMA_ALLOW_NEWER: ${ARTEX_SCHEMA_ALLOW_NEWER:-}
+      # Tool RAG observation: empty means the default (observe); "off" disables it. See docs/tool-rag-observation.md.
+      ARTEX_TOOL_RAG: ${ARTEX_TOOL_RAG:-}
+      ARTEX_TOOL_RAG_TOPK: ${ARTEX_TOOL_RAG_TOPK:-}
     ports:
       - "${ARTEX_BIND_ADDR:-127.0.0.1}:8787:8787"
       - "127.0.0.1:8788:8788"
