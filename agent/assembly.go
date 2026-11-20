@@ -83,9 +83,17 @@ func AugmentTools(ctx context.Context, agentKey string, base []actool.CoreTool) 
 	if resolve := ToolResolve(); resolve != nil {
 		out = resolve(ctx, agentKey, out)
 	}
+	// Tool RAG observation (planner and worker runs only): ranks a copy of this list and
+	// counts calls; it never changes what is returned. See docs/phase-d3-plan.md.
+	run := startToolRAG(ctx, agentKey, out, def)
 	out, def.FindingGuidance = findingWorkflowTools(agentKey, out)
+	var obs *toolObservation
+	if run != nil {
+		obs = run.obs
+		cleanup = run.wrapCleanup(cleanup)
+	}
 	for i, t := range out {
-		out[i] = guardPanic(t)
+		out[i] = &guardedTool{CoreTool: t, obs: obs}
 	}
 	return out, def, cleanup
 }
@@ -97,7 +105,12 @@ func AugmentTools(ctx context.Context, agentKey string, base []actool.CoreTool) 
 // last, so it covers every tool the agent can reach: domain, SDK, MCP and skill.
 func guardPanic(t actool.CoreTool) actool.CoreTool { return &guardedTool{CoreTool: t} }
 
-type guardedTool struct{ actool.CoreTool }
+// guardedTool optionally carries the run's Tool RAG observation (nil when not
+// observed): Call then counts the call by name before delegating.
+type guardedTool struct {
+	actool.CoreTool
+	obs *toolObservation
+}
 
 func (g *guardedTool) Call(ctx context.Context, in json.RawMessage, tc *actool.ToolContext) (res actool.Result, err error) {
 	defer func() {
@@ -106,6 +119,9 @@ func (g *guardedTool) Call(ctx context.Context, in json.RawMessage, tc *actool.T
 			res, err = actool.Errorf(fmt.Sprintf("internal error in tool %s: %v (this call has failed; try different arguments or another tool)", g.Name(), r)), nil
 		}
 	}()
+	if g.obs != nil {
+		g.obs.countCall(g.CoreTool.Name())
+	}
 	return g.CoreTool.Call(ctx, in, tc)
 }
 

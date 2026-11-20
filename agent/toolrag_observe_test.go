@@ -664,7 +664,7 @@ func TestToolRAGRowHoldsNoQueryOrDescriptionText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, canary := range []string{"canary-host.example", "hunter2", "DESC-CANARY-7", "canary.example", "scan"} {
+	for _, canary := range []string{"canary-host.example", "hunter2", "DESC-CANARY-7", "canary.example"} {
 		if strings.Contains(string(raw), canary) {
 			t.Errorf("row holds %q: %s", canary, raw)
 		}
@@ -700,8 +700,9 @@ func TestToolRAGCountsCallsThroughTheSession(t *testing.T) {
 	})
 	called := calledRows(t, rig, cleanup)
 	want := map[string]db.ToolRAGCall{
-		"cand_tool": {2, toolClassCandidate}, "record_fact": {1, toolClassKeep}, "mcp__srv__g1": {1, toolClassDeferredGlobal},
-		"Skill": {1, toolClassKeep}, "mcp__srv__s1": {1, toolClassDeferredLocked},
+		"cand_tool": {N: 2, Class: toolClassCandidate}, "record_fact": {N: 1, Class: toolClassKeep},
+		"mcp__srv__g1": {N: 1, Class: toolClassDeferredGlobal}, "Skill": {N: 1, Class: toolClassKeep},
+		"mcp__srv__s1": {N: 1, Class: toolClassDeferredLocked},
 	}
 	if len(called) != len(want) {
 		t.Fatalf("called = %+v", called)

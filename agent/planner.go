@@ -432,7 +432,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// When the asset-coverage feature is off, drop add_task_scope/list_untested_assets (not in the prompt).
 	base := append(tsx.DropCoverageTools(tsx.PlannerTools()), actool.DefaultTools()...)
 	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, ExplorationID: explorationID(ts)})
-	tools, def, cleanup := AugmentTools(ctx, "planner", base)
+	tools, def, cleanup := AugmentTools(WithToolQuery(ctx, plannerToolQuery(goal, triggers)), "planner", base)
 	defer cleanup()
 	// The key situation (just-finished intents + the pre-fetched full graph) goes into
 	// [this round's user input] (see input below); the system prompt keeps only the

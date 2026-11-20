@@ -8,11 +8,13 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
 
 	actool "github.com/Autumn-27/norma/tool"
+	"github.com/mkilijanek/artex/db"
 )
 
 // Tool RAG: a lexical ranking of an agent's already-bound tool list, ported from
@@ -256,10 +258,10 @@ func truncUTF8(s string, n int) (string, bool) {
 	return s[:n], true
 }
 
-// toolObsName applies the stored-name rule (plan 3.3): at most 128 bytes, valid
-// UTF-8, no control characters, else "_unknown".
+// toolObsName applies the stored-name rule (plan 3.3): non-empty, at most 128 bytes,
+// valid UTF-8, no control characters, else "_unknown".
 func toolObsName(name string) string {
-	if len(name) > toolRAGMaxNameBytes || !utf8.ValidString(name) {
+	if name == "" || len(name) > toolRAGMaxNameBytes || !utf8.ValidString(name) {
 		return toolRAGUnknownName
 	}
 	for _, r := range name {
@@ -303,6 +305,11 @@ type toolObservation struct {
 	// lockedNames are the deferred names not unlocked at assembly (plan 3.4).
 	lockedNames []string
 	unlock      *actool.UnlockSet
+
+	// The call counter (toolrag_observe.go): calls per stored name until sealed.
+	callMu sync.Mutex
+	called map[string]db.ToolRAGCall
+	sealed bool
 }
 
 // UnlockedDuringRun counts the names that were locked at assembly and are unlocked
