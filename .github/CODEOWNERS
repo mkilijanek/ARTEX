@@ -14,3 +14,4 @@
 /.github/CODEOWNERS                              @mkilijanek
 /db/upgrade_gatescript_test.go                   @mkilijanek
 /db/testdata/upgrade/rollback-cleanup-ledger.sql @mkilijanek
+/db/testdata/upgrade/rollback-0004-index.sql    @mkilijanek
