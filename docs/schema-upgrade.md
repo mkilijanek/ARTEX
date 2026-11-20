@@ -349,8 +349,11 @@ Checks (test names are in `db/`, `db/dbtest/` and `server/`):
   (the full list is the comment above `catalogQueries` in `db/dbtest/catalog.go`).
 - Atomicity covers the schema DDL only. `seedBuiltins` runs outside that transaction, and PostgreSQL does
   not roll sequences back.
-- **The time of the index build is logged, not tested.** No test builds `idx_llm_usage_ts` on a large table; the
-  lock behaviour above is PostgreSQL's, documented, not measured here.
+- **The time of the index build was measured on one database only.** On a restored copy of a real database
+  with 73 104 rows in `llm_usage` the build took 35 ms (2026-11-20; log line
+  `[migrate] applied 0004_llm_usage_ts_index.sql in 35ms`). No test builds `idx_llm_usage_ts` on a large table; the
+  lock behaviour above is PostgreSQL's, documented, not measured here, and the path with a failed concurrent
+  pre-build (an INVALID index) was not exercised.
 - **No drift report.** The runner detects a database it does not understand by its ledger (an unknown, changed,
   out-of-order, empty or foreign ledger). It does **not** detect an object that kept its name but has another
   definition (`IF NOT EXISTS` checks names only), a hand-made object or a missing trigger. A drift report against the
