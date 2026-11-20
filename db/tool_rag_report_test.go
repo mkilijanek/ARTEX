@@ -268,7 +268,7 @@ func newReportFixture(t *testing.T) *reportFixture {
 		"c02": rcall(1, "candidate"), "bind_finding_traffic": rcall(1, "other")})
 	f.obs(t1, "planner", 0, "projected", 30, 10, 20, 12, 8, 4, 4, 0, candNames(1, 20), map[string]ToolRAGCall{
 		"c20": rcall(1, "candidate"), "c13": rcall(4, "candidate")})
-	f.obs(t2, "planner", 0, "projected", 16, 8, 8, 5, 0, 2, 2, 0, candNames(1, 8), map[string]ToolRAGCall{
+	f.obs(t2, "planner", 0, "projected", 16, 8, 8, 5, 0, 2, 2, 0, append([]string{"c02", "c01"}, candNames(3, 8)...), map[string]ToolRAGCall{
 		"c02": rcall(2, "candidate"), "Skill": rcall(1, "keep")})
 	f.obs(t2, "worker", 201, "no_signal", 24, 10, 14, 0, 0, 1, 1, 0, candNames(1, 14), map[string]ToolRAGCall{
 		"c07": rcall(1, "candidate")})
@@ -387,7 +387,7 @@ func TestToolRagReportFileIsReadOnly(t *testing.T) {
 			t.Errorf("a psql variable other than t0: %q", line)
 		}
 	}
-	for _, id := range []string{"0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "A.1", "A.1p", "A.2", "A.3", "A.4", "A.5", "A.6",
+	for _, id := range []string{"0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "A.1", "A.1p", "A.2", "A.3", "A.4", "A.5", "A.6", "A.7",
 		"B.1", "B.2", "B.3", "C.1", "C.2", "C.3", "C.4", "D.1", "D.2", "V.1"} {
 		if !seen[id] {
 			t.Errorf("section %s is missing", id)
@@ -453,6 +453,7 @@ func TestToolRagReportRunsOnAnEmptyWindow(t *testing.T) {
 	wantRows(t, got, "A.4", row("01-04", "0", "0", "0"), row("05-08", "0", "0", "0"), row("09-12", "0", "0", "0"),
 		row("13-16", "0", "0", "0"), row("17+", "0", "0", "0"))
 	wantRows(t, got, "A.5", row("0", "0", "NULL", "0", "0", "NULL"))
+	wantRows(t, got, "A.7")
 	wantRows(t, got, "B.1", row("0", "0", "0", "0", "0", "0"))
 	wantRows(t, got, "B.2")
 	wantRows(t, got, "B.3")
@@ -508,7 +509,7 @@ func TestToolRagReportLexicalRetrieval(t *testing.T) {
 	got := f.report(t)
 	id1, id2 := strconv.FormatInt(f.t1, 10), strconv.FormatInt(f.t2, 10)
 
-	// Highest position of a called candidate with a position: R1 14, R2 5, R3 2, R4 20, R5 2, R12 1 (c14 has no
+	// Highest position of a called candidate with a position: R1 14, R2 5, R3 2, R4 20, R5 1 (c02 is ranked first there), R12 1 (c14 has no
 	// position), R11 and R13 none. Candidates: R1 R2 R3 R12 R13 14 each, R4 20, R5 8, R11 14.
 	// planner k=4: R4 R5 R11 (3 rows), calling 2 (R4 R5), miss R4 (20>4): 1 of 2 = 50.0.
 	// planner k=8: R4 R11 (R5 has 8 candidates), calling 1, miss 1 = 100.0. k=12 the same. k=16: R4 only.
@@ -543,7 +544,7 @@ func TestToolRagReportLexicalRetrieval(t *testing.T) {
 		row("c14", "worker", "1", "1", "14", "14"),
 		row("c20", "planner", "1", "1", "20", "20"))
 	// Positions in all projected rows (pairs, calls, pairs in hiding runs):
-	// 1-4: c03(3) c01(1) c02(2) R5:c02(2) R12:c01(1) = 5 pairs, calls 2+1+1+2+1 = 7, hiding 4 (R5 hides nothing);
+	// 1-4: c03(3) c01(1) c02(2) R5:c02(1) R12:c01(1) = 5 pairs, calls 2+1+1+2+1 = 7, hiding 4 (R5 hides nothing);
 	// 5-8: c05 = 1 pair 3 calls; 9-12: none; 13-16: c14(14) c13(13) = 2 pairs 5 calls; 17+: c20 = 1 pair 1 call.
 	wantRows(t, got, "A.4",
 		row("01-04", "5", "7", "4"),
@@ -559,6 +560,12 @@ func TestToolRagReportLexicalRetrieval(t *testing.T) {
 		row("planner", "3", "0", "0.0"),
 		row("worker", "6", "1", "16.7"),
 		row("all", "9", "1", "11.1"))
+	// First ranked in projected rows with a nonzero score: planner R4 and R11 start with c01, R5 with c02 (3 rows:
+	// 66.7 and 33.3); worker R1 R2 R3 R12 R13 all start with c01 (5 rows: 100.0).
+	wantRows(t, got, "A.7",
+		row("planner", "c01", "2", "3", "66.7"),
+		row("planner", "c02", "1", "3", "33.3"),
+		row("worker", "c01", "5", "5", "100.0"))
 }
 
 // Section B. R12 is the deleted-candidate case: its ranking is complete (14 of 14 candidates) and does not hold
