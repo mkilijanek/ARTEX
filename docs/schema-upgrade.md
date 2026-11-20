@@ -349,9 +349,6 @@ Checks (test names are in `db/`, `db/dbtest/` and `server/`):
   (the full list is the comment above `catalogQueries` in `db/dbtest/catalog.go`).
 - Atomicity covers the schema DDL only. `seedBuiltins` runs outside that transaction, and PostgreSQL does
   not roll sequences back.
-- **The dry-run test and `0004`.** `TestDryRunRestoredCopy` still requires that a copy **without a ledger** ends with
-  exactly the four baseline versions. With `0004` embedded such a copy ends with five, so the test fails on that
-  path until it is updated (reported as a defect of S2-C; the gate does not run it).
 - **The time of the index build is logged, not tested.** No test builds `idx_llm_usage_ts` on a large table; the
   lock behaviour above is PostgreSQL's, documented, not measured here.
 - **No drift report.** The runner detects a database it does not understand by its ledger (an unknown, changed,
@@ -594,12 +591,13 @@ that has no ledger the report contains these lines (taken from a run on a synthe
 ```
 table schema_migrations: absent -> 4 rows
 catalog: no difference to the reference
-ledger schema_migrations: absent -> present, versions 0001 0002 0003 5001
+ledger schema_migrations: absent -> present, versions 0001 0002 0003 0004 5001
 ```
 
-and on the second start `ledger schema_migrations: present, versions 0001 0002 0003 5001 -> present, versions 0001 0002 0003 5001`.
-The test fails unless the ledger is exactly the baseline set after the first start of a database without a ledger,
-holds at least the baseline otherwise, and is unchanged by the second start.
+and on the second start `ledger schema_migrations: present, versions 0001 0002 0003 0004 5001 -> present, versions 0001 0002 0003 0004 5001`.
+The test fails unless the ledger holds exactly the versions this release ships after the first start of a database
+without a ledger (the baseline, adopted, plus every later migration, applied), holds at least the baseline
+otherwise, and is unchanged by the second start.
 It is not part of the gate: it needs its own server and does nothing unless `ARTEX_UPGRADECHECK_DSN` is set. It
 fails if startup removes rows from a table or if the second start changes a row count. One removal is expected and
 reported as such: the obsolete prompt variables (`EngagementTitle`, `CoverageGaps`, `Now`) that every start deletes

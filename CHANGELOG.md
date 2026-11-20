@@ -283,8 +283,8 @@ All notable changes to this project are documented in this file. The format is b
   byte-identity pin of `0004`, its application after `5001`, a binary without `0004` on a database that has it, a
   simulated 0.5.13m start, and the guarded `0004` recipe (it also requires the ledger row to carry the shipped name).
   `scripts/upgrade-gate.sh` now requires **135** passing tests. `.github/CODEOWNERS` names the new recipe file.
-  Known: `TestDryRunRestoredCopy` still expects the four baseline versions on a copy without a ledger (see
-  `docs/schema-upgrade.md`, "What it does not cover").
+  The dry-run check (`TestDryRunRestoredCopy`) now expects a copy without a ledger to end with every shipped
+  version, not only the baseline.
 - **Schema upgrade suite runs on the migration runner (Phase D.2 stage 2, S2-A).** New recorded shape `r0513`
   (`db/schema.sql` as released in 0.5.13m); the reference catalog has 58 tables, including `schema_migrations`;
   four `added` entries per shape in `expected-changes.json`. New tests: the runner (refusals, override, adoption,
