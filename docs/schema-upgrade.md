@@ -17,9 +17,9 @@ Two parts, two decisions:
 This page starts with what an operator needs ("Upgrading to a release with migrations"), then what the validation
 covers, how to run it, how to change the schema, and what is still missing.
 
-Issue #24 asks for migration order and checksums. S2-A delivers both, but ships no migration that changes the
-schema (the baseline files are no-ops on every database a release has started). The issue is not closed by this
-change; the pull request with the first real migration (upstream `0004`) is planned to close it.
+Issue #24 asks for migration order and checksums. S2-A (release 0.5.15m) delivered both, but shipped no migration that
+changes the schema (the baseline files are no-ops on every database a release has started). The pull request S2-C
+ships the first real migration, upstream `0004` (the index `idx_llm_usage_ts`), and closes the issue.
 
 ## Upgrading to a release with migrations
 
@@ -29,10 +29,18 @@ change; the pull request with the first real migration (upstream `0004`) is plan
    that write is not undone by going back to the old binary (see "Rollback"). Run `umask 077` first or `chmod 600`
    the dump: it holds `auth.password_hash`.
 2. **Stop every older ARTEX instance** that uses the database, and make sure **no `pg_dump` is running** against it.
-   The migrations take short table locks (`ACCESS EXCLUSIVE` on `llm_records` and `llm_usage`, `SHARE` on
+   The baseline migrations take short table locks (`ACCESS EXCLUSIVE` on `llm_records` and `llm_usage`, `SHARE` on
    `task_scope` until the transaction ends). A session that holds a conflicting lock makes the start fail after 60
-   seconds (see "Lock timeout").
-3. Read the release notes in the CHANGELOG for migrations that state `downgrade-safe: no`.
+   seconds (see "Lock timeout"). Migration `0004` takes a longer lock: see "The index build of `0004`" below.
+3. **Estimate the size of `llm_usage`.** This release builds an index on it at the first start (next section). Run
+   this read-only query on the database:
+   ```sql
+   SELECT pg_size_pretty(pg_total_relation_size('llm_usage')) AS size,
+          (SELECT reltuples::bigint FROM pg_class WHERE oid = 'llm_usage'::regclass) AS estimated_rows;
+   ```
+   `estimated_rows` is the planner's estimate and reads `-1` when the table was never analysed. The build time grows with
+   the table and is not bounded. For a large table, build the index beforehand (see "Pre-building the index").
+4. Read the release notes in the CHANGELOG for migrations that state `downgrade-safe: no`.
 
 ### What the first start does
 
@@ -40,7 +48,9 @@ On a database that an earlier release started (no ledger), the start does everyt
 (`schema.sql`, the seeding of the built-in rows), and in addition writes **one new table, `schema_migrations`, with
 four rows** (`0001`, `0002`, `0003`, `5001`), in one transaction. The four migration files are written so that they
 change nothing on such a database: each statement is `IF NOT EXISTS`. If that transaction fails, neither the table
-nor a row remains, and the next start tries again.
+nor a row remains, and the next start tries again. After that, this release applies `0004` (a fifth row, its own
+transaction): it **builds the index `idx_llm_usage_ts`**, the first migration that changes the catalog. A database that
+already has the ledger from 0.5.15m gets only that one migration.
 
 The start reads the ledger first and refuses a database it does not understand **before it writes anything**,
 including before `schema.sql` runs. The order is: read the ledger, `schema.sql`, adopt the baseline (when there is
@@ -48,7 +58,7 @@ no ledger), apply later pending migrations (each in its own transaction together
 built-in rows. All of it holds the schema advisory lock (key `7337741001`), so a second instance waits and then finds
 a complete ledger.
 
-The write of `schema_migrations` is **not undone when you roll the binary back**. Binaries up to 0.5.13m never read
+The write of `schema_migrations` is **not undone when you roll the binary back**. Binaries up to 0.5.14m never read
 the table and still start (see "Rollback").
 
 A failure of an `llm_*` table migration (`0001`, `0002`, `5001`) now **stops the start**. Earlier releases only
@@ -60,12 +70,70 @@ What the log shows (content-free lines: versions and file names, no data):
 |---|---|
 | `[schema] schema.sql sha256=<12 hex>` | every start |
 | `[migrate] ledger absent: adopting baseline (4)`, then `[migrate] adopted baseline in <ms>ms` | the first start |
-| `[migrate] applied <file> in <ms>ms` | each later migration |
+| `[migrate] applied <file> in <ms>ms` | each later migration; for `0004`: `[migrate] applied 0004_llm_usage_ts_index.sql in <ms>ms`. It is written **after** the commit, so nothing is logged while the index builds |
 | `[migrate] up to date (upstream=<version>, fork=<version>)` | a successful start |
 | `[migrate] refused: <label> (version <NNNN>, "<file>")` | a refusal (table below) |
 | `[migrate] WARNING: ARTEX_SCHEMA_ALLOW_NEWER=<NNNN>; unknown migration <NNNN> ("<file>")` | every start while the override applies |
 | `[migrate] lock timeout on <table> after 60s: another session holds a lock: ...` | a lock timeout |
 | `[migrate] deadlock, retry <n>/4` | a deadlock that is being retried |
+
+### The index build of `0004`
+
+This release builds `idx_llm_usage_ts` on `llm_usage (ts)` at the first start (the migration file is
+`db/migrations/0004_llm_usage_ts_index.sql`). The daily usage figures and the daily series of the judge statistics
+filter `llm_usage` by `ts`; the table gains a row per LLM call and is never purged, so they scanned all of it. What to
+expect:
+
+- The build is a plain `CREATE INDEX`. It takes a `SHARE` lock on `llm_usage` for the **whole build**: reads continue,
+  every `INSERT`, `UPDATE` and `DELETE` on that table waits. An ARTEX instance that still writes usage rows (an older
+  release you did not stop, a second instance) **stalls for the duration**. Stop it first (step 2 above).
+- The 60 second lock timeout bounds only the **wait to get the lock**, not the build. The runner sets no statement
+  timeout, so the build time is not bounded by ARTEX (a timeout set on the role or the database applies).
+- The build runs inside the database open step, **before the HTTP server listens**. On a large table the start looks
+  hung: no web page and no further log line. When it ends the log shows `[migrate] applied 0004_llm_usage_ts_index.sql in <ms>ms`
+  and then `[migrate] up to date (upstream=0004, fork=5001)`. Wait for them; do not restart the container, that
+  cancels the build and the next start begins again. Another session can show the build in `pg_stat_activity` (a
+  `CREATE INDEX` statement on `llm_usage`).
+- If the build fails, its transaction rolls back: no index, no ledger row, and the next start tries again.
+
+### Pre-building the index
+
+Optional, for a table that is large enough for the lock above to matter. The old release keeps running while you do
+it: `CREATE INDEX CONCURRENTLY` does not block writes. Do it **before** the upgrade, with no upgrade in progress, using
+`psql` **outside a transaction** (no `-1`, no `BEGIN`, one statement per `-c`):
+
+```bash
+docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 \
+  -c 'CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_llm_usage_ts ON llm_usage (ts)'
+```
+
+Then **check that the index is valid**. A concurrent build that fails (a cancelled statement, a deadlock, a crash)
+leaves an `INVALID` index under the same name. The migration's `IF NOT EXISTS` would skip it, the ledger would record
+`0004` as applied, and the index would never be used.
+
+```bash
+docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc \
+  "SELECT i.indisvalid FROM pg_index i WHERE i.indexrelid = to_regclass('idx_llm_usage_ts')"
+```
+
+It must print `t`. If it prints `f`, drop the index and build it again, and repeat until the check prints `t`:
+
+```bash
+docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 \
+  -c 'DROP INDEX CONCURRENTLY idx_llm_usage_ts'
+```
+
+With a valid index in place, `0004` finds it, does nothing, and the first start of the new release is quick (the
+ledger row is still written).
+
+**After any upgrade, confirm the index.** The query below lists the index with its state. One row with `valid = t` is
+correct; no row means the index is missing, `f` means it is invalid (drop it as above and build it again):
+
+```sql
+SELECT c.relname AS index, i.indisvalid AS valid, i.indisready AS ready
+FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+WHERE c.relname = 'idx_llm_usage_ts';
+```
 
 ### When the start refuses
 
@@ -120,14 +188,51 @@ deadlock (SQLSTATE `40P01`) is retried up to 4 times, after 100 ms, 250 ms, 500 
 
 ### Rollback
 
-Redeploy the previous binary. Nothing else is needed for 0.5.13m and older: they never read `schema_migrations`, run
-their own `schema.sql` (same bytes as 0.5.13m) and still start. The ledger stays valid if the new binary returns.
+Releases up to 0.5.14m never read `schema_migrations`, run their own `schema.sql` (same bytes as 0.5.13m) and start on
+a database that has the ledger, with or without `0004`. The ledger stays valid if the new binary returns.
 
-To remove the table (only to restore the exact catalog of a database that never had it), stop every ARTEX instance and
-run the cleanup SQL below on the database that was rolled back. It drops the ledger **only when it holds exactly the
-baseline versions** (1, 2, 3, 5001) and otherwise raises an error and changes nothing: a later migration has run, or
-the ledger was edited, and then the right way back is the pre-upgrade dump. The next start of the new binary adopts the
-baseline again.
+**Going back to 0.5.15m** (it reads the ledger and refuses a database with `0004`: "unknown migration applied"). Pick
+one of two ways. The index is harmless to the older binary, so both are safe for the data.
+
+1. **Set `ARTEX_SCHEMA_ALLOW_NEWER=0004`** and start 0.5.15m. It starts and logs one warning per start. The override
+   has a general risk (the older `schema.sql` runs over a database a newer release changed): read "The override
+   `ARTEX_SCHEMA_ALLOW_NEWER`" above. `0004` only adds an index, which the older binary never touches, but the setting stays until you remove it.
+2. **Run the guarded `0004` recipe**, then start 0.5.15m with no override. Stop every ARTEX instance first.
+
+```sql
+BEGIN;
+SELECT pg_advisory_xact_lock(7337741001);
+DO $$
+BEGIN
+  IF (SELECT array_agg(version ORDER BY version) FROM schema_migrations) IS DISTINCT FROM ARRAY[1,2,3,4,5001]
+     OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = 4 AND name = '0004_llm_usage_ts_index.sql') THEN
+    RAISE EXCEPTION 'schema_migrations is not baseline + 0004: restore the pre-upgrade dump';
+  END IF;
+END $$;
+DELETE FROM schema_migrations WHERE version = 4 AND name = '0004_llm_usage_ts_index.sql';
+DROP INDEX IF EXISTS idx_llm_usage_ts;
+COMMIT;
+```
+
+Save it as `rollback-0004-index.sql` and run it with `ON_ERROR_STOP` (the same text is
+`db/testdata/upgrade/rollback-0004-index.sql` in the source tree, with a comment header):
+
+```bash
+docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 < rollback-0004-index.sql
+```
+
+The recipe drops the index and deletes the ledger row of `0004` **only when the ledger is exactly the baseline plus
+`0004` and the row of `0004` has the name of the shipped file**. Otherwise it raises the error above and changes
+nothing: a later migration has run, or the ledger was edited. **A second run raises that error too, and changes
+nothing**, because the row is already gone. That is expected, not a fault. The next start of this release builds the
+index again.
+
+**Removing the ledger table** (only to restore the exact catalog of a database that never had it). Order: the `0004`
+recipe first, then the cleanup below. Stop every ARTEX instance and run the cleanup SQL on the database that was rolled
+back. It drops the ledger **only when it holds exactly the baseline versions** (1, 2, 3, 5001) and otherwise raises an
+error and changes nothing: it **refuses while `0004` is recorded**, and so when a later migration has run or the ledger
+was edited; then the right way back is the pre-upgrade dump. The next start of the new binary adopts the baseline
+again.
 
 ```sql
 BEGIN;
@@ -150,6 +255,7 @@ docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON
 ```
 
 Do **not** drop `schema_migrations` by hand on a database that has later migrations: they would run again.
+Releases up to 0.5.14m start without any of these steps.
 
 **Downgrade rule for future releases.** A binary older than the newest applied migration is refused ("unknown
 migration applied") unless the override is set. Each fork migration states in its first line whether an older binary
@@ -181,7 +287,8 @@ fixture of synthetic rows:
 |---|---|
 | `r0509` | `db/schema.sql` as released in 0.5.9m, 0.5.10m and 0.5.11m (identical bytes) |
 | `r0512` | `db/schema.sql` as released in 0.5.12m (0.5.13m adds `findings.ticket_id` to it) |
-| `r0513` | `db/schema.sql` as released in 0.5.13m: the schema that is now frozen, and the last release without the migration ledger |
+| `r0513` | `db/schema.sql` as released in 0.5.13m: the schema that is now frozen, and the same bytes as in 0.5.14m (no ledger) |
+| `s2a` | release 0.5.15m, the first release with the ledger: the frozen `schema.sql`, the four baseline migrations `0001`, `0002`, `0003`, `5001` and their ledger rows (the manifest records it as shape `s2a`, tag `v0.5.15m`, with a `migrations` list). Its data fixture is the `r0513` one |
 | `legacy` | **synthetic**: `r0509` plus `legacy-mutations.sql`, which puts back the old forms that the upgrade branches of `schema.sql` look for. It is not a recorded release |
 
 Checks (test names are in `db/`, `db/dbtest/` and `server/`):
@@ -191,8 +298,8 @@ Checks (test names are in `db/`, `db/dbtest/` and `server/`):
   CR byte, and `TestGitHistoryFixtures` compares each fixture with
   `git show <commit>:db/schema.sql` by commit id.
 - **Fresh database** after startup (`Open` alone: it adopts the baseline migrations and creates the ledger table
-  `schema_migrations`) has the catalog listed in `db/testdata/upgrade/reference-catalog-pg16.txt` and the ledger
-  versions 0001, 0002, 0003 and 5001.
+  `schema_migrations`) has the catalog listed in `db/testdata/upgrade/reference-catalog-pg16.txt` (it now contains the index
+  `idx_llm_usage_ts`) and the ledger versions 0001, 0002, 0003, 0004 and 5001.
 - **Upgrade keeps rows.** For each shape, startup removes no row and changes no value except
   what `expected-changes.json` lists exactly (see below). The fixture must have rows in every table or
   a stated exemption. Sequences do not go backwards.
@@ -218,7 +325,15 @@ Checks (test names are in `db/`, `db/dbtest/` and `server/`):
   produce the shape of a full `Open`) and `TestBaselineSetIsFrozen`.
 - **Rollback** (`TestUpgradeRollbackCleanupDropsABaselineLedger`, `TestUpgradeRollbackCleanupRefusesAnyOtherLedger`,
   `TestUpgradeRollbackToTheReleaseWithoutTheLedgerAndForward`): the guarded cleanup SQL, and the way back to a
-  database without the ledger and forward again.
+  database without the ledger and forward again (these start from the release before `0004`, because the cleanup
+  correctly refuses a ledger that holds `0004`).
+- **Migration `0004`** (`db/upgrade_migration0004_test.go`, `db/upgrade_rollback0004_test.go`): the file is
+  byte-identical to upstream and not in the baseline set; from `s2a` it is applied after the fork migration `5001`
+  (the order rule accepts it, as it works inside each range) and logs `[migrate] applied 0004_llm_usage_ts_index.sql in
+  <ms>ms`; a binary without `0004` refuses the database unless `ARTEX_SCHEMA_ALLOW_NEWER=0004` (one warning per start,
+  ledger row and index kept); a simulated 0.5.13m start works on a database that has it; the guarded `0004` recipe
+  drops the index and the row, refuses five other ledgers (no `0004`, an extra `5002`, no `0003`, no `5001`, empty) and
+  a `0004` row under another name, and a second run raises and changes nothing.
 - **Test safety.** A guard (`db/dbtest/guard.go`) runs before every create, load and drop. Fixture rows
   carry the marker `CANARY-D2-ROW`; tests check that neither it nor the server password reaches any output.
 
@@ -234,24 +349,30 @@ Checks (test names are in `db/`, `db/dbtest/` and `server/`):
   (the full list is the comment above `catalogQueries` in `db/dbtest/catalog.go`).
 - Atomicity covers the schema DDL only. `seedBuiltins` runs outside that transaction, and PostgreSQL does
   not roll sequences back.
+- **The time of the index build was measured on one database only.** On a restored copy of a real database
+  with 73 104 rows in `llm_usage` the build took 35 ms (2026-11-20; log line
+  `[migrate] applied 0004_llm_usage_ts_index.sql in 35ms`). No test builds `idx_llm_usage_ts` on a large table; the
+  lock behaviour above is PostgreSQL's, documented, not measured here, and the path with a failed concurrent
+  pre-build (an INVALID index) was not exercised.
 - **No drift report.** The runner detects a database it does not understand by its ledger (an unknown, changed,
   out-of-order, empty or foreign ledger). It does **not** detect an object that kept its name but has another
   definition (`IF NOT EXISTS` checks names only), a hand-made object or a missing trigger. A drift report against the
   reference catalog was deferred to the backlog (ADR 0004). Only the recorded-shape suite and the dry run on a copy
   show such differences.
-- **The first non-baseline migration is not in this release.** The baseline files change nothing on a database a
-  release has started, so the runner has so far applied no migration that changes a catalog. The next pull request adds
-  upstream `0004` (an index on `llm_usage`). Upstream `0005` is not ported.
+- **Upstream `0005` is not ported.** The first non-baseline migration, `0004` (the index `idx_llm_usage_ts`), is in this
+  release. The `EnsureLLM*Table` wrappers re-run the baseline files only, so they do not create that index; only a full
+  `Open` does.
 - **The load-time lint is textual, not a SQL parser.** It does not catch transaction control inside a procedure that is
   called (`CALL p()` where `p` commits; PostgreSQL itself refuses that inside a transaction block), a statement
   built with `EXECUTE`, a file written for `standard_conforming_strings = off`, or `psql` meta-commands. The
   runtime marker (see "Changing the schema") is the second line and detects a file that ended the transaction after it
   ran; the file's effects up to that point then stay committed.
-- Local gate evidence is on linux/amd64 with PostgreSQL 16; the last gate run after the fix round printed
-  `upgrade-gate: tests passed=128 skipped=0 failed=0 (minimum passed: 128), go test exit 0`. In that run the
-  git-history comparison and the migration tag check were `NOT RUN` (the container had no `.git`); they were run
-  separately on the host, where the tag check found no release tag with a migration yet. The recorded shapes are
-  `r0509`, `r0512`, `r0513` and the synthetic `legacy`.
+- Local gate evidence is on linux/amd64 with PostgreSQL 16; the last gate run for S2-C (twice, in a container with
+  PostgreSQL 16) printed `upgrade-gate: tests passed=135 skipped=0 failed=0 (minimum passed: 135), go test exit 0` and
+  `upgrade-gate: OK`. In those runs the git-history comparison and the migration tag check were `NOT RUN` (the container
+  had no `.git`); the tag check was run separately on the host with `UPGRADE_GATE_REQUIRE_GIT=1` and printed `4 tagged
+  file(s) in 20 tag(s) are identical at HEAD` and `4 upstream-range file(s) equal upstream commit 278de8b2e09a`. The
+  recorded shapes are `r0509`, `r0512`, `r0513`, `s2a` and the synthetic `legacy`.
 - The dry run on a restored copy of a real database (below) was run once for stage 1, on 2026-11-19, on a copy of one
   database that predates 0.5.12m (51 tables). Startup created the six missing tables, changed no row count in any
   existing table, left no catalog difference to the reference, and a second startup changed nothing. It compares
@@ -294,7 +415,7 @@ ARTEX_PG_DSN='postgres://USER:PASS@HOST:5432/DB?sslmode=disable' scripts/upgrade
   tries it on synthetic repositories.
 - CI runs the gate as the step "Schema upgrade test gate" after `go test -p 1 ./...`.
 
-The gate currently expects **128** passing top-level tests and zero skips.
+The gate currently expects **135** passing top-level tests and zero skips.
 
 Whole suite: `go test -p 1 ./...` with the same variable. Four `db` tests
 (`TestCompanyScopeAttribution`, `TestPoolProfilesOrder`, `TestProfileRetryRoundTrip`,
@@ -311,7 +432,12 @@ message of the gate test):
 
 1. Add `db/migrations/5NNN_<slug>.sql` with the next free number **on `main`** (never reserve numbers on a branch;
    a collision is resolved by renumbering the unmerged file). Upstream files keep their bytes in `0001`-`4999`; fork
-   files use `5000`-`9999`. First line of a fork file: `-- downgrade-safe: yes|no: <reason>`. Idempotent where
+   files use `5000`-`9999`. An **upstream file** is a port, not a new file: it keeps upstream's number and **bytes**
+   (copy it, check the sha256, git blob id, size and that it has no CR; never add a header), so it carries no
+   `downgrade-safe` line and the flag lives only in its pin (step 2). Choose `yes` only when an older binary can run on
+   a database that has it, since only the runner's refusal, not a schema incompatibility, stops that binary (`0004`:
+   `yes`; the override or the rollback recipe lifts the refusal). A file that sorts before a fork file shifts the
+   positional indices that `TestMigrationPinsDetectChanges` uses. First line of a fork file: `-- downgrade-safe: yes|no: <reason>`. Idempotent where
    natural (only the baseline set must be). A migration that is on `main` is never edited: a new one corrects it. A
    migration must not change an object that `schema.sql` re-creates on every start (the CHECK pairs, the triggers,
    the four functions, the data statements) unless step 3 is done in the same commit. The loader checks every file
@@ -343,15 +469,23 @@ message of the gate test):
    (`goddl_*` in its `manifest.json` entry, never regenerated: the Go DDL constants and their pin are gone, the
    same DDL is now in `db/migrations/`). Add the shape to `recordedShapes` in
    `db/upgrade_fixture_test.go` and to `manifest.json`. Never edit a fixture. Skip this step when that release is
-   already a recorded shape.
-5. Extend the data fixtures and `expected-changes.json` for each shape, the added `schema_migrations` rows included.
+   already a recorded shape. For a release that ran the runner, the manifest entry has a `migrations` list (the ledger it
+   left; `buildShape` loads the schema, the baseline files, the ledger table and its rows, then the data fixture), and
+   the release needs a `flags-<tag>.txt` (the `const flag` keys at that tag; the tests read it). Then adapt the tests
+   that assumed the previous newest shape or a database without a ledger:
+   `TestUpgradeFrozenSchemaIsTheNewestRecordedShape`, `TestUpgradeLedgerAdoptsEveryShape` and the skip list of
+   `TestUpgradeLegacyBranchesWereEntered`. A shape with a ledger has no `schema_migrations` exemption.
+5. Extend the data fixtures and `expected-changes.json` for each shape, the added `schema_migrations` rows included (a
+   migration that writes a ledger row adds one `added` entry per shape that did not have it; the cause is
+   `db/migrate.go:681; db/migrate.go:715-733`, the ledger insert and `applyPending`).
    Run `go test ./db -run '^TestUpgradeRowsPreserved'`: it lists every difference that has no entry. A new column
    with a constant default needs one `value` entry (`"column_added": true`) per row of that table in the fixture of
    each older shape; a data fixture needs a change only when a table has no rows yet.
 6. Regenerate the reference catalog in a PostgreSQL 16 container:
    `ARTEX_UPGRADE_REGENERATE=1 go test ./db -run TestRegenerateUpgradeReference`
    (with `ARTEX_PG_DSN` set as above; the test logs the new hash). The file is written into the working
-   tree the test runs in: from a container, copy it back out. Review it as a diff: it is the new definition of "a
+   tree the test runs in: from a container, copy it back out (the container does not do it; encoding the file with
+   `base64` and writing it in the work tree worked). For `0004` the diff was one line, `index idx_llm_usage_ts`. Review it as a diff: it is the new definition of "a
    correct database". Update the reference sha256 in `db/schema_gate_test.go` and the `current` entry of
    `manifest.json`.
 7. Do what the schema change needs beyond the matrix, none of which the gate failure names:
@@ -363,13 +497,20 @@ message of the gate test):
    - Re-check the `file:line` causes in `expected-changes.json` that point into `db/schema.sql` or `db/migrate.go`
      below an edited line (the `schema_migrations` entries cite `db/migrate.go:681; db/migrate.go:690-701`, the ledger
      insert and `adoptBaseline`).
-   - Raise `MIN_UPGRADE_TESTS` in `scripts/upgrade-gate.sh` when tests were added, and update the counts and shape
-     descriptions in this file and in the CHANGELOG entry.
+   - Tests that hard-code the ledger content break when a second ledger-writing migration exists: the helpers
+     `requireBaselineLedger` (baseline only), `requireLedgerOf` and `requireEmbeddedLedger` (the embedded set), the log
+     line `up to date (upstream=<v>, fork=<v>)`, tests that insert a version by hand, the synthetic migration of
+     `TestMigrationOrderPerRange`, the rollback tests (they start from the previous release) and the comparison of the
+     `EnsureLLM*Table` wrappers with a full `Open` (it excludes the index of `0004`).
+   - Raise `MIN_UPGRADE_TESTS` in `scripts/upgrade-gate.sh` when tests were added (and the counts in its comments), and
+     update the counts and shape descriptions in this file and in the CHANGELOG entry.
 8. The CHANGELOG lists the migration with its downgrade-safe line.
 
 Then run the gate.
 
-Rollback of the first release with the ledger needs no step (see "Rollback" above). The cleanup SQL is
+Rollback of the first release with the ledger needs no step (see "Rollback" above). The `0004` recipe is
+`db/testdata/upgrade/rollback-0004-index.sql`, run by `TestUpgradeRollback0004RecipeDropsTheIndexAndTheLedgerRow` and
+`TestUpgradeRollback0004RecipeRefusesAnyOtherLedger`. The cleanup SQL is
 `db/testdata/upgrade/rollback-cleanup-ledger.sql`, run by `TestUpgradeRollbackCleanupDropsABaselineLedger` and
 `TestUpgradeRollbackCleanupRefusesAnyOtherLedger`, and rehearsed end to end by
 `TestUpgradeRollbackToTheReleaseWithoutTheLedgerAndForward`.
@@ -378,14 +519,16 @@ The suite has been exercised by two real schema changes: `findings.ticket_id` (m
 fixture, one regenerated reference line, three pinned hashes, six expected-changes entries, one archive restore default,
 and moving the one test that opened its own database onto `dbtest.TempDatabase`) and the adoption of the migration
 ledger itself (a new shape `r0513`, the table `schema_migrations` in the reference, four `added` entries per shape, 58
-tables in the reference).
+tables in the reference), and by the first real migration, `0004`: an upstream file (a shape `s2a` with a ledger, one
+reference line, one more `added` entry per shape, seven more gate tests).
 
 **Integrity controls for migration files.** A released file is checked by: the pins test (`TestMigrationPins`, no
 database); `.gitattributes` (`db/migrations/*.sql -text`: no line-ending conversion, because the checksum is over
 bytes); the gate's tag check (a file that a `v*` tag holds must be unchanged, undeleted and unrenamed at `HEAD`, and the
 upstream files must equal the pinned upstream commit); and `.github/CODEOWNERS`, which names the owner for
 `db/migrations/`, `db/migrate.go`, `db/db.go`, `db/schema.sql`, `db/migrate_pins_test.go`, `scripts/upgrade-gate.sh`,
-`.github/workflows/`, `.gitattributes`, `.github/CODEOWNERS`, `db/upgrade_gatescript_test.go` and the cleanup SQL. One
+`.github/workflows/`, `.gitattributes`, `.github/CODEOWNERS`, `db/upgrade_gatescript_test.go` and the two rollback
+recipes (`rollback-cleanup-ledger.sql`, `rollback-0004-index.sql`). One
 pull request could still change a file, its pin and the gate together. **What the repository cannot enforce is the
 owner's own setting:** required review by code owners on `main`, and protection of `v*` tags (a deleted or moved tag
 weakens the tag check). Neither was verified from the repository.
@@ -408,8 +551,9 @@ Every entry has:
 - `class`: `intended`, `accepted` or `defect`.
 - `note`: required for `accepted`: the decision and who took it.
 
-Rows added to a table that does not exist before startup (the four rows of `schema_migrations`) are `added` entries
-with a `pk` each (`{"version": "1"}`, `{"version": "2"}`, `{"version": "3"}`, `{"version": "5001"}`).
+Rows added to a table that does not exist before startup (the rows of `schema_migrations`) are `added` entries
+with a `pk` each (`{"version": "1"}`, `{"version": "2"}`, `{"version": "3"}`, `{"version": "5001"}`), and one more for
+`{"version": "4"}` in every shape except `s2a` (which already holds the four baseline rows and gets only `4`).
 
 Special forms: `"after": "@startup"` stands for a `timestamptz` not earlier than the start of startup (the `set_updated_at`
 trigger); `"column_added": true` on a `value` entry means the column does not exist before startup, so there is no
@@ -450,12 +594,13 @@ that has no ledger the report contains these lines (taken from a run on a synthe
 ```
 table schema_migrations: absent -> 4 rows
 catalog: no difference to the reference
-ledger schema_migrations: absent -> present, versions 0001 0002 0003 5001
+ledger schema_migrations: absent -> present, versions 0001 0002 0003 0004 5001
 ```
 
-and on the second start `ledger schema_migrations: present, versions 0001 0002 0003 5001 -> present, versions 0001 0002 0003 5001`.
-The test fails unless the ledger is exactly the baseline set after the first start of a database without a ledger,
-holds at least the baseline otherwise, and is unchanged by the second start.
+and on the second start `ledger schema_migrations: present, versions 0001 0002 0003 0004 5001 -> present, versions 0001 0002 0003 0004 5001`.
+The test fails unless the ledger holds exactly the versions this release ships after the first start of a database
+without a ledger (the baseline, adopted, plus every later migration, applied), holds at least the baseline
+otherwise, and is unchanged by the second start.
 It is not part of the gate: it needs its own server and does nothing unless `ARTEX_UPGRADECHECK_DSN` is set. It
 fails if startup removes rows from a table or if the second start changes a row count. One removal is expected and
 reported as such: the obsolete prompt variables (`EngagementTitle`, `CoverageGaps`, `Now`) that every start deletes
@@ -527,8 +672,7 @@ this rehearsal; it is covered by tests on recorded shapes.
 
 - **A drift report** (a same-named object with another definition, a hand-made object, a missing trigger). Deferred to
   the backlog on 2026-11-19; the recorded-shape suite and the dry run are the only evidence until then.
-- **The first migration that changes the schema.** The next pull request adds upstream `0004` (an index on `llm_usage`).
-  Upstream `0005` is not ported; it is planned for when the fork next ports an upstream migration numbered above it or
+- **Upstream `0005`** is not ported; it is planned for when the fork next ports an upstream migration numbered above it or
   the traffic-rewrite feature, whichever comes first.
 - Platforms other than linux/amd64 and PostgreSQL versions other than 16, and Windows checkouts (a CRLF conversion
   would change a checksum; `.gitattributes` forbids it).

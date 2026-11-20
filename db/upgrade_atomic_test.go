@@ -352,9 +352,15 @@ func TestUpgradeConcurrentOpenMatchesSingleOpen(t *testing.T) {
 			if n := strings.Count(concurrent, "[migrate] up to date"); n != workers {
 				t.Errorf("%d concurrent starts logged %d \"up to date\" lines, want %d", workers, n, workers)
 			}
+			if n := strings.Count(concurrent, "[migrate] applied "+migration0004); n != 1 {
+				t.Errorf("%d concurrent starts logged %d applications of %s, want 1", workers, n, migration0004)
+			}
 			ledger := readLedger(t, multi.Conn(t))
-			requireBaselineLedger(t, ledger)
+			requireEmbeddedLedger(t, ledger)
 			for _, row := range ledger[1:] {
+				if row.version == 4 {
+					continue // 0004 is applied on its own, after the adoption, in its own transaction
+				}
 				if !row.appliedAt.Equal(ledger[0].appliedAt) {
 					t.Errorf("ledger version %04d has applied_at %v, version %04d %v: the baseline was not adopted in one transaction",
 						row.version, row.appliedAt, ledger[0].version, ledger[0].appliedAt)
@@ -497,6 +503,6 @@ func TestUpgradeLockBlocksOpenUntilTransactionEnds(t *testing.T) {
 	if !atomicTableExists(t, tmp, "finding_comments") {
 		t.Error("Open returned without applying the schema")
 	}
-	// The preflight, the schema and the adoption all ran after the wait: the ledger is the baseline.
-	requireBaselineLedger(t, readLedger(t, tmp.Conn(t)))
+	// The preflight, the schema and the adoption all ran after the wait: the ledger is the baseline and 0004.
+	requireEmbeddedLedger(t, readLedger(t, tmp.Conn(t)))
 }
