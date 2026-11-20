@@ -93,7 +93,7 @@ func TestToolRAGWriterWritesQueuedRowsOnClose(t *testing.T) {
 	if got := f.calls.Load(); got != 5 {
 		t.Fatalf("inserts = %d, want 5", got)
 	}
-	want := []string{"[tool-rag] writer stopped: written=5 dropped_shutdown=0 task_gone=0"}
+	want := []string{"[tool-rag] writer stopped: written=5 dropped_shutdown=0 task_gone=0 invalid_row=0 writer_panic=0"}
 	if got := ragLines(logs()); !equalStrings(got, want) {
 		t.Fatalf("log = %q, want %q", got, want)
 	}
@@ -117,7 +117,7 @@ func TestToolRAGWriterNeverStartedClosesQuietly(t *testing.T) {
 	w := newToolRAGWriter((&fakeInsert{}).insert)
 	w.Close()
 	w.Close() // Manager.Close can run twice; only the first one reports
-	if got := ragLines(logs()); !equalStrings(got, []string{"[tool-rag] writer stopped: written=0 dropped_shutdown=0 task_gone=0"}) {
+	if got := ragLines(logs()); !equalStrings(got, []string{"[tool-rag] writer stopped: written=0 dropped_shutdown=0 task_gone=0 invalid_row=0 writer_panic=0"}) {
 		t.Fatalf("log = %q", got)
 	}
 	var nilWriter *toolRAGWriter
@@ -176,8 +176,6 @@ func TestToolRAGWriterFailuresAreContentFree(t *testing.T) {
 		}, "[tool-rag] observation insert error; 1 since start (SQLSTATE 22001)"},
 		"other error": {func(context.Context) error { return errors.New("CANARY dsn=postgres://u:p@h/db") },
 			"[tool-rag] observation insert error; 1 since start (type *errors.errorString)"},
-		"refused row": {func(context.Context) error { return fmt.Errorf("%w: CANARY", db.ErrToolRAGObservationInvalid) },
-			"[tool-rag] observation insert error; 1 since start (type *fmt.wrapError)"},
 		"timeout": {func(ctx context.Context) error { <-ctx.Done(); return fmt.Errorf("CANARY: %w", ctx.Err()) },
 			"[tool-rag] observation timeout; 1 since start"},
 	} {
@@ -190,7 +188,7 @@ func TestToolRAGWriterFailuresAreContentFree(t *testing.T) {
 			}
 			w.Close()
 			lines := ragLines(logs())
-			if len(lines) != 2 || lines[0] != tc.want || !strings.HasSuffix(lines[1], "written=0 dropped_shutdown=0 task_gone=0") {
+			if len(lines) != 2 || lines[0] != tc.want || !strings.HasSuffix(lines[1], "written=0 dropped_shutdown=0 task_gone=0 invalid_row=0 writer_panic=0") {
 				t.Fatalf("log = %q, want %q once, then the stop line", lines, tc.want)
 			}
 			if strings.Contains(logs(), "CANARY") {
@@ -198,6 +196,57 @@ func TestToolRAGWriterFailuresAreContentFree(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A row the database layer refuses (it breaks the name or size rules) is a defect of
+// the sender, not a database failure: its own kind, counted apart from insert errors.
+func TestToolRAGWriterClassifiesARefusedRowSeparately(t *testing.T) {
+	logs := dbtest.CaptureLog(t)
+	f := &fakeInsert{fn: func(context.Context, *db.ToolRAGObservation) error {
+		return fmt.Errorf("insert: %w: CANARY name", db.ErrToolRAGObservationInvalid)
+	}}
+	w := newToolRAGWriter(f.insert)
+	w.Enqueue(ragRow(1))
+	w.Enqueue(ragRow(2))
+	w.Close()
+	want := []string{
+		"[tool-rag] observation invalid row; 1 since start",
+		"[tool-rag] writer stopped: written=0 dropped_shutdown=0 task_gone=0 invalid_row=2 writer_panic=0",
+	}
+	if got := ragLines(logs()); !equalStrings(got, want) || strings.Contains(logs(), "CANARY") {
+		t.Fatalf("log = %q, want %q", got, want)
+	}
+	if w.log.Count("invalid row") != 2 || w.log.Count("insert error") != 0 {
+		t.Fatalf("invalid=%d insert errors=%d", w.log.Count("invalid row"), w.log.Count("insert error"))
+	}
+}
+
+// A panic inside insert must not take the process down: it is recovered, counted, logged
+// with the type only, and the writer carries on with the next row and still stops cleanly.
+func TestToolRAGWriterSurvivesAPanickingInsert(t *testing.T) {
+	logs := dbtest.CaptureLog(t)
+	f := &fakeInsert{fn: func(_ context.Context, o *db.ToolRAGObservation) error {
+		if o.TaskID == 2 {
+			panic("CANARY panic value")
+		}
+		return nil
+	}}
+	w := newToolRAGWriter(f.insert)
+	for i := 1; i <= 3; i++ {
+		w.Enqueue(ragRow(int64(i)))
+	}
+	w.Close()
+	want := []string{
+		"[tool-rag] observation writer panic; 1 since start (type string)",
+		"[tool-rag] writer stopped: written=2 dropped_shutdown=0 task_gone=0 invalid_row=0 writer_panic=1",
+	}
+	if got := ragLines(logs()); !equalStrings(got, want) || strings.Contains(logs(), "CANARY") {
+		t.Fatalf("log = %q, want %q", got, want)
+	}
+	if w.log.Count("writer panic") != 1 || f.calls.Load() != 3 {
+		t.Fatalf("panics=%d inserts=%d", w.log.Count("writer panic"), f.calls.Load())
+	}
+	noWriterGoroutine(t)
 }
 
 // SQLSTATE 23503: the task was deleted or archived while the row waited. Not a failure.
@@ -210,7 +259,7 @@ func TestToolRAGWriterCountsATaskThatIsGone(t *testing.T) {
 	w.Enqueue(ragRow(1))
 	w.Enqueue(ragRow(2))
 	w.Close()
-	want := []string{"[tool-rag] writer stopped: written=0 dropped_shutdown=0 task_gone=2"}
+	want := []string{"[tool-rag] writer stopped: written=0 dropped_shutdown=0 task_gone=2 invalid_row=0 writer_panic=0"}
 	if got := ragLines(logs()); !equalStrings(got, want) {
 		t.Fatalf("log = %q, want only %q", got, want)
 	}
@@ -232,7 +281,7 @@ func TestToolRAGWriterBlockedInsertIsCutAtTheDrainDeadline(t *testing.T) {
 	if d := time.Since(start); d > 100*time.Millisecond+time.Second {
 		t.Fatalf("Close took %v with a 100 ms drain deadline", d)
 	}
-	want := []string{"[tool-rag] writer stopped: written=0 dropped_shutdown=5 task_gone=0"}
+	want := []string{"[tool-rag] writer stopped: written=0 dropped_shutdown=5 task_gone=0 invalid_row=0 writer_panic=0"}
 	if got := ragLines(logs()); !equalStrings(got, want) {
 		t.Fatalf("log = %q, want only %q", got, want)
 	}
@@ -315,7 +364,7 @@ func TestManagerCloseDrainsToolRAGRowsBeforeTheDatabaseCloses(t *testing.T) {
 	if n := ragRowCount(t, task.ID); n != 5 {
 		t.Fatalf("rows after Close = %d, want 5", n)
 	}
-	want := []string{"[tool-rag] writer stopped: written=5 dropped_shutdown=0 task_gone=0"}
+	want := []string{"[tool-rag] writer stopped: written=5 dropped_shutdown=0 task_gone=0 invalid_row=0 writer_panic=0"}
 	if got := ragLines(logs()); !equalStrings(got, want) {
 		t.Fatalf("log = %q, want only %q", got, want)
 	}
@@ -343,7 +392,7 @@ func TestManagerCloseWithBlockedToolRAGInsertReturnsAtTheDeadline(t *testing.T) 
 	if d := time.Since(start); d > 100*time.Millisecond+time.Second {
 		t.Fatalf("Close took %v", d)
 	}
-	want := []string{"[tool-rag] writer stopped: written=0 dropped_shutdown=5 task_gone=0"}
+	want := []string{"[tool-rag] writer stopped: written=0 dropped_shutdown=5 task_gone=0 invalid_row=0 writer_panic=0"}
 	if got := ragLines(logs()); !equalStrings(got, want) {
 		t.Fatalf("log = %q, want only %q", got, want)
 	}
@@ -373,7 +422,7 @@ func TestToolRAGWriterTaskDeletedWhileQueued(t *testing.T) {
 	m.toolRAG.Enqueue(ragRow(gone.ID))
 	m.toolRAG.Enqueue(ragRow(task.ID))
 	m.Close()
-	want := []string{"[tool-rag] writer stopped: written=1 dropped_shutdown=0 task_gone=1"}
+	want := []string{"[tool-rag] writer stopped: written=1 dropped_shutdown=0 task_gone=1 invalid_row=0 writer_panic=0"}
 	if got := ragLines(logs()); !equalStrings(got, want) {
 		t.Fatalf("log = %q, want only %q", got, want)
 	}
@@ -394,7 +443,7 @@ func TestToolRAGWriterWithAClosedDatabase(t *testing.T) {
 	m.toolRAG.Close()
 	lines := ragLines(logs())
 	if len(lines) != 2 || !strings.HasPrefix(lines[0], "[tool-rag] observation insert error; 1 since start (type ") ||
-		strings.Contains(lines[0], "closed") || !strings.HasSuffix(lines[1], "written=0 dropped_shutdown=0 task_gone=0") {
+		strings.Contains(lines[0], "closed") || !strings.HasSuffix(lines[1], "written=0 dropped_shutdown=0 task_gone=0 invalid_row=0 writer_panic=0") {
 		t.Fatalf("log = %q", lines)
 	}
 	if m.toolRAG.log.Count("insert error") != 3 {
