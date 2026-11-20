@@ -423,7 +423,7 @@ Checks (test names are in `db/`, `db/dbtest/` and `server/`):
   runtime marker (see "Changing the schema") is the second line and detects a file that ended the transaction after it
   ran; the file's effects up to that point then stay committed.
 - Local gate evidence is on linux/amd64 with PostgreSQL 16; the last gate run (Phase D.3, merged onto S2-C, with
-  migrations `0004` and `5002`; @@RUN@@) printed `upgrade-gate: tests passed=142 skipped=0 failed=0 (minimum passed: 142), go
+  migrations `0004` and `5002`; run twice in a row) printed `upgrade-gate: tests passed=142 skipped=0 failed=0 (minimum passed: 142), go
   test exit 0` and `upgrade-gate: OK`. In the container runs the migration tag check was `NOT RUN` (no `.git`) unless
   `UPGRADE_GATE_REQUIRE_GIT=1` and a history were present; it was run separately on the host. The recorded shapes are
   `r0509`, `r0512`, `r0513`, `s2a` and the synthetic `legacy`.
