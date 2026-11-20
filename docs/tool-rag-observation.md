@@ -170,8 +170,9 @@ names come from operators and MCP servers.
 ## Check after 14 days: the read-only SQL
 
 Run it on the operator's instance after the release has been running with real tasks for 14 days. `t0` is the time
-the release was deployed. It reads only; it begins with `BEGIN READ ONLY` and ends with `ROLLBACK`. It was written
-against the table definitions in the code and has not been run against a database at the time of writing.
+the release was deployed. It reads only; it begins with `BEGIN READ ONLY` and ends with `ROLLBACK`. It was run
+once against a test database with this release's schema and no rows: every statement executes; its results on real
+data have not been looked at yet.
 
 Save it as `tool-rag-day14.sql`, then (with Docker Compose):
 
