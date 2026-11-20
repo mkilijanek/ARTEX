@@ -273,6 +273,10 @@ The output is one small table per statement, in the order of the file. Every sta
 `-- [id] title` in the file; the ids below are those. Tool names are printed as they are stored. A name can start with
 `=`, `+`, `-` or `@`, so if you load the output into a spreadsheet, quote it first.
 
+The report reads whole tables: `tool_rag_observations` and `tool_usage` have no index on time, so the time filter is a
+sequential scan and one statement reads all of `tool_usage`. It sets no statement timeout. On a large database run it
+off-peak.
+
 A "run" below is one row: a planner round or a worker run (a resumed worker intent writes more than one row).
 
 | Id | What it answers |
@@ -286,7 +290,7 @@ A "run" below is one row: a planner round or a worker run (a resumed worker inte
 | A.2, A.3 | Called tools by class in the hiding runs, split into inside the top k, outside it and without a position; the names most often called while ranked outside |
 | A.4, A.5 | Rank position of called candidates in all projected rows; the share ranked after `nonzero_count` (inside the zero-score, alphabetical part) |
 | A.6 | The `no_signal` share among rows with a large enough catalog |
-| A.7 | The candidate ranked first, per agent (the dominance check for crafted descriptions) |
+| A.7 | The candidate ranked first, per agent. This is our reading of the "dominance check" for crafted descriptions: the design named such a check without defining it |
 | B.1 | Subset check: every called candidate must be in the stored ranking of its row. Expected: zero violations |
 | B.2, B.3 | Calls to names that were never candidates (keep, deferred, other), by class and by name |
 | C.1, C.2 | Deferred, locked and unlocked counts per agent; how much of the surface is rankable at all; calls to deferred tools |
