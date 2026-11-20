@@ -100,7 +100,7 @@ func (w *toolRAGWriter) write(o *db.ToolRAGObservation) {
 	case w.ctx.Err() != nil:
 		w.droppedShutdown.Add(1)
 	case isFKViolation(err):
-		w.taskGone.Add(1) // the task was deleted or archived while the row waited
+		w.taskGone.Add(1) // the task was deleted while the row waited
 	case errors.Is(err, db.ErrToolRAGObservationInvalid):
 		w.log.Report("invalid row", "") // refused before any SQL: a defect of the sender, not of the database
 	case errors.Is(err, context.DeadlineExceeded):

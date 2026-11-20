@@ -117,7 +117,7 @@ printed for the first occurrence and then at most once per minute per kind, with
 | An insert takes longer than 2 seconds | The row is lost | `[tool-rag] observation timeout; <n> since start` |
 | The database layer refuses the row (a name or list over its cap) | The row is lost. A defect of the sender | `[tool-rag] observation invalid row; <n> since start` |
 | The writer panics inside an insert | The panic is recovered, the row is lost, the writer goes on | `[tool-rag] observation writer panic; <n> since start (type <Go type>)` |
-| The task was deleted or archived while the row waited (SQLSTATE `23503`) | The row is not needed. Not a failure | none; counted as `task_gone` in the shutdown line |
+| The task was deleted while the row waited (SQLSTATE `23503`) | The row is not needed. Not a failure | none; counted as `task_gone` in the shutdown line |
 | The scorer returns an error | A row with outcome `scorer_error` is written | `[tool-rag] observation scorer error; <n> since start (type <Go type>)` |
 | Scoring panics | A row with outcome `observer_panic` is written | `[tool-rag] observation observer panic; <n> since start (type <Go type>)` |
 | Anything else in the scoring step panics (for example a tool whose name lookup panics) | No row | `[tool-rag] observation observer panic; ...` |
