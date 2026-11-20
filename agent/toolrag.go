@@ -161,54 +161,101 @@ func rankIndex(query string, tools []actool.CoreTool, score ToolScorer) (idx []i
 // toolScoringText is what BM25 indexes for a tool: name + description + parameter
 // names (sorted, so the text and any cut of it are deterministic).
 func toolScoringText(t actool.CoreTool) string {
-	text := t.Name() + " " + t.Description()
-	if props, ok := t.InputSchema()["properties"].(map[string]any); ok {
-		names := make([]string, 0, len(props))
-		for p := range props {
-			names = append(names, p)
-		}
-		sort.Strings(names)
-		for _, p := range names {
-			text += " " + p
-		}
+	name, desc := t.Name(), t.Description()
+	names := toolParamNames(t)
+	n := len(name) + 1 + len(desc)
+	for _, p := range names {
+		n += 1 + len(p)
 	}
-	return text
+	var sb strings.Builder
+	sb.Grow(n)
+	sb.WriteString(name)
+	sb.WriteByte(' ')
+	sb.WriteString(desc)
+	for _, p := range names {
+		sb.WriteByte(' ')
+		sb.WriteString(p)
+	}
+	return sb.String()
+}
+
+// toolParamNames returns the tool's parameter names, sorted.
+func toolParamNames(t actool.CoreTool) []string {
+	props, ok := t.InputSchema()["properties"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	names := make([]string, 0, len(props))
+	for p := range props {
+		names = append(names, p)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // bm25Score is the default ToolScorer: Okapi BM25 (k1=1.2, b=0.75) over each tool's
 // name + description + parameter names, IDF computed across the candidate set.
+//
+// It tokenises the parts of toolScoringText one by one instead of building and
+// splitting the joined text (the separator is a non-alphanumeric, so the tokens are
+// the same). Each distinct word is interned once per call; term counts of the tool
+// being read live in a dense scratch slice and end up as postings (tool, count) per
+// word, in tool order, so the sums below add in the same order as per-tool maps did.
 func bm25Score(query string, tools []actool.CoreTool) ([]float64, error) {
 	const k1, b = 1.2, 0.75
-	docs := make([]map[string]int, len(tools))
+	type posting struct {
+		doc int
+		tf  int32
+	}
+	vocab := map[string]int{}
+	var postings [][]posting
+	var counts []int32 // term counts of the current tool, indexed by word id
+	var touched []int  // ids with a non-zero count in the current tool
 	lens := make([]float64, len(tools))
-	df := map[string]int{}
 	var total float64
 	for i, t := range tools {
-		tf := map[string]int{}
-		for _, w := range tokenize(toolScoringText(t)) {
-			tf[w]++
+		add := func(w []byte) {
+			id, ok := vocab[string(w)] // lookup: no allocation
+			if !ok {
+				id = len(vocab)
+				vocab[string(w)] = id
+				postings = append(postings, nil)
+				counts = append(counts, 0)
+			}
+			if counts[id] == 0 {
+				touched = append(touched, id)
+			}
+			counts[id]++
 			lens[i]++
 		}
-		for w := range tf {
-			df[w]++
+		eachToken(t.Name(), add)
+		eachToken(t.Description(), add)
+		for _, p := range toolParamNames(t) {
+			eachToken(p, add)
 		}
-		docs[i], total = tf, total+lens[i]
+		for _, id := range touched {
+			postings[id] = append(postings[id], posting{i, counts[id]})
+			counts[id] = 0
+		}
+		touched = touched[:0]
+		total += lens[i]
 	}
 	scores := make([]float64, len(tools))
 	n := float64(len(tools))
-	avg, seen := math.Max(total/math.Max(n, 1), 1), map[string]bool{}
-	for _, q := range tokenize(query) {
-		if seen[q] || df[q] == 0 {
-			continue
+	avg, seen := math.Max(total/math.Max(n, 1), 1), map[int]bool{}
+	eachToken(query, func(w []byte) {
+		q, ok := vocab[string(w)]
+		if !ok || seen[q] {
+			return
 		}
 		seen[q] = true
-		idf := math.Log(1 + (n-float64(df[q])+0.5)/(float64(df[q])+0.5))
-		for i, tf := range docs {
-			if f := float64(tf[q]); f > 0 {
-				scores[i] += idf * f * (k1 + 1) / (f + k1*(1-b+b*lens[i]/avg))
-			}
+		df := float64(len(postings[q]))
+		idf := math.Log(1 + (n-df+0.5)/(df+0.5))
+		for _, p := range postings[q] {
+			f := float64(p.tf)
+			scores[p.doc] += idf * f * (k1 + 1) / (f + k1*(1-b+b*lens[p.doc]/avg))
 		}
-	}
+	})
 	return scores, nil
 }
 
@@ -217,6 +264,50 @@ func tokenize(s string) []string {
 	return strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 	})
+}
+
+// eachToken calls fn with exactly the tokens tokenize(s) returns, in order. For
+// ASCII text it scans bytes and lower-cases into a stack buffer (the word passed to
+// fn is only valid during the call); any other text takes the tokenize path, so
+// Unicode case folding and letter classes are never reimplemented here.
+func eachToken(s string, fn func([]byte)) {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			for _, w := range tokenize(s) {
+				fn([]byte(w))
+			}
+			return
+		}
+	}
+	var buf [64]byte
+	for i := 0; i < len(s); {
+		for i < len(s) && !asciiAlnum(s[i]) {
+			i++
+		}
+		j := i
+		for j < len(s) && asciiAlnum(s[j]) {
+			j++
+		}
+		if j > i {
+			w := buf[:0]
+			if j-i > len(buf) {
+				w = make([]byte, 0, j-i)
+			}
+			for k := i; k < j; k++ {
+				c := s[k]
+				if 'A' <= c && c <= 'Z' {
+					c += 'a' - 'A'
+				}
+				w = append(w, c)
+			}
+			fn(w)
+		}
+		i = j
+	}
+}
+
+func asciiAlnum(c byte) bool {
+	return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9'
 }
 
 // toolRAGKeep: names never hidden by the projection — the core set, the harness
