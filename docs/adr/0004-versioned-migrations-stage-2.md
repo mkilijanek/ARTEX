@@ -107,11 +107,22 @@ these migrations in `Open` stops the start.
 **Rollback.** Binaries up to 0.5.13m ignore the table and start. The guarded cleanup SQL drops the ledger only when it
 holds exactly the baseline versions. A fork migration declares in its first line whether an older binary is safe on it.
 
+## As built (S2-C)
+
+The first non-baseline migration, upstream `0004` (`idx_llm_usage_ts` on `llm_usage (ts)`), is applied across numbering
+ranges: on a database that holds `1 2 3 5001`, `0004` runs **after** `5001`. The order rule, which works inside each
+range, accepted it with no change (`TestUpgradeS2aAppliesTheIndexAfterTheForkMigration`). The file is upstream's bytes,
+pinned `downgrade-safe: yes` (only the runner's refusal stops an older binary; the override `ARTEX_SCHEMA_ALLOW_NEWER=0004`
+or the guarded recipe `rollback-0004-index.sql` lifts it). It is a plain `CREATE INDEX` in the migration transaction:
+a `SHARE` lock on `llm_usage` for the whole build, before the HTTP server listens; an operator pre-builds the index
+with `CREATE INDEX CONCURRENTLY` on a large table (R8; runbook in `docs/schema-upgrade.md`). Issue #24 closes with this
+pull request. The baseline set stays four versions.
+
 ## Deferred
 
 - **Drift report** against the reference catalog (planned as S2-D): moved to the backlog by the owner. Without it a
   same-named object with another definition is not detected at runtime.
-- **Upstream `0004`** (an index on `llm_usage`): the next pull request, through the rewritten procedure.
+- **Upstream `0004`** (an index on `llm_usage`): delivered in S2-C (see "As built (S2-C)").
 - **Upstream `0005`**: decided to be ported byte-identical, as a table without fork code, when the fork next ports an
   upstream migration numbered above it or the traffic-rewrite feature, whichever comes first. Rejected: a pinned list of
   skipped upstream versions exempt from the order rule (a new mechanism and a permanent divergence).
