@@ -24,10 +24,10 @@ const (
 )
 
 // previousReleaseMigrations is the migration set of the release before 0004 (0.5.15m): the embedded set
-// without 0004 and without the fork migration 5002, which came after it.
+// without 0004 and without the fork migrations 5002 and 5003, which came after it.
 func previousReleaseMigrations(t *testing.T) fstest.MapFS {
 	t.Helper()
-	return migrationSet(t, fstest.MapFS{migration0004: nil, migrationToolRag: nil})
+	return migrationSet(t, fstest.MapFS{migration0004: nil, migrationToolRag: nil, migrationDetections: nil})
 }
 
 // startPrevious runs one start of the release before 0004 on the database and closes it.
@@ -146,8 +146,8 @@ func TestMigration0004IsByteIdenticalToUpstreamAndNotBaseline(t *testing.T) {
 			t.Errorf("the baseline migrations hold %s", migration0004)
 		}
 	}
-	if len(baseline) != 4 || len(all) != 6 {
-		t.Errorf("%d baseline and %d embedded migrations, want 4 and 6 (the baseline, 0004 and 5002)", len(baseline), len(all))
+	if len(baseline) != 4 || len(all) != 7 {
+		t.Errorf("%d baseline and %d embedded migrations, want 4 and 7 (the baseline, 0004, 5002 and 5003)", len(baseline), len(all))
 	}
 }
 
@@ -191,7 +191,7 @@ func TestUpgradeShapeS2aRecordsTheBaselineLedger(t *testing.T) {
 
 // AC29 (4), (8): on s2a the start applies 0004 after 5001 (an upstream-range version below an applied fork
 // version is accepted: the order rule is per range), leaves the four baseline rows as they were, ends with the
-// ledger 0001 0002 0003 0004 5001 5002 and the index, and logs how long the migration took (risk R8; the line, not
+// ledger 0001 0002 0003 0004 5001 5002 5003 and the index, and logs how long the migration took (risk R8; the line, not
 // its value).
 func TestUpgradeS2aAppliesTheIndexAfterTheForkMigration(t *testing.T) {
 	logs := dbtest.CaptureLog(t)
@@ -202,7 +202,7 @@ func TestUpgradeS2aAppliesTheIndexAfterTheForkMigration(t *testing.T) {
 	d := startup(t, tmp.DSN)
 	after := readLedger(t, d.DB)
 	requireEmbeddedLedger(t, after)
-	if len(after) != 6 || !sameLedgerRows(before[:3], after[:3]) || !sameLedgerRows(before[3:], after[4:5]) {
+	if len(after) != 7 || !sameLedgerRows(before[:3], after[:3]) || !sameLedgerRows(before[3:], after[4:5]) {
 		t.Fatalf("the start changed a baseline row of the ledger: before %v, after %v", ledgerVersions(before), ledgerVersions(after))
 	}
 	if after[3].version != 4 || after[4].version != 5001 || !after[3].appliedAt.After(after[4].appliedAt) {
@@ -214,8 +214,8 @@ func TestUpgradeS2aAppliesTheIndexAfterTheForkMigration(t *testing.T) {
 	if !regexp.MustCompile(`\[migrate\] applied ` + regexp.QuoteMeta(migration0004) + ` in [0-9]+ms`).MatchString(log) {
 		t.Errorf("the log has no \"[migrate] applied %s in <n>ms\" line:\n%s", migration0004, log)
 	}
-	if strings.Contains(log, "ledger absent") || !strings.Contains(log, "[migrate] up to date (upstream=0004, fork=5002)") {
-		t.Errorf("the log of the start on s2a is not \"up to date (upstream=0004, fork=5002)\" without an adoption:\n%s", log)
+	if strings.Contains(log, "ledger absent") || !strings.Contains(log, "[migrate] up to date (upstream=0004, fork=5003)") {
+		t.Errorf("the log of the start on s2a is not \"up to date (upstream=0004, fork=5003)\" without an adoption:\n%s", log)
 	}
 	dbtest.AssertNoSecret(t, "log output", log)
 

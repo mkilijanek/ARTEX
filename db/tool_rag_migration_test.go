@@ -32,7 +32,8 @@ func TestMigrationToolRagOlderBinaryRefusesUnlessAllowed(t *testing.T) {
 }
 
 // AC20: the guarded drop of 5002 (docs/phase-d3-plan.md section 10) removes the table and its ledger row, and
-// only then; the next start of this binary applies 5002 again.
+// only then; the next start of this binary applies 5002 again. A database that this release started has 5003 on
+// record as well, so the recipe refuses it until the drop of 5003 has run (docs/detector-plan.md section 5).
 func TestMigrationToolRagDropRecipeIsGuardedAndReversible(t *testing.T) {
 	srv := dbtest.RequireServer(t)
 	tmp := dbtest.TempDatabase(t, srv, "ragdrop")
@@ -40,14 +41,25 @@ func TestMigrationToolRagDropRecipeIsGuardedAndReversible(t *testing.T) {
 	requireEmbeddedLedger(t, readLedger(t, d.DB))
 	ctx := context.Background()
 
+	// 5003 is on record and newest: the recipe raises and changes nothing; the drop of 5003 comes first.
+	before5003 := captureMigrationState(t, tmp)
+	var pgErr *pgconn.PgError
+	err := rollbackRunScript(t, d.DB, rollbackDropToolRagFile)
+	if err == nil || !errors.As(err, &pgErr) || pgErr.Code != "P0001" || !strings.Contains(pgErr.Message, "5002 is not the newest fork migration") {
+		t.Fatalf("the recipe with 5003 on record: err = %v, want the guard's exception (P0001)", err)
+	}
+	requireMigrationStateUnchanged(t, "after the recipe refused by 5003", before5003, captureMigrationState(t, tmp))
+	if err := rollbackRunScript(t, d.DB, rollbackDropDetectionsFile); err != nil {
+		t.Fatalf("the 5003 drop failed (%s)", dbtest.AtomicErrorSummary(err))
+	}
+
 	// A newer fork migration is on record: the recipe raises and changes nothing.
 	embedded := readLedger(t, d.DB)
 	if _, err := d.ExecContext(ctx, `INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (5999, '5999_future.sql', 'synthetic', $1)`, embedded[0].appliedAt); err != nil {
 		t.Fatal(err)
 	}
 	before := captureMigrationState(t, tmp)
-	err := rollbackRunScript(t, d.DB, rollbackDropToolRagFile)
-	var pgErr *pgconn.PgError
+	err = rollbackRunScript(t, d.DB, rollbackDropToolRagFile)
 	if err == nil || !errors.As(err, &pgErr) || pgErr.Code != "P0001" || !strings.Contains(pgErr.Message, "5002 is not the newest fork migration") {
 		t.Fatalf("the recipe with 5999 on record: err = %v, want the guard's exception (P0001)", err)
 	}
