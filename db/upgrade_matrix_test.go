@@ -26,6 +26,8 @@ import (
 //	r0509   releases 0.5.9m to 0.5.11m (one recorded schema)
 //	r0512   release 0.5.12m
 //	r0513   release 0.5.13m, whose schema.sql is the frozen one
+//	s2a     release 0.5.15m, the first with the migration ledger: the frozen schema.sql, the llm tables of the
+//	        baseline migrations and the ledger with the four baseline rows
 //	legacy  SYNTHETIC: the r0509 schema with the older forms of legacy-mutations.sql put back
 //
 // None of these tests skips: a missing ARTEX_PG_DSN, a refused DSN or a failed Open is a failure.
@@ -57,6 +59,9 @@ var matrixShapes = []matrixShape{
 		exempt: map[string]string{"schema_migrations": noLedger, "tool_rag_observations": noToolRag}},
 	{name: "r0513", recorded: "r0513", data: "data-r0513.sql",
 		exempt: map[string]string{"schema_migrations": noLedger, "tool_rag_observations": noToolRag}},
+	// s2a has a ledger before startup, so its table schema_migrations has rows and no exemption.
+	{name: "s2a", recorded: "s2a", data: "data-r0513.sql",
+		exempt: map[string]string{"tool_rag_observations": noToolRag}},
 	{name: "legacy", recorded: "r0509", mutations: "legacy-mutations.sql", data: "data-legacy.sql",
 		exempt: map[string]string{"finding_comments": noFindingComments, "schema_migrations": noLedger, "tool_rag_observations": noToolRag}},
 }
@@ -81,8 +86,20 @@ func recordedSchemaFile(t *testing.T, shape string) string {
 	return ""
 }
 
+// recordedShapeNamed returns the recordedShapes entry of a shape.
+func recordedShapeNamed(t *testing.T, shape string) recordedShape {
+	t.Helper()
+	for _, s := range recordedShapes {
+		if s.shape == shape {
+			return s
+		}
+	}
+	t.Fatalf("no recorded shape %q", shape)
+	return recordedShape{}
+}
+
 // recordedGoDDLFile is the historical Go DDL fixture of a recorded shape: old releases created the
-// llm tables with it, not with migrations.
+// llm tables with it, not with migrations. It is "" for a shape of a release with the runner.
 func recordedGoDDLFile(t *testing.T, shape string) string {
 	t.Helper()
 	for _, s := range recordedShapes {
@@ -94,14 +111,37 @@ func recordedGoDDLFile(t *testing.T, shape string) string {
 	return ""
 }
 
+// loadLedgeredShape is what a release with the migration runner leaves besides schema.sql: the files of its
+// migrations, run in order, and the ledger table with one row per migration, as the runner writes them. The
+// migration files are the embedded ones, which are never edited: the recorded sha256 of each must still be the
+// sha256 of the embedded file, or the shape could no longer be rebuilt.
+func loadLedgeredShape(t *testing.T, tmp *dbtest.Temp, rec recordedShape) {
+	t.Helper()
+	var rows []string
+	for _, m := range rec.migrations {
+		content := mustReadEmbedded(t, m.name)
+		if got := sha256Hex(content); got != m.sha256 {
+			t.Fatalf("shape %s: embedded %s has sha256 %s, the recorded ledger row says %s (a migration file is never edited)", rec.shape, m.name, got, m.sha256)
+		}
+		tmp.Load(t, "migration "+m.name+" of "+rec.shape, string(content))
+		rows = append(rows, fmt.Sprintf("(%d, '%s', '%s')", m.version, m.name, m.sha256))
+	}
+	tmp.Load(t, "ledger of "+rec.shape, migrationLedgerTable+"INSERT INTO schema_migrations(version, name, checksum) VALUES "+strings.Join(rows, ", ")+";")
+}
+
 // buildShape creates the temporary database of a shape and loads, in this order, the
-// recorded schema, the historical Go DDL (llm_records, llm_usage), the legacy mutations when the shape
-// has them, and the data fixture. It is the state of a database a release left behind.
+// recorded schema, the historical Go DDL (llm_records, llm_usage) or, for a release with the runner, its
+// migrations and ledger, the legacy mutations when the shape has them, and the data fixture. It is the
+// state of a database a release left behind.
 func buildShape(t *testing.T, srv *dbtest.Server, sh matrixShape) *dbtest.Temp {
 	t.Helper()
 	tmp := dbtest.TempDatabase(t, srv, "mx_"+sh.name)
 	tmp.Load(t, "schema fixture of "+sh.name, readUpgradeFile(t, recordedSchemaFile(t, sh.recorded)))
-	tmp.Load(t, "Go DDL fixture of "+sh.recorded, readUpgradeFile(t, recordedGoDDLFile(t, sh.recorded)))
+	if goddl := recordedGoDDLFile(t, sh.recorded); goddl != "" {
+		tmp.Load(t, "Go DDL fixture of "+sh.recorded, readUpgradeFile(t, goddl))
+	} else {
+		loadLedgeredShape(t, tmp, recordedShapeNamed(t, sh.recorded))
+	}
 	if sh.mutations != "" {
 		tmp.Load(t, sh.mutations, readUpgradeFile(t, sh.mutations))
 	}
@@ -609,7 +649,7 @@ func TestUpgradeLegacyBranchesWereEntered(t *testing.T) {
 	srv := dbtest.RequireServer(t)
 	for _, sh := range matrixShapes {
 		sh := sh
-		if sh.name == "r0512" || sh.name == "r0513" {
+		if sh.name == "r0512" || sh.name == "r0513" || sh.name == "s2a" {
 			continue // identical DDL to r0509 apart from finding_comments and findings.ticket_id; not a legacy candidate
 		}
 		t.Run(sh.name, func(t *testing.T) {

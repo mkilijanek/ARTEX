@@ -15,6 +15,11 @@ All notable changes to this project are documented in this file. The format is b
   transaction-control statements (checked when the program starts, and again at run time by a marker).
   Fork migrations state `-- downgrade-safe: yes|no: <reason>` in their first line. See
   `docs/schema-upgrade.md` and `docs/adr/0004-versioned-migrations-stage-2.md`.
+- **Index on `llm_usage(ts)` (migration `0004`, upstream's file byte-identical, Phase D.2 stage 2, S2-C).** The first
+  migration that changes the schema. `idx_llm_usage_ts` speeds up the queries that filter `llm_usage` by time: the
+  daily usage figures (`UsageDaily`, polled by the dashboard every 15 seconds) and the daily series of the judge
+  statistics (`JudgeUsageStats`), which scanned the whole append-only table. It is applied at the first start, after
+  the fork migration `5001` (the order rule works inside each numbering range). See "Upgrade notes".
 - **`ARTEX_SCHEMA_ALLOW_NEWER=<NNNN>`**: the highest unknown migration version the start accepts, four digits. It
   lets a binary start on a database that a newer release migrated, only to keep the service up while the right
   binary or a restore is prepared. It expires at the next newer version, a malformed value stops the start, and a
@@ -171,6 +176,19 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Upgrade notes
 
+- **Migration `0004` builds an index on `llm_usage` at the first start** (`downgrade-safe: yes`; the pin records the flag
+  because upstream's file carries no header). A plain `CREATE INDEX` takes a `SHARE` lock: reads continue, every
+  write to `llm_usage` waits for the whole build. The 60 second lock timeout bounds only the wait for the lock, not
+  the build, and there is no statement timeout. The build runs before the HTTP server listens, so on a large table the
+  start looks hung; the log shows `[migrate] applied 0004_llm_usage_ts_index.sql in <ms>ms` at the end. Estimate the
+  table with `pg_total_relation_size('llm_usage')` first. For a large table, pre-build the index with `CREATE INDEX
+  CONCURRENTLY` and check that it is valid: `docs/schema-upgrade.md`, "Pre-building the index". **Rollback to 0.5.15m:**
+  start it with `ARTEX_SCHEMA_ALLOW_NEWER=0004`, or, with no instance running, run the guarded `0004` recipe
+  (`db/testdata/upgrade/rollback-0004-index.sql`, quoted in `docs/schema-upgrade.md`, "Rollback"). The recipe refuses
+  unless the ledger is exactly `0001`, `0002`, `0003`, `0004`, `5001`; a second run raises and changes nothing. The
+  ledger cleanup below refuses while `0004` is recorded: run the `0004` recipe first. Releases up to 0.5.14m start
+  without any step. (The "not in this release" note below dates from the first migration pull request: `0004` is now
+  here; upstream `0005` is still not ported.)
 - **Back up first** (`scripts/backup.sh`), stop older instances, and make sure no `pg_dump` is running. The first start
   writes the ledger table and that is irreversible by redeploying the old binary (harmless: 0.5.13m and older never
   read it).
@@ -186,10 +204,10 @@ All notable changes to this project are documented in this file. The format is b
 - Not in this release: a drift report (a same-named object with another definition is not detected); the first
   migration that changes the schema (upstream `0004`, an index on `llm_usage`, comes next); upstream `0005`.
 - **Tool RAG observation (migration `5002`).** The first start of this release also creates the table
-  `tool_rag_observations`; the ledger then ends with `5002` (five rows). `5002` is **downgrade-safe: yes** (additive
+  `tool_rag_observations`; the ledger then ends with `5002` (six rows: `0001 0002 0003 0004 5001 5002`). `5002` is **downgrade-safe: yes** (additive
   table, older binaries do not read it), but an older binary refuses an unknown ledger entry: start it with
   `ARTEX_SCHEMA_ALLOW_NEWER=5002`, or drop the table first with the guarded recipe in `docs/schema-upgrade.md`
-  ("Migration 5002"). **Run that drop before the ledger cleanup**: the cleanup refuses while `5002` is recorded.
+  ("Migration 5002"). **Run that drop first, then the `0004` recipe, then the ledger cleanup**: both of those refuse while `5002` is recorded.
   `ARTEX_TOOL_RAG=off` stops the writes; rows written so far stay until their task is deleted.
 
 ### Fixed
@@ -291,6 +309,13 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Tests and CI
 
+- **Migration `0004` (S2-C).** New recorded shape `s2a` (release 0.5.15m, with its four-row ledger); the reference
+  catalog holds the index (one line, 1118 objects); one more `added` ledger entry in every other shape. New tests: the
+  byte-identity pin of `0004`, its application after `5001`, a binary without `0004` on a database that has it, a
+  simulated 0.5.13m start, and the guarded `0004` recipe (it also requires the ledger row to carry the shipped name).
+  `scripts/upgrade-gate.sh` now requires **135** passing tests. `.github/CODEOWNERS` names the new recipe file.
+  The dry-run check (`TestDryRunRestoredCopy`) now expects a copy without a ledger to end with every shipped
+  version, not only the baseline.
 - **Schema upgrade suite runs on the migration runner (Phase D.2 stage 2, S2-A).** New recorded shape `r0513`
   (`db/schema.sql` as released in 0.5.13m); the reference catalog has 58 tables, including `schema_migrations`;
   four `added` entries per shape in `expected-changes.json`. New tests: the runner (refusals, override, adoption,
@@ -324,7 +349,8 @@ All notable changes to this project are documented in this file. The format is b
   mode, the model request is byte-identical with the feature off and on), the call counter (including deferred MCP
   tools through `ExecuteExtraTool`), the bounded writer and the shutdown drain, and database tests for the table,
   deletion with the task, archiving and the content-free guarantee. The upgrade matrix has 59 tables and the gate
-  requires **130** passing tests with no skip (was 128). New `db/testdata/upgrade/rollback-drop-5002.sql`; the
+  requires **142** passing tests with no skip (was 135 with `0004`); its pattern now also selects `TestToolRag*`, the
+  database tests of the table, so a skip of one fails the gate. New `db/testdata/upgrade/rollback-drop-5002.sql`; the
   rollback tests run it before the ledger cleanup.
 
 ## [0.5.0] - 2026-11-04

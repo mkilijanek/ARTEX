@@ -106,7 +106,7 @@ func TestUpgradeFailedComparisonDoesNotLeakRowsOrPassword(t *testing.T) {
 }
 
 const referenceHeader = `# ARTEX schema reference catalog, PostgreSQL 16 only (docs/phase-d2-plan.md section 5.2).
-# State listed: a fresh database after Open alone (schema.sql, the embedded migrations 0001, 0002, 0003, 5001, 5002
+# State listed: a fresh database after Open alone (schema.sql, the embedded migrations 0001, 0002, 0003, 0004, 5001, 5002
 # and the ledger table schema_migrations; no Ensure call).
 # One line per object: kind name sha256(definition). Sorted. Column order is not listed on purpose
 # (restore uses the same row type on both sides of INSERT ... SELECT *).

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -75,7 +76,7 @@ func TestUpgradeLedgerTableIsInTheReference(t *testing.T) {
 	}
 }
 
-// AC3: a fresh Open, with no Ensure call and no helper, leaves exactly the ledger versions 0001, 0002, 0003
+// AC3: a fresh Open, with no Ensure call and no helper, leaves exactly the ledger versions 0001, 0002, 0003, 0004
 // and 5001 with the names and sha256 of the embedded files, and the catalog of the reference.
 func TestUpgradeLedgerFreshOpenAdoptsTheBaselineWithoutEnsure(t *testing.T) {
 	logs := dbtest.CaptureLog(t)
@@ -96,7 +97,7 @@ func TestUpgradeLedgerFreshOpenAdoptsTheBaselineWithoutEnsure(t *testing.T) {
 			t.Errorf("Open alone did not create %s", table)
 		}
 	}
-	for _, want := range []string{"[migrate] ledger absent: adopting baseline (4)", "[migrate] adopted baseline in", "[migrate] up to date (upstream=0003, fork=5002)"} {
+	for _, want := range []string{"[migrate] ledger absent: adopting baseline (4)", "[migrate] adopted baseline in", "[migrate] up to date (upstream=0004, fork=5002)"} {
 		if !strings.Contains(logs(), want) {
 			t.Errorf("the log has no %q line", want)
 		}
@@ -104,10 +105,12 @@ func TestUpgradeLedgerFreshOpenAdoptsTheBaselineWithoutEnsure(t *testing.T) {
 	dbtest.AssertNoSecret(t, "log output", logs())
 }
 
-// AC4: every shape of an older database (the three recorded releases and the synthetic legacy one) has no
-// ledger before its first start and exactly the baseline after it; a second start leaves the ledger as it
-// was, applied_at included. Rows, catalog and the rest of the second start are the business of
-// TestUpgradeRowsPreserved, TestUpgradeConvergesWithFreshCatalog and TestUpgradeRepeatedStartupChangesNothing.
+// AC4: every shape of an older database (the three recorded releases without the runner and the synthetic
+// legacy one) has no ledger before its first start and the baseline plus 0004 after it; the shape of the
+// release with the runner (s2a) has the baseline ledger before and keeps those four rows as they were. A
+// second start leaves the ledger as it was, applied_at included. Rows, catalog and the rest of the second
+// start are the business of TestUpgradeRowsPreserved, TestUpgradeConvergesWithFreshCatalog and
+// TestUpgradeRepeatedStartupChangesNothing.
 func TestUpgradeLedgerAdoptsEveryShape(t *testing.T) {
 	for _, sh := range matrixShapes {
 		sh := sh
@@ -119,13 +122,30 @@ func TestUpgradeLedgerAdoptsEveryShape(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if before.Present {
-				t.Fatalf("shape %s has a ledger before its first start (%s)", sh.name, before)
+			ledgered := len(recordedShapeNamed(t, sh.recorded).migrations) > 0
+			if before.Present != ledgered {
+				t.Fatalf("shape %s: the ledger is present before its first start: %v, want %v (%s)", sh.name, before.Present, ledgered, before)
+			}
+			var baselineRows []appliedMigration
+			if ledgered {
+				baselineRows = readLedger(t, tmp.Conn(t))
+				requireBaselineLedger(t, baselineRows)
 			}
 
 			d1 := startup(t, tmp.DSN)
 			first := readLedger(t, d1.DB)
 			requireEmbeddedLedger(t, first)
+			if ledgered {
+				var kept []appliedMigration
+				for _, row := range first {
+					if slices.Contains(baselineVersions, row.version) {
+						kept = append(kept, row)
+					}
+				}
+				if !sameLedgerRows(baselineRows, kept) {
+					t.Errorf("shape %s: the first start changed a row of the ledger it found", sh.name)
+				}
+			}
 
 			d2 := startup(t, tmp.DSN)
 			second := readLedger(t, d2.DB)

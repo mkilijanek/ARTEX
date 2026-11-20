@@ -155,8 +155,42 @@ func migrationTableExists(t *testing.T, q *sql.DB, name string) bool {
 	return exists
 }
 
-// requireEmbeddedLedger checks that rows are exactly the migrations of the embedded set (the four baseline
-// migrations and every later fork file), in version order, with the name and the sha256 of each embedded file.
+// requireLedgerOf checks that rows are exactly the given versions, with the name and the sha256 of the
+// embedded file of each.
+func requireLedgerOf(t *testing.T, rows []appliedMigration, versions ...int) {
+	t.Helper()
+	embedded, err := loadMigrations(embeddedMigrations())
+	if err != nil {
+		t.Fatal(err)
+	}
+	byVersion := map[int]migration{}
+	for _, m := range embedded {
+		byVersion[m.version] = m
+	}
+	if !sameInts(ledgerVersions(rows), versions) {
+		t.Fatalf("schema_migrations versions = %v, want %v", ledgerVersions(rows), versions)
+	}
+	for i, v := range versions {
+		m, ok := byVersion[v]
+		if !ok {
+			t.Fatalf("version %04d is not embedded", v)
+		}
+		if rows[i].name != m.name || rows[i].checksum != m.checksum {
+			t.Errorf("schema_migrations row %d = %s %s, want %s %s", i, rows[i].name, rows[i].checksum, m.name, m.checksum)
+		}
+	}
+}
+
+// requireBaselineLedger checks that rows are exactly the four baseline migrations: what a start of the
+// release before 0004 (see previousReleaseMigrations) leaves.
+func requireBaselineLedger(t *testing.T, rows []appliedMigration) {
+	t.Helper()
+	requireLedgerOf(t, rows, 1, 2, 3, 5001)
+}
+
+// requireEmbeddedLedger checks that rows are exactly the migrations this binary embeds: the baseline set, 0004
+// (applied on its own after the baseline, in its own transaction, so with its own applied_at) and every later
+// fork file, in version order. The set is read from the embedded files, so a new migration does not change it here.
 func requireEmbeddedLedger(t *testing.T, rows []appliedMigration) {
 	t.Helper()
 	ms, err := loadMigrations(embeddedMigrations())
@@ -167,35 +201,7 @@ func requireEmbeddedLedger(t *testing.T, rows []appliedMigration) {
 	for i, m := range ms {
 		versions[i] = m.version
 	}
-	if !sameInts(ledgerVersions(rows), versions) {
-		t.Fatalf("schema_migrations versions = %v, want %v", ledgerVersions(rows), versions)
-	}
-	for i, m := range ms {
-		if rows[i].name != m.name || rows[i].checksum != m.checksum {
-			t.Errorf("schema_migrations row %d = %s %s, want %s %s", i, rows[i].name, rows[i].checksum, m.name, m.checksum)
-		}
-	}
-}
-
-// requireBaselineLedger checks that rows are exactly the four baseline migrations, with the
-// name and the sha256 of the embedded file.
-func requireBaselineLedger(t *testing.T, rows []appliedMigration) {
-	t.Helper()
-	want := []string{migrationLLMRecords, migrationLLMUsage, "0003_task_scope_icp_index.sql", migrationLLMUsageFork}
-	versions := []int{1, 2, 3, 5001}
-	if !sameInts(ledgerVersions(rows), versions) {
-		t.Fatalf("schema_migrations versions = %v, want %v", ledgerVersions(rows), versions)
-	}
-	for i, name := range want {
-		content, err := fs.ReadFile(embeddedMigrations(), name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		sum := sha256.Sum256(content)
-		if rows[i].name != name || rows[i].checksum != hex.EncodeToString(sum[:]) {
-			t.Errorf("schema_migrations row %d = %s %s, want %s %x", i, rows[i].name, rows[i].checksum, name, sum)
-		}
-	}
+	requireLedgerOf(t, rows, versions...)
 }
 
 // startMigrated runs one successful start on the database and closes it.
@@ -405,14 +411,14 @@ func TestOpenMigratesFreshDatabase(t *testing.T) {
 		"[schema] schema.sql sha256=",
 		"[migrate] ledger absent: adopting baseline (4)",
 		"[migrate] adopted baseline in ",
-		"[migrate] up to date (upstream=0003, fork=5002)",
+		"[migrate] up to date (upstream=0004, fork=5002)",
 	} {
 		if !strings.Contains(first, want) {
 			t.Errorf("first start: log has no %q:\n%s", want, first)
 		}
 	}
 	assertReopenIsNoop(t, tmp, applied)
-	if second := strings.TrimPrefix(logs(), first); strings.Contains(second, "adopting baseline") || !strings.Contains(second, "[migrate] up to date (upstream=0003, fork=5002)") {
+	if second := strings.TrimPrefix(logs(), first); strings.Contains(second, "adopting baseline") || !strings.Contains(second, "[migrate] up to date (upstream=0004, fork=5002)") {
 		t.Errorf("second start: want an up-to-date line and no adoption; log:\n%s", second)
 	}
 }
@@ -705,13 +711,14 @@ func TestMigrationAdoptionIsAtomic(t *testing.T) {
 		t.Errorf("catalog differs from a plain schema.sql start:\n  %s", strings.Join(diff, "\n  "))
 	}
 
-	// A restart with the embedded set adopts.
+	// A restart with the embedded set adopts, and applies 0004 after it.
 	startMigrated(t, tmp, embeddedMigrations())
 	requireEmbeddedLedger(t, readLedger(t, tmp.Conn(t)))
 }
 
 // AC6: the adoption set is frozen. A ledger-less database whose binary also ships a failing 5902
-// ends with exactly the baseline and the shipped rows: the extra file is not part of the adoption.
+// ends with the four baseline rows and the ledger rows of 0004 and 5002, which are ordinary pending migrations
+// applied on their own before 5902: the extra file is not part of the adoption, and neither are they.
 func TestMigrationAdoptionSetIsFrozen(t *testing.T) {
 	tmp := migrationTemp(t, "frozen")
 	fsys := migrationSet(t, fstest.MapFS{"5902_extra_fails.sql": migrationFile("CREATE TABLE migration_extra (x integer);\nSELECT 1/0;\n")})
@@ -754,8 +761,8 @@ func TestMigrationFailureAfterAdoption(t *testing.T) {
 			t.Errorf("attempt 2: error %q differs from the first %q", err, first)
 		}
 		conn := tmp.Conn(t)
-		if got := ledgerVersions(readLedger(t, conn)); !sameInts(got, []int{1, 2, 3, 5001, 5002, 5902}) {
-			t.Fatalf("attempt %d: ledger versions = %v, want 1 2 3 5001 5002 5902", attempt, got)
+		if got := ledgerVersions(readLedger(t, conn)); !sameInts(got, []int{1, 2, 3, 4, 5001, 5002, 5902}) {
+			t.Fatalf("attempt %d: ledger versions = %v, want 1 2 3 4 5001 5002 5902", attempt, got)
 		}
 		if !migrationTableExists(t, conn, "migration_ok") || migrationTableExists(t, conn, "migration_bad") {
 			t.Fatalf("attempt %d: want migration_ok present and migration_bad absent", attempt)
@@ -765,7 +772,7 @@ func TestMigrationFailureAfterAdoption(t *testing.T) {
 	corrected := migrationSet(t, fstest.MapFS{"5902_ok.sql": ok, "5903_bad.sql": migrationFile("CREATE TABLE migration_bad (x integer);\n")})
 	startMigrated(t, tmp, corrected)
 	conn := tmp.Conn(t)
-	if got := ledgerVersions(readLedger(t, conn)); !sameInts(got, []int{1, 2, 3, 5001, 5002, 5902, 5903}) {
+	if got := ledgerVersions(readLedger(t, conn)); !sameInts(got, []int{1, 2, 3, 4, 5001, 5002, 5902, 5903}) {
 		t.Errorf("after the correction: ledger versions = %v", got)
 	}
 	if !migrationTableExists(t, conn, "migration_bad") {
@@ -831,10 +838,9 @@ func TestMigrationForeignLedgerIsRefusedEvenWithOverride(t *testing.T) {
 	tmp := migrationTemp(t, "foreign")
 	startMigrated(t, tmp, embeddedMigrations())
 	conn := tmp.Conn(t)
-	// The ledger an upstream binary leaves: 0001 to 0005 and no fork row.
+	// The ledger an upstream binary leaves: 0001 to 0005 and no fork row (0004 is in the ledger already).
 	for _, q := range []string{
 		`DELETE FROM schema_migrations WHERE version >= 5000`,
-		`INSERT INTO schema_migrations(version, name, checksum) VALUES (4, '0004_llm_usage_ts_index.sql', 'f00d0004')`,
 		`INSERT INTO schema_migrations(version, name, checksum) VALUES (5, '0005_traffic_rewrite_rules.sql', 'f00d0005')`,
 	} {
 		if _, err := conn.Exec(q); err != nil {
@@ -856,8 +862,9 @@ func TestMigrationOrderPerRange(t *testing.T) {
 	})
 	t.Run("upstream: applied baseline, pending 0004 runs after 5001", func(t *testing.T) {
 		tmp := migrationTemp(t, "orderb")
+		startPrevious(t, tmp)
+		requireBaselineLedger(t, readLedger(t, tmp.Conn(t)))
 		startMigrated(t, tmp, embeddedMigrations())
-		startMigrated(t, tmp, migrationSet(t, fstest.MapFS{"0004_next.sql": migrationFile("CREATE TABLE migration_next (x integer);")}))
 		rows := readLedger(t, tmp.Conn(t))
 		if !sameInts(ledgerVersions(rows), []int{1, 2, 3, 4, 5001, 5002}) {
 			t.Fatalf("ledger versions = %v", ledgerVersions(rows))
@@ -869,7 +876,8 @@ func TestMigrationOrderPerRange(t *testing.T) {
 	t.Run("upstream: applied 0001, 0003, 5001, pending 0002", func(t *testing.T) {
 		tmp := migrationTemp(t, "orderc")
 		startMigrated(t, tmp, embeddedMigrations())
-		if _, err := tmp.Conn(t).Exec(`DELETE FROM schema_migrations WHERE version = 2`); err != nil {
+		// 0004 is not applied either, so that 0003 is the newest applied version of the upstream range.
+		if _, err := tmp.Conn(t).Exec(`DELETE FROM schema_migrations WHERE version IN (2, 4)`); err != nil {
 			t.Fatal(err)
 		}
 		requireRefusal(t, tmp, embeddedMigrations(), "order", migrationLLMUsage, "(0002)", "(0003)", "never inserted")
@@ -1095,7 +1103,12 @@ func TestEnsureWrappersRunEmbeddedMigrations(t *testing.T) {
 			t.Errorf("the full Open shape has no index %s", i)
 		}
 	}
-	if diff := dbtest.DiffLines(want, got); len(diff) > 0 {
+	// The wrappers re-run the baseline files (0001, 0002, 5001) only: 0004's index is a migration of its own, which
+	// only Open applies, so the shape the wrappers produce is the full Open's minus idx_llm_usage_ts.
+	if !strings.Contains(joined, "idx_llm_usage_ts ") {
+		t.Error("the full Open shape has no index idx_llm_usage_ts")
+	}
+	if diff := dbtest.DiffLines(referenceWithoutLlmUsageTsIndex(want), got); len(diff) > 0 {
 		t.Errorf("the wrappers do not produce the shape of a full Open:\n%s", strings.Join(diff, "\n"))
 	}
 	if migrationTableExists(t, d.DB, "schema_migrations") {

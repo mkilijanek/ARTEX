@@ -194,12 +194,20 @@ func TestDryRunRestoredCopy(t *testing.T) {
 	if d := dbtest.DiffMaps(afterFirst, afterSecond); len(d) > 0 {
 		t.Errorf("the second startup changed row counts: %s", strings.Join(d, ", "))
 	}
-	// The ledger: a copy of a database from before the runner has none and ends with exactly the baseline set;
-	// a copy that already has one keeps its versions and holds at least the baseline set. The second start
-	// changes nothing.
+	// The ledger: a copy of a database from before the runner has none and ends with exactly the versions this
+	// binary ships (the baseline set, adopted, then every later migration, applied); a copy that already has one
+	// keeps its versions and holds at least the baseline set. The second start changes nothing.
+	shipped, err := loadMigrations(embeddedMigrations())
+	if err != nil {
+		t.Fatal(err)
+	}
+	shippedVersions := make([]int, 0, len(shipped))
+	for _, m := range shipped {
+		shippedVersions = append(shippedVersions, m.version)
+	}
 	switch {
-	case !ledgerBefore.Present && !ledgerAfter.LedgerIs(baselineVersions...):
-		t.Errorf("the ledger was absent before startup and is %s after it, want exactly the baseline set", ledgerAfter)
+	case !ledgerBefore.Present && !ledgerAfter.LedgerIs(shippedVersions...):
+		t.Errorf("the ledger was absent before startup and is %s after it, want exactly the shipped versions %v", ledgerAfter, shippedVersions)
 	case ledgerBefore.Present && !ledgerAfter.LedgerHas(ledgerBefore.Versions...):
 		t.Errorf("the ledger was %s before startup and is %s after it: a version disappeared", ledgerBefore, ledgerAfter)
 	case !ledgerAfter.LedgerHas(baselineVersions...):

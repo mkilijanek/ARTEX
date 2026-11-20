@@ -20,13 +20,22 @@ const upgradeDir = "testdata/upgrade"
 
 type releaseCommit struct{ tag, commit string }
 
+// shapeMigration is one row of the ledger of a recorded shape: a release that ran the migration runner.
+type shapeMigration struct {
+	version      int
+	name, sha256 string
+}
+
 type recordedShape struct {
 	shape    string
 	file     string
 	sha256   string
-	goddl    string // historical Go DDL that the releases of the shape ran after schema.sql
+	goddl    string // historical Go DDL that the releases of the shape ran after schema.sql; "" for a release with the runner
 	goddlSHA string
 	releases []releaseCommit
+	// migrations are the ledger rows of a release that ran the migration runner (empty for the others): the
+	// shape is schema.sql, the files of these migrations and the ledger holding exactly these rows.
+	migrations []shapeMigration
 }
 
 // recordedShapes are the schema.sql files of the releases the upgrade tests start from
@@ -36,14 +45,25 @@ var recordedShapes = []recordedShape{
 		{"v0.5.9m", "fd95c24b1889de8c25cad12d1c6355ac3fcdc594"},
 		{"v0.5.10m", "43208e5354858a241e8410998c262c2ff733f472"},
 		{"v0.5.11m", "58470d7581299b459be36be95ba93cf9c1598384"},
-	}},
+	}, nil},
 	{"r0512", "schema-7996d35963a0.sql", "7996d35963a0eb882e339ea410058452ba9aadc653399edaa3b51858c4fec1f7", "goddl-4bfc9dbe09c3.sql", "4bfc9dbe09c30629946c5b1918d67f164de08e9dd7b9857f8aeb95b9ad875624", []releaseCommit{
 		{"v0.5.12m", "450c877f91024fecd2f2023363db1d44cafd7fbc"},
-	}},
+	}, nil},
 	// r0513 is the last release before the migration runner: its db/schema.sql is the schema that is
 	// now frozen (docs/phase-d2-stage2-plan.md 3.1), and it ran the same Go DDL as the older releases.
 	{"r0513", "schema-951f3d0c8859.sql", "951f3d0c88597f494b5fc1a87ca6694daa9d35e490d3f131d4fb36a2f49f963a", "goddl-4bfc9dbe09c3.sql", "4bfc9dbe09c30629946c5b1918d67f164de08e9dd7b9857f8aeb95b9ad875624", []releaseCommit{
 		{"v0.5.13m", "b160905d0d17ec398296609a0d39263f5b72f761"},
+	}, nil},
+	// s2a is the first release with the migration ledger (0.5.15m, the migration runner): the same schema.sql
+	// bytes as r0513 (frozen), no Go DDL, and the llm tables and the ledger of the four baseline migrations. It is
+	// the database that the release with migration 0004 starts on (docs/phase-d2-stage2-plan.md 5, AC29).
+	{"s2a", "schema-951f3d0c8859.sql", "951f3d0c88597f494b5fc1a87ca6694daa9d35e490d3f131d4fb36a2f49f963a", "", "", []releaseCommit{
+		{"v0.5.15m", "ee60bbef5bfe263c1fdbef73dcc5f74fde8ddf75"},
+	}, []shapeMigration{
+		{1, "0001_llm_records.sql", "202d1b5f84f8091f5e676526b15fb66c888f39f73ddab60f46c251f19e19aa1e"},
+		{2, "0002_llm_usage.sql", "3b3aece1c4c80bceef74d15652e1c97c972275d7c738a41938945f00588c8d39"},
+		{3, "0003_task_scope_icp_index.sql", "318e3e91b55552ed3322cb7fdb515133dc279d6fd76e5d94498bf56de1692331"},
+		{5001, "5001_llm_usage_fork_columns.sql", "d55ce9857b9ef9d526ecaeeeeada7750f156761d1ec6878e154c198c7c81553f"},
 	}},
 }
 
@@ -64,6 +84,11 @@ type manifestFile struct {
 			Tag    string `json:"tag"`
 			Commit string `json:"commit"`
 		} `json:"releases"`
+		Migrations []struct {
+			Version int    `json:"version"`
+			Name    string `json:"name"`
+			SHA256  string `json:"sha256"`
+		} `json:"migrations"`
 	} `json:"shapes"`
 	Current struct {
 		SchemaSQLSHA256 string `json:"schema_sql_sha256"`
@@ -105,6 +130,12 @@ func TestUpgradeFixtureChecksums(t *testing.T) {
 		if want := "schema-" + s.sha256[:12] + ".sql"; s.file != want {
 			t.Errorf("%s: file name %s does not carry the first 12 hex digits of its sha256 (%s)", s.shape, s.file, want)
 		}
+		if (s.goddl == "") != (len(s.migrations) > 0) {
+			t.Errorf("%s: a shape has either a historical Go DDL fixture (a release before the runner) or a ledger of migrations (a release with it)", s.shape)
+		}
+		if s.goddl == "" {
+			continue
+		}
 		g, err := os.ReadFile(filepath.Join(upgradeDir, s.goddl))
 		if err != nil {
 			t.Errorf("%s: %v", s.shape, err)
@@ -119,14 +150,14 @@ func TestUpgradeFixtureChecksums(t *testing.T) {
 	}
 }
 
-// The release v0.5.13m is the one whose schema.sql is the frozen db/schema.sql: while the schema is
-// frozen, the newest recorded shape holds exactly its bytes. A lockstep edit of schema.sql
+// The releases v0.5.13m and v0.5.15m (shapes r0513 and s2a) are the ones whose schema.sql is the frozen
+// db/schema.sql: while the schema is frozen, the newest recorded shape holds exactly its bytes. A lockstep edit of schema.sql
 // (docs/phase-d2-stage2-plan.md 3.1) ends that equality on purpose: this test is then changed in the same
 // commit, to compare with the shape of the release that carried the edit.
 func TestUpgradeFrozenSchemaIsTheNewestRecordedShape(t *testing.T) {
 	newest := recordedShapes[len(recordedShapes)-1]
-	if newest.shape != "r0513" {
-		t.Fatalf("the newest recorded shape is %s, want r0513", newest.shape)
+	if newest.shape != "s2a" {
+		t.Fatalf("the newest recorded shape is %s, want s2a", newest.shape)
 	}
 	if newest.sha256 != currentSchemaSQLSHA256 {
 		t.Errorf("shape %s pins schema sha256 %s, the frozen schema.sql is pinned as %s", newest.shape, newest.sha256, currentSchemaSQLSHA256)
@@ -152,6 +183,15 @@ func TestUpgradeManifestMatchesConstantsInTestSource(t *testing.T) {
 		}
 		if got.GoDDL != want.goddl || got.GoDDLSHA256 != want.goddlSHA {
 			t.Errorf("shape %s: manifest has goddl %s %s, test source %s %s", want.shape, got.GoDDL, got.GoDDLSHA256, want.goddl, want.goddlSHA)
+		}
+		if len(got.Migrations) != len(want.migrations) {
+			t.Errorf("shape %s: manifest lists %d migrations, test source %d", want.shape, len(got.Migrations), len(want.migrations))
+		} else {
+			for j, m := range want.migrations {
+				if g := got.Migrations[j]; g.Version != m.version || g.Name != m.name || g.SHA256 != m.sha256 {
+					t.Errorf("shape %s migration %d: manifest has %d %s %s, test source %d %s %s", want.shape, j, g.Version, g.Name, g.SHA256, m.version, m.name, m.sha256)
+				}
+			}
 		}
 		if len(got.Releases) != len(want.releases) {
 			t.Errorf("shape %s: manifest lists %d releases, test source %d", want.shape, len(got.Releases), len(want.releases))

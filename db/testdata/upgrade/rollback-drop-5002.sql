@@ -4,6 +4,8 @@
 --   psql -v ON_ERROR_STOP=1 -f rollback-drop-5002.sql
 -- It acts only when 5002 is the newest fork migration in the ledger and raises, changing nothing, otherwise:
 -- restore the pre-upgrade dump then. Loss is limited to the measurements in the table.
+-- Order of the recipes on a database this release started: this file first, then rollback-0004-index.sql, then
+-- rollback-cleanup-ledger.sql (each of those two refuses while 5002 is recorded).
 -- This file is run by db/tool_rag_migration_test.go and db/upgrade_rollback_test.go.
 BEGIN;
 SELECT pg_advisory_xact_lock(7337741001);

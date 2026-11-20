@@ -15,3 +15,4 @@
 /db/upgrade_gatescript_test.go                   @mkilijanek
 /db/testdata/upgrade/rollback-cleanup-ledger.sql @mkilijanek
 /db/testdata/upgrade/rollback-drop-5002.sql      @mkilijanek
+/db/testdata/upgrade/rollback-0004-index.sql    @mkilijanek

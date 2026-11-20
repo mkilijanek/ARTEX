@@ -46,7 +46,7 @@ func TestMigrationToolRagDropRecipeIsGuardedAndReversible(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := captureMigrationState(t, tmp)
-	err := rollbackRunFile(t, d.DB, rollbackDropToolRagFile)
+	err := rollbackRunScript(t, d.DB, rollbackDropToolRagFile)
 	var pgErr *pgconn.PgError
 	if err == nil || !errors.As(err, &pgErr) || pgErr.Code != "P0001" || !strings.Contains(pgErr.Message, "5002 is not the newest fork migration") {
 		t.Fatalf("the recipe with 5999 on record: err = %v, want the guard's exception (P0001)", err)
@@ -60,18 +60,19 @@ func TestMigrationToolRagDropRecipeIsGuardedAndReversible(t *testing.T) {
 	}
 
 	// 5002 is the newest: the recipe drops the table, the row, and holds no lock afterwards.
-	if err := rollbackRunFile(t, d.DB, rollbackDropToolRagFile); err != nil {
+	if err := rollbackRunScript(t, d.DB, rollbackDropToolRagFile); err != nil {
 		t.Fatalf("the recipe failed (%s)", dbtest.AtomicErrorSummary(err))
 	}
 	if migrationTableExists(t, d.DB, "tool_rag_observations") {
 		t.Error("the recipe left tool_rag_observations")
 	}
-	requireBaselineLedger(t, readLedger(t, d.DB))
+	// The ledger is what the release before 5002 leaves: the baseline and 0004 (the recipe for 0004 comes after this one).
+	requireLedgerOf(t, readLedger(t, d.DB), 1, 2, 3, 4, 5001)
 	if granted, waiting, err := dbtest.AtomicAdvisoryLocks(ctx, d.DB, schemaMigrationLockKey); err != nil || granted != 0 || waiting != 0 {
 		t.Errorf("after the recipe: %d granted and %d waiting locks (err %v), want 0 and 0", granted, waiting, err)
 	}
 	// It is idempotent against a missing table only through the ledger guard: a second run now raises (no 5002 row).
-	if err := rollbackRunFile(t, d.DB, rollbackDropToolRagFile); err == nil {
+	if err := rollbackRunScript(t, d.DB, rollbackDropToolRagFile); err == nil {
 		t.Error("a second run of the recipe succeeded on a ledger without 5002")
 	}
 
