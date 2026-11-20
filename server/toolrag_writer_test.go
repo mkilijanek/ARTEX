@@ -329,7 +329,7 @@ func TestManagerCloseDrainsToolRAGRowsBeforeTheDatabaseCloses(t *testing.T) {
 	noWriterGoroutine(t)
 }
 
-func TestManagerCloseWithBlockedInsertReturnsAtTheDeadline(t *testing.T) {
+func TestManagerCloseWithBlockedToolRAGInsertReturnsAtTheDeadline(t *testing.T) {
 	setToolRAGSeams(t, 256, 100*time.Millisecond, 2*time.Second)
 	m, task := ragManager(t)
 	logs := dbtest.CaptureLog(t)
