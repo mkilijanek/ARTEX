@@ -361,12 +361,14 @@ func TestFindingDetectionConcurrentCreatesMakeOneRow(t *testing.T) {
 	var mu sync.Mutex
 	var ids []int64
 	createdBy := []string{}
+	start := make(chan struct{}) // the start gate: every goroutine is waiting before the first create runs
 	for i := range 8 {
 		path := "engine"
 		if i%2 == 1 {
 			path = "agent"
 		}
 		wg.Go(func() {
+			<-start
 			run, _, created, err := x.d.CreateFindingDetection(x.ctx, CreateDetectionInput{FindingID: f, Path: path})
 			if err != nil {
 				t.Error(err)
@@ -380,6 +382,7 @@ func TestFindingDetectionConcurrentCreatesMakeOneRow(t *testing.T) {
 			}
 		})
 	}
+	close(start)
 	wg.Wait()
 	if len(ids) != 8 || len(createdBy) != 1 {
 		t.Fatalf("ids=%v created by %v, want 8 ids and one creator", ids, createdBy)
@@ -436,8 +439,10 @@ func TestFindingDetectionAutomaticAttempts(t *testing.T) {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	created := 0
+	start := make(chan struct{})
 	for range 2 {
 		wg.Go(func() {
+			<-start
 			run, c, err := auto(1)
 			if err != nil {
 				t.Error(err)
@@ -453,6 +458,7 @@ func TestFindingDetectionAutomaticAttempts(t *testing.T) {
 			}
 		})
 	}
+	close(start)
 	wg.Wait()
 	if n := x.count(`SELECT count(*) FROM finding_detections WHERE finding_id=$1`, f); n != 1 || created != 1 {
 		t.Fatalf("%d rows and %d creators for two concurrent creates of attempt 1, want 1 and 1", n, created)
@@ -1304,8 +1310,10 @@ func TestFindingDetectionClaimsAreExclusive(t *testing.T) {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	claimed := map[int64]int{}
+	start := make(chan struct{})
 	for range 12 {
 		wg.Go(func() {
+			<-start
 			c, err := x.d.ClaimFindingDetection(x.ctx)
 			if err != nil {
 				t.Error(err)
@@ -1322,6 +1330,7 @@ func TestFindingDetectionClaimsAreExclusive(t *testing.T) {
 			}
 		})
 	}
+	close(start)
 	wg.Wait()
 	if len(claimed) != runs {
 		t.Fatalf("%d distinct runs claimed by 12 claimers, want %d", len(claimed), runs)
@@ -1558,8 +1567,10 @@ func TestFindingDetectionQueryCounterIsExactUnderConcurrency(t *testing.T) {
 	var mu sync.Mutex
 	ok, capped := 0, 0
 	seen := map[int]bool{}
+	start := make(chan struct{})
 	for range 16 {
 		wg.Go(func() {
+			<-start
 			used, err := x.d.IncrementDetectionQueries(x.ctx, run, 8)
 			mu.Lock()
 			defer mu.Unlock()
@@ -1577,6 +1588,7 @@ func TestFindingDetectionQueryCounterIsExactUnderConcurrency(t *testing.T) {
 			}
 		})
 	}
+	close(start)
 	wg.Wait()
 	if ok != 8 || capped != 8 || len(seen) != 8 {
 		t.Errorf("%d increments succeeded and %d were refused (counts %v), want 8 and 8 with counts 1 to 8", ok, capped, seen)
@@ -1896,4 +1908,48 @@ func TestFindingDetectionSnapshotOverBudgetAfterEveryStepIsALimitError(t *testin
 	if n := x.count(`SELECT count(*) FROM finding_detections WHERE finding_id=$1`, f); n != 0 {
 		t.Errorf("%d runs after the refused create", n)
 	}
+}
+
+// The sweep and a finish race on one running run: exactly one of them wins, the other finds the run ended.
+func TestFindingDetectionSweepRacesFinishExactlyOneWins(t *testing.T) {
+	x := newDetLayer(t, "detsweep")
+	swept, finished := 0, 0
+	for i := range 12 {
+		f := x.finding()
+		run := x.runningRun(f)
+		x.exec(`UPDATE finding_detections SET claimed_at = now() - interval '1 hour' WHERE id=$1`, run)
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		var sweepN int64
+		var sweepErr, finishErr error
+		wg.Go(func() {
+			<-start
+			sweepN, sweepErr = x.d.SweepFindingDetections(x.ctx, DetectionSweepDeadline)
+		})
+		wg.Go(func() {
+			<-start
+			finishErr = x.d.FinishFindingDetection(x.ctx, run, DetectionFinish{Status: "completed", Outcome: "unvalidated", Rules: []DetectionRuleInput{sigmaRule("late")}})
+		})
+		close(start)
+		wg.Wait()
+		if sweepErr != nil {
+			t.Fatalf("round %d: sweep: %v", i, sweepErr)
+		}
+		rules := x.count(`SELECT count(*) FROM detection_rules WHERE detection_id=$1`, run)
+		switch {
+		case sweepN == 1 && errors.Is(finishErr, ErrDetectionNotRunning):
+			swept++
+			if st := x.status(run); st != "failed" || x.text(`SELECT end_code FROM finding_detections WHERE id=$1`, run) != "deadline" || rules != 0 {
+				t.Errorf("round %d: the sweep won but the run is %s with %d rules", i, st, rules)
+			}
+		case sweepN == 0 && finishErr == nil:
+			finished++
+			if st := x.status(run); st != "completed" || rules != 1 {
+				t.Errorf("round %d: the finish won but the run is %s with %d rules", i, st, rules)
+			}
+		default:
+			t.Errorf("round %d: sweep failed %d runs and finish returned %v; want exactly one winner", i, sweepN, finishErr)
+		}
+	}
+	t.Logf("sweep won %d rounds, finish won %d", swept, finished)
 }

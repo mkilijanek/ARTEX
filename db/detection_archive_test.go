@@ -240,3 +240,123 @@ func TestFindingDetectionCreateIsRefusedWhileTheTaskIsArchived(t *testing.T) {
 	_, other := x.archiveTask()
 	x.create(other, "engine")
 }
+
+// A create that holds the findings of the task while the purge waits for them: when the create commits, the purge
+// refuses (nothing is deleted); it is never a silent delete of a run. The create is the transaction of
+// CreateFindingDetection up to its insert (it locks the finding, sees no active job, inserts the run), held open
+// by hand so the job can be queued, claimed and the purge started inside the window, which the function itself
+// does not leave open.
+func TestFindingDetectionCreateRacingThePurgeRefusesTheArchive(t *testing.T) {
+	x := newDetLayer(t, "detarchr")
+	taskID, f := x.archiveTask()
+
+	creator, err := x.d.BeginTx(x.ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer creator.Rollback()
+	var locked int64
+	if err := creator.QueryRowContext(x.ctx, `SELECT id FROM findings WHERE id=$1 FOR UPDATE`, f).Scan(&locked); err != nil {
+		t.Fatal(err)
+	}
+	if n := func() int {
+		var n int
+		if err := creator.QueryRowContext(x.ctx, `SELECT count(*) FROM task_archives WHERE task_id=$1 AND state IN ('archive_queued','archiving')`, taskID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}(); n != 0 {
+		t.Fatalf("%d active archive jobs before the window", n)
+	}
+
+	// Inside the window the job is queued, claimed and snapshotted (none of that takes the findings), and the
+	// purge starts: it takes the job and task rows, then waits for the findings the creator holds.
+	job, snap := x.archiveUntilPurge(taskID)
+	start := make(chan struct{})
+	purged := make(chan error, 1)
+	go func() {
+		<-start
+		purged <- x.d.CompleteTaskArchive(job.ID, snap, "/nonexistent/detection-archive.tar.zst", "0", 1, 1)
+	}()
+	close(start)
+	select {
+	case err := <-purged:
+		t.Fatalf("the purge did not wait for the findings the create holds: %v", err)
+	case <-time.After(400 * time.Millisecond):
+	}
+
+	var runID int64
+	if err := creator.QueryRowContext(x.ctx, `INSERT INTO finding_detections(finding_id, path, snapshot) VALUES ($1,'engine','{}') RETURNING id`, f).Scan(&runID); err != nil {
+		t.Fatal(err)
+	}
+	if err := creator.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-purged:
+		if !errors.Is(err, ErrTaskArchiveDetections) {
+			t.Fatalf("purge after the create committed: err = %v, want ErrTaskArchiveDetections", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the purge did not return after the create committed")
+	}
+	if n := x.count(`SELECT count(*) FROM finding_detections WHERE id=$1`, runID); n != 1 {
+		t.Error("the refused purge deleted the run")
+	}
+	if n := x.count(`SELECT count(*) FROM findings WHERE id=$1`, f); n != 1 {
+		t.Error("the refused purge deleted the finding")
+	}
+}
+
+// The real create and the real purge, started together while a transaction holds the findings: whichever the
+// database lets go first, no run is deleted silently. The create gets the typed refusal of an active job (the
+// job is archiving) or finds no finding (the purge went first); the purge, with no run to see, completes.
+func TestFindingDetectionCreateAndPurgeStartedTogetherNeverLoseARun(t *testing.T) {
+	x := newDetLayer(t, "detarchg")
+	taskID, f := x.archiveTask()
+	job, snap := x.archiveUntilPurge(taskID)
+
+	holder, err := x.d.BeginTx(x.ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback()
+	if _, err := holder.ExecContext(x.ctx, `SELECT id FROM findings WHERE task_id=$1 FOR UPDATE`, taskID); err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	created := make(chan error, 1)
+	purged := make(chan error, 1)
+	go func() {
+		<-start
+		_, _, _, err := x.d.CreateFindingDetection(x.ctx, CreateDetectionInput{FindingID: f, Path: "engine"})
+		created <- err
+	}()
+	go func() {
+		<-start
+		purged <- x.d.CompleteTaskArchive(job.ID, snap, "/nonexistent/detection-archive.tar.zst", "0", 1, 1)
+	}()
+	close(start)
+	time.Sleep(400 * time.Millisecond) // both are waiting on the held findings
+	if err := holder.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	var createErr, purgeErr error
+	for range 2 {
+		select {
+		case createErr = <-created:
+		case purgeErr = <-purged:
+		case <-time.After(15 * time.Second):
+			t.Fatal("the create or the purge did not return after the holder ended")
+		}
+	}
+	if !errors.Is(createErr, ErrDetectionArchiveActive) && !errors.Is(createErr, ErrFindingNotFound) {
+		t.Errorf("create: err = %v, want ErrDetectionArchiveActive or ErrFindingNotFound", createErr)
+	}
+	if purgeErr != nil {
+		t.Errorf("purge of a task without runs: %v", purgeErr)
+	}
+	if n := x.count(`SELECT count(*) FROM finding_detections`); n != 0 {
+		t.Errorf("%d runs exist after the refused create", n)
+	}
+}
