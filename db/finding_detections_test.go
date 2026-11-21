@@ -1960,3 +1960,153 @@ func TestFindingDetectionSweepRacesFinishExactlyOneWins(t *testing.T) {
 	}
 	t.Logf("sweep won %d rounds, finish won %d", swept, finished)
 }
+
+// ---- the verification pass of 1a (F1-F3) -------------------------------------------------------------------------------
+
+// planShrinkOrder is the order of the shrink steps of plan 6.8 (docs/detector-plan.md, "The snapshot is built to a
+// byte budget"), written here on its own: traffic cut to 100, 50, 12; extra removed, assets to 10, technologies to
+// 10; constraints removed; report and evidence halved; summary to 1 KiB, urls to 256 bytes.
+var planShrinkOrder = []string{
+	"shrink:traffic_100", "shrink:traffic_50", "shrink:traffic_12",
+	"shrink:assets_extra_removed", "shrink:assets_10", "shrink:technologies_10",
+	"shrink:constraints_removed",
+	"shrink:report_evidence_halved",
+	"shrink:summary_1k", "shrink:urls_256",
+}
+
+// Reordering, adding or removing a step of the code fails here, whatever the code's own table says.
+func TestFindingDetectionShrinkStepsFollowPlan68(t *testing.T) {
+	got := make([]string, 0, len(snapshotShrinkSteps))
+	for _, st := range snapshotShrinkSteps {
+		got = append(got, st.name)
+	}
+	if !reflect.DeepEqual(got, planShrinkOrder) {
+		t.Errorf("shrink steps = %v\nplan 6.8       = %v", got, planShrinkOrder)
+	}
+}
+
+// The budget is measured as jsonb::text, which has a space after every ':' and ','. A snapshot whose compact JSON
+// is under the 768 KiB budget but whose jsonb text is over it must be shrunk; one step (traffic to 100) is
+// enough, and the stored size is inside the budget. A loop that measured compact JSON would store it as it is.
+func TestFindingDetectionSnapshotBudgetIsMeasuredAsJSONBText(t *testing.T) {
+	x := newDetLayer(t, "detjsonb")
+	const nTraffic = 200
+	// shaped creates a finding with a report, evidence and summary at their caps, 50 assets with 2 KB urls and
+	// 3.9 KB extras, and nTraffic bindings whose urls are urlLen bytes.
+	shaped := func(label string, urlLen int) int64 {
+		f := x.finding()
+		x.exec(`UPDATE findings SET report=repeat('r', 65536), evidence=repeat('e', 65536), summary=repeat('s', 8192) WHERE id=$1`, f)
+		x.exec(`INSERT INTO assets(type, app_name, url, technologies, service_name, service_type, extra)
+			SELECT 'app', $1::text || g, repeat('a', 2000), ARRAY['nginx'], 'web', 'http', jsonb_build_object('k', repeat('x', 3900))
+			FROM generate_series(1, 50) g`, label)
+		x.exec(`UPDATE findings SET asset_ids=(SELECT jsonb_agg(id) FROM assets WHERE app_name LIKE $2) WHERE id=$1`, f, label+"%")
+		x.addTraffic(f, nTraffic, "u/")
+		x.exec(`UPDATE traffic_evidence_snapshots SET url = left(repeat('u', $2::int), $2::int - length(id)) || id WHERE id LIKE $1`, fmt.Sprintf("snap%d-%%", f), urlLen)
+		return f
+	}
+	decode := func(raw []byte) *detectionSnapshot {
+		var s detectionSnapshot
+		if err := json.Unmarshal(raw, &s); err != nil {
+			t.Fatal(err)
+		}
+		return &s
+	}
+	// Calibrate: an unshrunk snapshot with short urls gives the compact size; the url length that puts the compact
+	// size just under the budget follows (each bytes of url count nTraffic times).
+	const probeLen = 1000
+	probe := x.create(shaped("probe-", probeLen), "engine")
+	snap := decode(x.snapshotOf(probe.ID))
+	if len(snap.Truncated) != 0 || len(snap.Traffic) != nTraffic {
+		t.Fatalf("the probe was shrunk: truncated %v, %d traffic", snap.Truncated, len(snap.Traffic))
+	}
+	compact, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	urlLen := probeLen + (DetectionSnapshotBudget-1000-len(compact))/nTraffic
+	if urlLen <= probeLen || urlLen > 2000 {
+		t.Fatalf("calibration gives a url length of %d (probe compact %d bytes)", urlLen, len(compact))
+	}
+
+	// The test input: the probe's shape with the longer urls, measured both ways before it is used.
+	for i := range snap.Traffic {
+		snap.Traffic[i].URL = strings.Repeat("u", urlLen)
+	}
+	compact, _ = json.Marshal(snap)
+	text := x.count(`SELECT octet_length($1::jsonb::text)`, string(compact))
+	if len(compact) > DetectionSnapshotBudget || text <= DetectionSnapshotBudget {
+		t.Fatalf("the input is %d bytes compact and %d bytes as jsonb text; want under, then over the budget of %d", len(compact), text, DetectionSnapshotBudget)
+	}
+
+	run := x.create(shaped("tested-", urlLen), "engine")
+	if n := x.count(`SELECT octet_length(snapshot::text) FROM finding_detections WHERE id=$1`, run.ID); n > DetectionSnapshotBudget {
+		t.Errorf("stored snapshot is %d bytes as jsonb text, over the budget of %d", n, DetectionSnapshotBudget)
+	}
+	got := decode(x.snapshotOf(run.ID))
+	if !reflect.DeepEqual(got.Truncated, []string{"shrink:traffic_100"}) || len(got.Traffic) != 100 {
+		t.Errorf("truncated = %v with %d traffic, want exactly shrink:traffic_100 and 100 entries", got.Truncated, len(got.Traffic))
+	}
+}
+
+// A process start (the product's startup path, run again on the same database as a restart does) and the recovery
+// that follows it add no row to tools or agents, and no detector agent exists (the detector has none in this
+// milestone).
+func TestProcessStartAddsNoToolOrAgentRow(t *testing.T) {
+	tmp := dbtest.TempDatabase(t, dbtest.RequireServer(t), "detstart")
+	first := startup(t, tmp.DSN)
+	rows := func(d *DB) (tools, agents, detector int) {
+		t.Helper()
+		if err := d.QueryRow(`SELECT (SELECT count(*) FROM tools), (SELECT count(*) FROM agents), (SELECT count(*) FROM agents WHERE key=$1)`,
+			FindingDetectionAgentKey).Scan(&tools, &agents, &detector); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	t0, a0, d0 := rows(first)
+	if d0 != 0 {
+		t.Fatalf("%d detector agent rows after the first start", d0)
+	}
+	if _, _, err := first.RecoverFindingDetections(); err != nil {
+		t.Fatal(err)
+	}
+	second := startup(t, tmp.DSN)
+	if _, _, err := second.RecoverFindingDetections(); err != nil {
+		t.Fatal(err)
+	}
+	if t1, a1, d1 := rows(second); t1 != t0 || a1 != a0 || d1 != 0 {
+		t.Errorf("tools %d -> %d, agents %d -> %d, detector agents %d after a restart", t0, t1, a0, a1, d1)
+	}
+}
+
+// A task without detection runs is archived and restored as before: its findings come back and no detection row
+// appears; the archive carries no detection table.
+func TestTaskArchiveRoundTripWithoutDetectionRunsAddsNoDetectionRows(t *testing.T) {
+	d, _ := privateCommentDB(t, "detrt")
+	counts := func() (n int) {
+		t.Helper()
+		if err := d.QueryRow(`SELECT (SELECT count(*) FROM finding_detections) + (SELECT count(*) FROM detection_rules)
+			+ (SELECT count(*) FROM detection_steps) + (SELECT count(*) FROM detection_query_results)`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	fx := archiveTaskWithComments(t, d, "nodet", 1, 0)
+	if n := countTaskFindings(t, d, fx.taskID); n != 0 {
+		t.Fatalf("%d findings remain after the archive", n)
+	}
+	for name := range fx.snapshot.Tables {
+		if strings.Contains(name, "detection") {
+			t.Errorf("the archive carries the table %s", name)
+		}
+	}
+	startRestore(t, d, fx)
+	if _, err := d.RestoreTaskArchive(fx.archive.ID, fx.snapshot, 0); err != nil {
+		t.Fatalf("restore a task without detection runs: %v", err)
+	}
+	if n := countTaskFindings(t, d, fx.taskID); n != 2 {
+		t.Errorf("%d findings restored, want 2", n)
+	}
+	if n := counts(); n != 0 {
+		t.Errorf("%d detection rows after the round trip, want 0", n)
+	}
+}
