@@ -93,6 +93,12 @@ All notable changes to this project are documented in this file. The format is b
     invalid_row=... writer_panic=...` at shutdown. See `docs/tool-rag-observation.md` and
     `docs/adr/0005-tool-rag-observation.md`.
 
+- **Storage for detections (migration `5003`, pull request 1a of the detection work).** Four tables, a function and a
+  trigger that hold detection runs, their rules, steps and query results for findings, and a database layer for them
+  (runs are queued, claimed, stopped and recovered at start, with size limits). There is **no API, no UI, no setting
+  and no worker yet**: nothing creates a run in this release, and nothing else changes for operators except the two
+  entries below (Changed, Upgrade notes). Operator view: `docs/schema-upgrade.md`, "Migration 5003".
+
 ### Changed
 
 - **The first start of this release on an existing database writes one new table, `schema_migrations`, with four
@@ -181,6 +187,13 @@ All notable changes to this project are documented in this file. The format is b
 - **bbot-recon skill**: only `scope_distance == 0` events reach `insert_assets`;
   out-of-scope events are recorded as third-party intel facts and never auto-scoped.
 
+- **Archiving a task that has detection runs is refused** (detection storage). Task archives do not carry the new
+  tables yet, so rather than lose the runs silently, queuing the archive job answers `409 Conflict` with `this task
+  has detection results, which task archives do not carry yet; delete them from the findings or upgrade to a release
+  that archives them`, and the purge refuses with the same text if a run appeared after the job was queued (the job
+  then ends as a failed archive and nothing is deleted). Deleted runs do not count; deleting the task is not refused.
+  No release creates detection runs yet, so this affects only a database that already has them.
+
 ### Upgrade notes
 
 - **Migration `0004` builds an index on `llm_usage` at the first start** (`downgrade-safe: yes`; the pin records the flag
@@ -216,6 +229,19 @@ All notable changes to this project are documented in this file. The format is b
   `ARTEX_SCHEMA_ALLOW_NEWER=5002`, or drop the table first with the guarded recipe in `docs/schema-upgrade.md`
   ("Migration 5002"). **Run that drop first, then the `0004` recipe, then the ledger cleanup**: both of those refuse while `5002` is recorded.
   `ARTEX_TOOL_RAG=off` stops the writes; rows written so far stay until their task is deleted.
+
+- **Detection storage (migration `5003`).** The first start of this release also creates four tables
+  (`finding_detections`, `detection_rules`, `detection_steps`, `detection_query_results`), the function
+  `stop_deleted_conversation_detection()` and the trigger `trg_conversation_detection_delete` on `conversations`; the
+  ledger then ends with `5003` (seven rows). `5003` is **downgrade-safe: yes** (additive tables, one function and one
+  trigger; older binaries do not read them), but an older binary refuses the unknown ledger entry: **going back to
+  0.5.17m needs `ARTEX_SCHEMA_ALLOW_NEWER=5003`** (for 0.5.16m and 0.5.15m too; they need it for `5002` or `0004`
+  otherwise), or the guarded drop. **Order of the recipes: `5003`, `5002`, `0004`, ledger cleanup** (each later one
+  refuses while an earlier migration is recorded; the `5002` and `5003` recipes also refuse a ledger row recorded
+  under another name). The drop of `5003` (`db/testdata/upgrade/rollback-drop-5003.sql`, quoted in
+  `docs/schema-upgrade.md`, "Migration 5003") is optional and **destroys every detection run, rule, step and query
+  result**: take a dump first. An older binary does not know the archive refusal below: archiving a task with it
+  deletes that task's detections. At every start the log shows `[detect] recovered stopped=<n> queued=<n>`.
 
 ### Fixed
 
@@ -359,6 +385,14 @@ All notable changes to this project are documented in this file. The format is b
   requires **142** passing tests with no skip (was 135 with `0004`); its pattern now also selects `TestToolRag*`, the
   database tests of the table, so a skip of one fails the gate. New `db/testdata/upgrade/rollback-drop-5002.sql`; the
   rollback tests run it before the ledger cleanup.
+
+- **Detection storage (pull request 1a).** Migration `5003` tests and gate: new recorded shape `s3a` (release 0.5.17m,
+  ledger `0001 0002 0003 0004 5001 5002`, `flags-v0.5.17m.txt`); the reference catalog holds the four detection tables,
+  the function and the trigger (63 tables); one more `added` ledger entry (`5003`) in every shape; the guarded
+  recipes `rollback-drop-5002.sql` and `rollback-drop-5003.sql` now also require the ledger row to carry the shipped
+  name (two tests); `.github/CODEOWNERS` names `rollback-drop-5003.sql`. `scripts/upgrade-gate.sh` now requires **166**
+  passing tests (150 before; 14 are the tests of `5003`). The cleanup of a temporary test database that a role owns now
+  waits for a server-user session to end before the drop (`db/dbtest/server.go`).
 
 ## [0.5.0] - 2026-11-04
 
