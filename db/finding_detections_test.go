@@ -1090,14 +1090,17 @@ func TestFindingDetectionSnapshotWorstInputStaysInsideTheBudget(t *testing.T) {
 		order[st.name] = i
 	}
 	units := []struct{ name, unit string }{{"four-byte", "😀"}, {"quote", `"`}, {"control", "\x01"}}
+	// The schema allows only 'http' and 'other' as a service type; the code does not rely on that (plan 6.8 caps
+	// it at 256 bytes), so the check is dropped in this disposable database to feed it a long one.
+	x.exec(`ALTER TABLE assets DROP CONSTRAINT assets_service_type_check`)
 	for ui, u := range units {
 		f := x.finding()
 		rep := func(bytes int) string { return strings.Repeat(u.unit, bytes/len(u.unit)) }
 		x.exec(`UPDATE findings SET report=$2, evidence=$3, summary=$4, name=$5 WHERE id=$1`, f, rep(1<<20), rep(1<<20), rep(1<<20), rep(5000))
 		x.addTraffic(f, 250, rep(2400)+"/")
 		x.exec(`INSERT INTO assets(type, app_name, url, technologies, service_name, service_type, extra)
-			SELECT 'app', $1::text || g, $2::text, array_fill($3::text, ARRAY[200]), $4::text, 'http', jsonb_build_object('k', $5::text)
-			FROM generate_series(1, 60) g`, fmt.Sprint("worst", ui, "-"), rep(2400), rep(128), rep(300), rep(8000))
+			SELECT 'app', $1::text || g, $2::text, array_fill($3::text, ARRAY[200]), $4::text, $6::text, jsonb_build_object('k', $5::text)
+			FROM generate_series(1, 60) g`, fmt.Sprint("worst", ui, "-"), rep(2400), rep(128), rep(300), rep(8000), rep(100000))
 		x.exec(`UPDATE findings SET asset_ids=(SELECT jsonb_agg(id) FROM assets WHERE app_name LIKE $2) WHERE id=$1`, f, fmt.Sprint("worst", ui, "-%"))
 
 		run, _, created, err := x.d.CreateFindingDetection(x.ctx, CreateDetectionInput{FindingID: f, Path: "engine"})
@@ -1131,6 +1134,10 @@ func TestFindingDetectionSnapshotWorstInputStaysInsideTheBudget(t *testing.T) {
 		for _, a := range snap.Assets {
 			whole("asset url", a.URL)
 			whole("service name", a.ServiceName)
+			whole("service type", a.ServiceType)
+			if len(a.ServiceType) > snapServiceCap {
+				t.Errorf("%s: service type is %d bytes, over the cap of %d", u.name, len(a.ServiceType), snapServiceCap)
+			}
 		}
 		if len(snap.Traffic) == 0 || len(snap.Assets) == 0 {
 			t.Errorf("%s: the snapshot lost all traffic (%d) or all assets (%d)", u.name, len(snap.Traffic), len(snap.Assets))

@@ -623,7 +623,7 @@ func buildDetectionSnapshot(ctx context.Context, tx *sql.Tx, f *detectionFinding
 		}
 	}
 	if !fits {
-		// What no step shrinks (the ids and hashes of the bound traffic, the asset service type) is not capped by
+		// What no step shrinks (the ids and hashes of the bound traffic) is not capped by
 		// the plan's list; a finding whose snapshot is still over the budget is refused with the typed limit error.
 		return nil, &DetectionLimitError{Field: "snapshot", Limit: DetectionSnapshotBudget, Unit: "bytes"}
 	}
@@ -632,12 +632,12 @@ func buildDetectionSnapshot(ctx context.Context, tx *sql.Tx, f *detectionFinding
 
 func loadSnapAssets(ctx context.Context, tx *sql.Tx, s *detectionSnapshot) error {
 	rows, err := tx.QueryContext(ctx, `SELECT a.id, COALESCE(left(a.url, $2::int),''), to_jsonb(COALESCE(a.technologies,'{}')),
-		COALESCE(left(a.service_name, $3::int),''), COALESCE(a.service_type,''), COALESCE(left(a.extra::text, $4::int),'')
+		COALESCE(left(a.service_name, $3::int),''), COALESCE(left(a.service_type, $6::int),''), COALESCE(left(a.extra::text, $4::int),'')
 		FROM assets a
 		WHERE a.id IN (SELECT e::text::bigint FROM jsonb_array_elements((SELECT asset_ids FROM findings WHERE id=$1)) e
 		               WHERE jsonb_typeof(e)='number' AND e::text ~ '^[0-9]{1,18}$')
 		ORDER BY a.id LIMIT $5::int`,
-		s.Finding.ID, snapURLCap+1, snapServiceCap+1, snapExtraCap+1, snapAssetsMax+1)
+		s.Finding.ID, snapURLCap+1, snapServiceCap+1, snapExtraCap+1, snapAssetsMax+1, snapServiceCap+1)
 	if err != nil {
 		return err
 	}
@@ -657,6 +657,7 @@ func loadSnapAssets(ctx context.Context, tx *sql.Tx, s *detectionSnapshot) error
 		}
 		s.cut(&a.URL, snapURLCap, "assets.url")
 		s.cut(&a.ServiceName, snapServiceCap, "assets.service_name")
+		s.cut(&a.ServiceType, snapServiceCap, "assets.service_type")
 		s.cut(&a.Extra, snapExtraCap, "assets.extra")
 		if len(a.Technologies) > snapTechMax {
 			a.Technologies = a.Technologies[:snapTechMax]
