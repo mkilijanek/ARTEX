@@ -63,15 +63,64 @@ func setToolRAGSeams(t *testing.T, queue int, drain, insert time.Duration) {
 	t.Cleanup(func() { toolRAGQueueSize, toolRAGDrainDeadline, toolRAGInsertTimeout = q, d, i })
 }
 
+// writerStacks returns the goroutine dump of the whole process.
+func writerStacks() string {
+	var buf strings.Builder
+	if err := pprof.Lookup("goroutine").WriteTo(&buf, 2); err != nil {
+		return err.Error()
+	}
+	return buf.String()
+}
+
+// waitNoWriter polls dump until no writer goroutine is in it, for at most timeout. Close
+// returns when the goroutine has called wg.Done (a deferred call), but the goroutine is
+// still in its epilogue for a moment after that, and a dump taken in that window (likely
+// under -race and load) lists it. The bound keeps the check honest: a goroutine that
+// never ends is still reported.
+func waitNoWriter(dump func() string, timeout, step time.Duration) (string, bool) {
+	deadline := time.Now().Add(timeout)
+	for {
+		out := dump()
+		if !strings.Contains(out, "(*toolRAGWriter).run") {
+			return out, true
+		}
+		if !time.Now().Before(deadline) {
+			return out, false
+		}
+		time.Sleep(step)
+	}
+}
+
 // noWriterGoroutine fails if a writer goroutine is still alive: Close must have waited for it.
 func noWriterGoroutine(t *testing.T) {
 	t.Helper()
-	var buf strings.Builder
-	if err := pprof.Lookup("goroutine").WriteTo(&buf, 2); err != nil {
-		t.Fatal(err)
+	if out, ok := waitNoWriter(writerStacks, 5*time.Second, 5*time.Millisecond); !ok {
+		t.Fatalf("a tool RAG writer goroutine is still running:\n%s", out)
 	}
-	if strings.Contains(buf.String(), "(*toolRAGWriter).run") {
-		t.Fatalf("a tool RAG writer goroutine is still running:\n%s", buf.String())
+}
+
+func TestWaitNoWriterToleratesAGoroutineThatIsStillLeaving(t *testing.T) {
+	calls := 0
+	dump := func() string {
+		calls++
+		if calls < 4 {
+			return "goroutine 7 [runnable]:\nserver.(*toolRAGWriter).run(0x1)\n"
+		}
+		return "goroutine 1 [running]:\n"
+	}
+	if out, ok := waitNoWriter(dump, 5*time.Second, time.Millisecond); !ok || calls != 4 {
+		t.Fatalf("ok=%v calls=%d out=%q, want ok after 4 dumps", ok, calls, out)
+	}
+}
+
+func TestWaitNoWriterStillReportsAGoroutineThatNeverEnds(t *testing.T) {
+	dump := func() string { return "goroutine 7 [select]:\nserver.(*toolRAGWriter).run(0x1)\n" }
+	start := time.Now()
+	if _, ok := waitNoWriter(dump, 50*time.Millisecond, time.Millisecond); ok {
+		t.Fatal("a writer goroutine that never ends was reported as gone")
+	}
+	if time.Since(start) < 50*time.Millisecond {
+		t.Fatal("gave up before the timeout")
 	}
 }
 
