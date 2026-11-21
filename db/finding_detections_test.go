@@ -1676,3 +1676,224 @@ func TestFindingDetectionTaskHasRunsIgnoresTombstones(t *testing.T) {
 		t.Error("a run of a finding of no task was counted")
 	}
 }
+
+// ---- the rule lists of a finding (fix round of 1a) ------------------------------------------------------------------
+
+// finishedRun makes a manual engine run that finished as completed with one rule per title; the body of a rule
+// is "BODY-<title>" so a test can see whether a body was read.
+func (x *detLayer) finishedRun(finding int64, titles ...string) int64 {
+	x.t.Helper()
+	run := x.runningRun(finding)
+	rules := []DetectionRuleInput{}
+	for _, title := range titles {
+		r := sigmaRule(title)
+		r.Body = "BODY-" + title
+		rules = append(rules, r)
+	}
+	if err := x.d.FinishFindingDetection(x.ctx, run, DetectionFinish{Status: "completed", Outcome: "unvalidated", Rules: rules}); err != nil {
+		x.t.Fatal(err)
+	}
+	return run
+}
+
+// The list of a finding carries the bodies of its latest run only; earlier runs are summaries without a body,
+// and one rule is fetched by id. A rule of another finding is not found through this finding.
+func TestFindingDetectionRuleListsCarryOnlyTheLatestBodies(t *testing.T) {
+	x := newDetLayer(t, "detrules")
+	f, other := x.finding(), x.finding()
+	run1 := x.finishedRun(f, "a1", "a2")
+	run2 := x.finishedRun(f, "b1")
+	run3 := x.finishedRun(f, "c1", "c2", "c3")
+	otherRun := x.finishedRun(other, "o1")
+
+	latest, err := x.d.ListFindingDetectionRules(x.ctx, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	titles := []string{}
+	for _, r := range latest {
+		titles = append(titles, r.Title)
+		if r.DetectionID != run3 || r.Body != "BODY-"+r.Title {
+			t.Errorf("latest list holds %+v, want only bodies of run %d", r, run3)
+		}
+	}
+	if !reflect.DeepEqual(titles, []string{"c1", "c2", "c3"}) {
+		t.Errorf("latest titles = %v, want c1 c2 c3 (oldest first)", titles)
+	}
+
+	sums, err := x.d.ListFindingDetectionRuleSummaries(x.ctx, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := []string{}
+	for _, s := range sums {
+		got = append(got, fmt.Sprintf("%d:%s", s.DetectionID, s.Title))
+		if s.Stage != "attempt" || s.Format != "sigma" || s.Validation != "unvalidated" {
+			t.Errorf("summary %+v lacks stage, format or validation", s)
+		}
+	}
+	want := []string{fmt.Sprintf("%d:b1", run2), fmt.Sprintf("%d:a2", run1), fmt.Sprintf("%d:a1", run1)}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("summaries = %v, want %v (earlier runs, newest rule first)", got, want)
+	}
+	raw, _ := json.Marshal(sums)
+	if strings.Contains(string(raw), "BODY-") || strings.Contains(string(raw), `"body"`) {
+		t.Errorf("a summary carries a body: %s", raw)
+	}
+
+	// One rule, with its body; through its own finding only.
+	oneID := sums[len(sums)-1].ID
+	one, err := x.d.GetFindingDetectionRule(x.ctx, f, oneID)
+	if err != nil || one == nil || one.Body != "BODY-a1" || one.DetectionID != run1 {
+		t.Errorf("rule %d = %+v, %v; want the body of a1", oneID, one, err)
+	}
+	if got, err := x.d.GetFindingDetectionRule(x.ctx, other, oneID); got != nil || err != nil {
+		t.Errorf("a rule of another finding was returned: %+v %v", got, err)
+	}
+	if got, err := x.d.GetFindingDetectionRule(x.ctx, f, 1<<40); got != nil || err != nil {
+		t.Errorf("a rule that does not exist: %+v %v", got, err)
+	}
+	// The other finding's single run: its latest list holds it, and it has no earlier runs.
+	if l, _ := x.d.ListFindingDetectionRules(x.ctx, other); len(l) != 1 || l[0].DetectionID != otherRun {
+		t.Errorf("rules of the other finding = %v", l)
+	}
+	if s, err := x.d.ListFindingDetectionRuleSummaries(x.ctx, other); err != nil || len(s) != 0 {
+		t.Errorf("summaries of a finding with one run = %v, %v; want none", s, err)
+	}
+	// A finding without rules gets empty lists, not nil.
+	empty := x.finding()
+	if l, err := x.d.ListFindingDetectionRules(x.ctx, empty); err != nil || l == nil || len(l) != 0 {
+		t.Errorf("latest list of a finding without rules = %v, %v", l, err)
+	}
+	if s, err := x.d.ListFindingDetectionRuleSummaries(x.ctx, empty); err != nil || s == nil || len(s) != 0 {
+		t.Errorf("summaries of a finding without rules = %v, %v", s, err)
+	}
+}
+
+// Every rule query of a finding is served by an existing index: with sequential scans switched off the plan has
+// no sequential scan and no sort (the planner must have a way that needs neither). The plans are logged.
+func TestFindingDetectionRuleQueriesUseTheirIndexes(t *testing.T) {
+	x := newDetLayer(t, "detplans")
+	f := x.finding()
+	x.finishedRun(f, "a1")
+	x.finishedRun(f, "b1", "b2")
+	cases := []struct {
+		name, sql string
+		args      []any
+		indexes   []string
+	}{
+		{"latest run rules", latestRunRulesSQL, []any{f}, []string{"idx_detection_rules_finding", "idx_detection_rules_detection"}},
+		{"earlier run summaries", earlierRuleSummariesSQL, []any{f}, []string{"idx_detection_rules_finding"}},
+		{"one rule", oneFindingRuleSQL, []any{int64(1), f}, []string{"Index Scan using idx_detection_rules_finding"}},
+	}
+	for _, c := range cases {
+		tx, err := x.d.BeginTx(x.ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(x.ctx, `SET LOCAL enable_seqscan = off`); err != nil {
+			tx.Rollback()
+			t.Fatal(err)
+		}
+		// EXPLAIN takes no parameters: the arguments are written into the text (they are integers made here).
+		q := c.sql
+		for i := len(c.args); i >= 1; i-- {
+			q = strings.ReplaceAll(q, fmt.Sprintf("$%d", i), fmt.Sprint(c.args[i-1]))
+		}
+		rows, err := tx.QueryContext(x.ctx, `EXPLAIN `+q)
+		if err != nil {
+			tx.Rollback()
+			t.Fatalf("%s: explain: %v", c.name, err)
+		}
+		var plan []string
+		for rows.Next() {
+			var line string
+			if err := rows.Scan(&line); err != nil {
+				rows.Close()
+				tx.Rollback()
+				t.Fatal(err)
+			}
+			plan = append(plan, line)
+		}
+		rows.Close()
+		tx.Rollback()
+		text := strings.Join(plan, "\n")
+		t.Logf("%s:\n%s", c.name, text)
+		if strings.Contains(text, "Seq Scan") || strings.Contains(text, "Sort") {
+			t.Errorf("%s: the plan has a sequential scan or a sort", c.name)
+		}
+		for _, idx := range c.indexes {
+			if !strings.Contains(text, idx) {
+				t.Errorf("%s: the plan does not use %s", c.name, idx)
+			}
+		}
+	}
+}
+
+// A run that is deleted while it is read is nil, never an error; a tombstone and a missing run are nil too.
+func TestFindingDetectionGetRunIsNilNotAnErrorWhenDeleted(t *testing.T) {
+	x := newDetLayer(t, "detget")
+	if got, err := x.d.GetFindingDetection(x.ctx, 1<<40); got != nil || err != nil {
+		t.Errorf("a missing run: %+v %v", got, err)
+	}
+	const n = 24
+	ids := make([]int64, n)
+	for i := range ids {
+		ids[i] = x.finishedRun(x.finding())
+	}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for _, id := range ids {
+		wg.Go(func() {
+			<-start
+			for range 5 {
+				if got, err := x.d.GetFindingDetection(x.ctx, id); err != nil {
+					t.Errorf("get run %d while it is deleted: %v", id, err)
+					return
+				} else if got != nil && got.ID != id {
+					t.Errorf("get run %d returned run %d", id, got.ID)
+				}
+			}
+		})
+		wg.Go(func() {
+			<-start
+			if _, err := x.d.DeleteFindingDetection(x.ctx, id); err != nil {
+				t.Errorf("delete run %d: %v", id, err)
+			}
+		})
+	}
+	close(start)
+	wg.Wait()
+	for _, id := range ids {
+		if got, err := x.d.GetFindingDetection(x.ctx, id); got != nil || err != nil {
+			t.Errorf("run %d after its delete: %+v %v", id, got, err)
+		}
+	}
+}
+
+// What no shrink step can cut (the id of a bound traffic snapshot is not capped by the plan's list) can keep the
+// snapshot over the budget after every step. The create is then refused with the typed limit error, and leaves
+// no run.
+func TestFindingDetectionSnapshotOverBudgetAfterEveryStepIsALimitError(t *testing.T) {
+	x := newDetLayer(t, "detover")
+	f := x.finding()
+	// Twelve bindings are the last the shrink steps keep; each id is 60 KB of control characters, six bytes each
+	// once escaped: far over 768 KiB.
+	x.exec(`INSERT INTO traffic_evidence_snapshots(id, source_traffic_id, captured_at, url, method, status, req_head, resp_head, req_hash, resp_hash, req_len, resp_len)
+		SELECT repeat(chr(1), 60000) || g, 'src' || g, 1700000000 + g, 'http://t/' || g, 'GET', 200, 'h', 'h', repeat('a', 64), repeat('b', 64), 10, 20
+		FROM generate_series(1, 20) g`)
+	x.exec(`INSERT INTO finding_traffic_bindings(finding_id, snapshot_id, role, position)
+		SELECT $1::bigint, repeat(chr(1), 60000) || g, 'proof', g FROM generate_series(1, 20) g`, f)
+	_, _, created, err := x.d.CreateFindingDetection(x.ctx, CreateDetectionInput{FindingID: f, Path: "engine"})
+	if created {
+		t.Error("a run was created over the snapshot budget")
+	}
+	requireLimit(t, "a snapshot over the budget after every step", err, "snapshot")
+	var le *DetectionLimitError
+	if errors.As(err, &le) && (le.Limit != DetectionSnapshotBudget || le.Unit != "bytes") {
+		t.Errorf("limit error = %+v, want %d bytes", le, DetectionSnapshotBudget)
+	}
+	if n := x.count(`SELECT count(*) FROM finding_detections WHERE finding_id=$1`, f); n != 0 {
+		t.Errorf("%d runs after the refused create", n)
+	}
+}

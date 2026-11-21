@@ -125,11 +125,12 @@ const detectionListCols = `id, finding_id, conversation_id, path, trigger_kind, 
 	status, phase, not_before, claimed_at, attempts, queries_used, outcome, end_code, notes, summary, error,
 	created_at, started_at, finished_at, deleted_at`
 
-func scanDetection(row interface{ Scan(...any) error }) (*FindingDetection, error) {
+// scanDetection scans the columns of detectionListCols and then extra, for a query that selects more.
+func scanDetection(row interface{ Scan(...any) error }, extra ...any) (*FindingDetection, error) {
 	r := &FindingDetection{}
-	err := row.Scan(&r.ID, &r.FindingID, &r.ConversationID, &r.Path, &r.TriggerKind, &r.AutoAttempt, &r.StartedByKind, &r.StartedBySubject,
+	err := row.Scan(append([]any{&r.ID, &r.FindingID, &r.ConversationID, &r.Path, &r.TriggerKind, &r.AutoAttempt, &r.StartedByKind, &r.StartedBySubject,
 		&r.Status, &r.Phase, &r.NotBefore, &r.ClaimedAt, &r.Attempts, &r.QueriesUsed, &r.Outcome, &r.EndCode, &r.Notes, &r.Summary, &r.Error,
-		&r.CreatedAt, &r.StartedAt, &r.FinishedAt, &r.DeletedAt)
+		&r.CreatedAt, &r.StartedAt, &r.FinishedAt, &r.DeletedAt}, extra...)...)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -603,7 +604,7 @@ func buildDetectionSnapshot(ctx context.Context, tx *sql.Tx, f *detectionFinding
 	if err != nil {
 		return nil, err
 	}
-	size, fits, err := jsonFits(ctx, tx, raw, DetectionSnapshotBudget)
+	_, fits, err := jsonFits(ctx, tx, raw, DetectionSnapshotBudget)
 	if err != nil {
 		return nil, err
 	}
@@ -613,7 +614,7 @@ func buildDetectionSnapshot(ctx context.Context, tx *sql.Tx, f *detectionFinding
 			if raw, err = json.Marshal(s); err != nil {
 				return nil, err
 			}
-			if size, fits, err = jsonFits(ctx, tx, raw, DetectionSnapshotBudget); err != nil {
+			if _, fits, err = jsonFits(ctx, tx, raw, DetectionSnapshotBudget); err != nil {
 				return nil, err
 			}
 		}
@@ -622,7 +623,9 @@ func buildDetectionSnapshot(ctx context.Context, tx *sql.Tx, f *detectionFinding
 		}
 	}
 	if !fits {
-		return nil, fmt.Errorf("snapshot is %d bytes after every shrink step, over the budget of %d", size, DetectionSnapshotBudget)
+		// What no step shrinks (the ids and hashes of the bound traffic, the asset service type) is not capped by
+		// the plan's list; a finding whose snapshot is still over the budget is refused with the typed limit error.
+		return nil, &DetectionLimitError{Field: "snapshot", Limit: DetectionSnapshotBudget, Unit: "bytes"}
 	}
 	return raw, nil
 }
@@ -1244,14 +1247,16 @@ func (d *DB) ListFindingDetections(ctx context.Context, findingID int64) ([]*Fin
 }
 
 // GetFindingDetection returns one run with its input manifest and stage report (never the snapshot), or nil when
-// the run does not exist or is a tombstone.
+// the run does not exist or is a tombstone. It is one statement, so a delete in between is a nil, never an error.
 func (d *DB) GetFindingDetection(ctx context.Context, id int64) (*FindingDetection, error) {
-	r, err := scanDetection(d.QueryRowContext(ctx, `SELECT `+detectionListCols+` FROM finding_detections WHERE id=$1 AND deleted_at IS NULL`, id))
+	var manifest, report []byte
+	r, err := scanDetection(d.QueryRowContext(ctx, `SELECT `+detectionListCols+`, input_manifest, stage_report
+		FROM finding_detections WHERE id=$1 AND deleted_at IS NULL`, id), &manifest, &report)
 	if err != nil || r == nil {
-		return r, err
+		return nil, err
 	}
-	err = d.QueryRowContext(ctx, `SELECT input_manifest, stage_report FROM finding_detections WHERE id=$1`, id).Scan(&r.InputManifest, &r.StageReport)
-	return r, err
+	r.InputManifest, r.StageReport = manifest, report
+	return r, nil
 }
 
 // ListDetectionSteps is the run log of a run in order.
@@ -1278,9 +1283,66 @@ func (d *DB) ListDetectionRules(ctx context.Context, id int64) ([]*DetectionRule
 	return d.listRules(ctx, `SELECT `+detectionRuleCols+` FROM detection_rules WHERE detection_id=$1 ORDER BY id`, id)
 }
 
-// ListFindingDetectionRules returns the rules of a finding, the latest run first.
+// ListFindingDetectionRules returns the rules, with their bodies, of the latest run of the finding that has rules,
+// oldest first. The latest run is the run of the newest rule (a finding has at most one active run, so rule ids
+// grow with run ids). Earlier runs are in ListFindingDetectionRuleSummaries, one rule by GetFindingDetectionRule:
+// the bodies of 100 runs of 24 rules are never read at once. Both lookups use idx_detection_rules_finding and
+// idx_detection_rules_detection.
 func (d *DB) ListFindingDetectionRules(ctx context.Context, findingID int64) ([]*DetectionRule, error) {
-	return d.listRules(ctx, `SELECT `+detectionRuleCols+` FROM detection_rules WHERE finding_id=$1 ORDER BY detection_id DESC, id`, findingID)
+	return d.listRules(ctx, latestRunRulesSQL, findingID)
+}
+
+// The three rule queries of a finding, named so a test can ask the database for their plans.
+const (
+	latestRunRulesSQL = `SELECT ` + detectionRuleCols + ` FROM detection_rules
+		WHERE detection_id = (SELECT detection_id FROM detection_rules WHERE finding_id=$1 ORDER BY id DESC LIMIT 1)
+		ORDER BY id`
+	earlierRuleSummariesSQL = `SELECT id, detection_id, parent_id, stage, format, title, validation, created_at FROM detection_rules
+		WHERE finding_id=$1
+		  AND detection_id <> (SELECT detection_id FROM detection_rules WHERE finding_id=$1 ORDER BY id DESC LIMIT 1)
+		ORDER BY id DESC`
+	oneFindingRuleSQL = `SELECT ` + detectionRuleCols + ` FROM detection_rules WHERE id=$1 AND finding_id=$2`
+)
+
+// DetectionRuleSummary is a rule without its body, validation detail and coverage.
+type DetectionRuleSummary struct {
+	ID          int64     `json:"id"`
+	DetectionID int64     `json:"detection_id"`
+	ParentID    *int64    `json:"parent_id"`
+	Stage       string    `json:"stage"`
+	Format      string    `json:"format"`
+	Title       string    `json:"title"`
+	Validation  string    `json:"validation"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// ListFindingDetectionRuleSummaries returns the rules of the finding's runs before the latest one (the run
+// ListFindingDetectionRules returns), newest first, without bodies: at most 100 runs of 24 small rows.
+func (d *DB) ListFindingDetectionRuleSummaries(ctx context.Context, findingID int64) ([]DetectionRuleSummary, error) {
+	rows, err := d.QueryContext(ctx, earlierRuleSummariesSQL, findingID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []DetectionRuleSummary{}
+	for rows.Next() {
+		var r DetectionRuleSummary
+		if err := rows.Scan(&r.ID, &r.DetectionID, &r.ParentID, &r.Stage, &r.Format, &r.Title, &r.Validation, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// GetFindingDetectionRule returns one rule with its body, or nil when the finding has no such rule (a rule of
+// another finding is not returned).
+func (d *DB) GetFindingDetectionRule(ctx context.Context, findingID, ruleID int64) (*DetectionRule, error) {
+	r, err := scanDetectionRule(d.QueryRowContext(ctx, oneFindingRuleSQL, ruleID, findingID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return r, err
 }
 
 func (d *DB) listRules(ctx context.Context, query string, arg int64) ([]*DetectionRule, error) {
