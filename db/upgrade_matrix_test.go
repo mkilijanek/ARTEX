@@ -28,6 +28,7 @@ import (
 //	r0513   release 0.5.13m, whose schema.sql is the frozen one
 //	s2a     release 0.5.15m, the first with the migration ledger: the frozen schema.sql, the llm tables of the
 //	        baseline migrations and the ledger with the four baseline rows
+//	s3a     release 0.5.17m: the same schema.sql, the ledger 0001 0002 0003 0004 5001 5002 and the tool RAG table
 //	legacy  SYNTHETIC: the r0509 schema with the older forms of legacy-mutations.sql put back
 //
 // None of these tests skips: a missing ARTEX_PG_DSN, a refused DSN or a failed Open is a failure.
@@ -52,18 +53,39 @@ const noLedger = "the releases of every shape predate the migration runner and h
 // release; the first start creates it empty and records one more `added` ledger row per shape.
 const noToolRag = "the releases of every shape predate migration 5002; the first start creates tool_rag_observations empty (docs/phase-d3-plan.md 3.6)"
 
+// noDetections: the four tables of migration 5003 (docs/detector-plan.md section 5) are created after every recorded
+// release; the first start creates them empty and records one more `added` ledger row per shape.
+const noDetections = "the releases of every shape predate migration 5003; the first start creates the detection tables empty (docs/detector-plan.md section 5)"
+
+// noToolRagRows: s3a has the table tool_rag_observations (migration 5002 ran), but the data fixture it shares with
+// the older shapes was written before that migration and holds no observation row.
+const noToolRagRows = "the data fixture predates migration 5002 and holds no observation row; the rows of the table are the business of the TestToolRag tests"
+
+var detectionTables = []string{"finding_detections", "detection_rules", "detection_steps", "detection_query_results"}
+
+// withDetections adds the four tables of migration 5003 to the exemptions of a shape.
+func withDetections(exempt map[string]string) map[string]string {
+	for _, tbl := range detectionTables {
+		exempt[tbl] = noDetections
+	}
+	return exempt
+}
+
 var matrixShapes = []matrixShape{
 	{name: "r0509", recorded: "r0509", data: "data-r0509.sql",
-		exempt: map[string]string{"finding_comments": noFindingComments, "schema_migrations": noLedger, "tool_rag_observations": noToolRag}},
+		exempt: withDetections(map[string]string{"finding_comments": noFindingComments, "schema_migrations": noLedger, "tool_rag_observations": noToolRag})},
 	{name: "r0512", recorded: "r0512", data: "data-r0512.sql",
-		exempt: map[string]string{"schema_migrations": noLedger, "tool_rag_observations": noToolRag}},
+		exempt: withDetections(map[string]string{"schema_migrations": noLedger, "tool_rag_observations": noToolRag})},
 	{name: "r0513", recorded: "r0513", data: "data-r0513.sql",
-		exempt: map[string]string{"schema_migrations": noLedger, "tool_rag_observations": noToolRag}},
+		exempt: withDetections(map[string]string{"schema_migrations": noLedger, "tool_rag_observations": noToolRag})},
 	// s2a has a ledger before startup, so its table schema_migrations has rows and no exemption.
 	{name: "s2a", recorded: "s2a", data: "data-r0513.sql",
-		exempt: map[string]string{"tool_rag_observations": noToolRag}},
+		exempt: withDetections(map[string]string{"tool_rag_observations": noToolRag})},
+	// s3a has a ledger and the tool RAG table before startup: only the four detection tables are missing.
+	{name: "s3a", recorded: "s3a", data: "data-r0513.sql",
+		exempt: withDetections(map[string]string{"tool_rag_observations": noToolRagRows})},
 	{name: "legacy", recorded: "r0509", mutations: "legacy-mutations.sql", data: "data-legacy.sql",
-		exempt: map[string]string{"finding_comments": noFindingComments, "schema_migrations": noLedger, "tool_rag_observations": noToolRag}},
+		exempt: withDetections(map[string]string{"finding_comments": noFindingComments, "schema_migrations": noLedger, "tool_rag_observations": noToolRag})},
 }
 
 func readUpgradeFile(t *testing.T, name string) string {
@@ -649,7 +671,7 @@ func TestUpgradeLegacyBranchesWereEntered(t *testing.T) {
 	srv := dbtest.RequireServer(t)
 	for _, sh := range matrixShapes {
 		sh := sh
-		if sh.name == "r0512" || sh.name == "r0513" || sh.name == "s2a" {
+		if sh.name == "r0512" || sh.name == "r0513" || sh.name == "s2a" || sh.name == "s3a" {
 			continue // identical DDL to r0509 apart from finding_comments and findings.ticket_id; not a legacy candidate
 		}
 		t.Run(sh.name, func(t *testing.T) {

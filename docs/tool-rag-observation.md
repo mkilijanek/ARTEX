@@ -365,14 +365,18 @@ planner is one key per task.
      IF (SELECT max(version) FROM schema_migrations WHERE version >= 5000) IS DISTINCT FROM 5002 THEN
        RAISE EXCEPTION '5002 is not the newest fork migration: restore the pre-upgrade dump instead';
      END IF;
+     IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = 5002 AND name = '5002_tool_rag_observations.sql') THEN
+       RAISE EXCEPTION '5002 is recorded under another name: restore the pre-upgrade dump instead';
+     END IF;
    END $$;
    DELETE FROM schema_migrations WHERE version = 5002 AND name = '5002_tool_rag_observations.sql';
    DROP TABLE IF EXISTS tool_rag_observations;
    COMMIT;
    ```
 
-   It **refuses on any other ledger**: when `5002` is not the newest fork migration it raises and changes nothing, and
-   the way back is the pre-upgrade dump.
+   It **refuses on any other ledger**: when `5002` is not the newest fork migration (a database that ran the next release has `5003`: drop that first, see
+   "Migration 5003" in [schema-upgrade.md](schema-upgrade.md)) or its row has another name, it raises and changes
+   nothing, and the way back is the pre-upgrade dump.
 3. **Order with the other recipes.** The recipe for `0004` (`rollback-0004-index.sql`) accepts only the ledger
    `1 2 3 4 5001` and the older ledger cleanup (`rollback-cleanup-ledger.sql`) only `1 2 3 5001`, so both refuse while
    `5002` is recorded. Run the `5002` drop **first**, then the `0004` recipe, then the cleanup, if you want them

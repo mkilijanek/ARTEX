@@ -2,6 +2,7 @@ package db
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -59,6 +60,19 @@ WHERE relation.source_task_id=$1 LIMIT 1`, taskID).Scan(&dependent)
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
+	}
+	// Archives do not carry detection runs yet. A run started after the job was queued must stop the purge: lock
+	// the task's findings first (a start locks its finding row, so it either is seen here or waits and finds no
+	// finding), then look for runs that are not tombstones. Nothing has been deleted yet at this point.
+	if _, err := tx.Exec(`SELECT id FROM findings WHERE task_id=$1 FOR UPDATE`, taskID); err != nil {
+		return fmt.Errorf("lock the findings of task %d: %w", taskID, err)
+	}
+	hasRuns, err := taskHasDetectionRuns(context.Background(), tx, taskID)
+	if err != nil {
+		return fmt.Errorf("check task %d for detection runs: %w", taskID, err)
+	}
+	if hasRuns {
+		return ErrTaskArchiveDetections
 	}
 	// Prevent task/asset ownership from changing while exclusivity is rechecked.
 	if _, err := tx.Exec(`LOCK TABLE assets, exploration_anchors IN SHARE ROW EXCLUSIVE MODE`); err != nil {

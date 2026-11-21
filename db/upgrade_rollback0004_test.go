@@ -23,9 +23,9 @@ func rollbackRun0004(t *testing.T, tmp *dbtest.Temp) error {
 }
 
 // AC29 (6): the guarded recipe of docs/phase-d2-stage2-plan.md 3.8 for 0004, on the ledger it is written for
-// (baseline and 0004; a database that this release started has 5002 as well, so the drop of 5002 runs first and
-// this recipe second): the index and the ledger row go, nothing else changes, the previous binary starts
-// without the override, and the new binary applies 0004 and 5002 again.
+// (baseline and 0004; a database that this release started has 5002 and 5003 as well, so the drops of 5003 and
+// 5002 run first and this recipe third): the index and the ledger row go, nothing else changes, the previous
+// binary starts without the override, and the new binary applies 0004, 5002 and 5003 again.
 func TestUpgradeRollback0004RecipeDropsTheIndexAndTheLedgerRow(t *testing.T) {
 	tmp := buildShape(t, dbtest.RequireServer(t), matrixShapeNamed(t, "s2a"))
 	conn := tmp.Conn(t)
@@ -36,10 +36,13 @@ func TestUpgradeRollback0004RecipeDropsTheIndexAndTheLedgerRow(t *testing.T) {
 	requireLlmUsageTsIndex(t, "after the start", d.DB)
 	rowsBefore, digestsBefore := takeRows(t, d.DB), takeDigests(t, d.DB)
 
-	// With 5002 on record the recipe for 0004 refuses: the drop of 5002 comes first.
+	// With 5002 and 5003 on record the recipe for 0004 refuses: the drops of 5003 and 5002 come first.
 	var pgErr *pgconn.PgError
 	if err := rollbackRun0004(t, tmp); err == nil || !errors.As(err, &pgErr) || pgErr.Code != "P0001" || !strings.Contains(pgErr.Message, "schema_migrations is not baseline + 0004") {
 		t.Fatalf("the recipe on the ledger baseline + 0004 + 5002 did not raise the guard's exception (%v)", err)
+	}
+	if err := rollbackRunScript(t, d.DB, rollbackDropDetectionsFile); err != nil {
+		t.Fatalf("the 5003 drop failed (%s)", dbtest.AtomicErrorSummary(err))
 	}
 	if err := rollbackRunScript(t, d.DB, rollbackDropToolRagFile); err != nil {
 		t.Fatalf("the 5002 drop failed (%s)", dbtest.AtomicErrorSummary(err))
@@ -53,8 +56,8 @@ func TestUpgradeRollback0004RecipeDropsTheIndexAndTheLedgerRow(t *testing.T) {
 	if def := llmUsageTsIndexDef(t, d.DB); def != "" {
 		t.Errorf("after the recipe %s still exists (%s)", llmUsageTsIndex, def)
 	}
-	if diff := dbtest.DiffLines(referenceWithoutToolRag(referenceWithoutLlmUsageTsIndex(loadReference(t))), dbtest.Lines(tmp.Catalog(t, d.DB))); len(diff) > 0 {
-		t.Errorf("after the recipes the catalog is not the reference without the index and 5002's table (%d objects):\n  %s", len(diff), strings.Join(diff, "\n  "))
+	if diff := dbtest.DiffLines(referenceWithoutDetections(referenceWithoutToolRag(referenceWithoutLlmUsageTsIndex(loadReference(t)))), dbtest.Lines(tmp.Catalog(t, d.DB))); len(diff) > 0 {
+		t.Errorf("after the recipes the catalog is not the reference without the index, 5002's table and the detection objects (%d objects):\n  %s", len(diff), strings.Join(diff, "\n  "))
 	}
 	if p := dbtest.RepeatProblems(rollbackRowsWithoutLedger(rowsBefore), rollbackRowsWithoutLedger(takeRows(t, d.DB))); len(p) > 0 {
 		t.Errorf("the recipe changed rows (%d):\n  %s", len(p), strings.Join(p, "\n  "))
@@ -135,13 +138,13 @@ func TestUpgradeRollback0004RecipeRefusesAnyOtherLedger(t *testing.T) {
 		}
 		return out
 	}
-	extra := appliedMigration{version: 5003, name: "5003_synthetic.sql", checksum: "synthetic", appliedAt: full[0].appliedAt}
+	extra := appliedMigration{version: 5903, name: "5903_synthetic.sql", checksum: "synthetic", appliedAt: full[0].appliedAt}
 	for _, tc := range []struct {
 		name string
 		rows []appliedMigration
 	}{
 		{"baseline only (0004 not recorded)", without(4)},
-		{"5002 applied as well (the drop of 5002 comes first)", full},
+		{"5002 and 5003 applied as well (their drops come first)", full},
 		{"a later fork migration as well", append(append([]appliedMigration{}, full...), extra)},
 		{"0003 missing", without(3)},
 		{"5001 missing", without(5001)},

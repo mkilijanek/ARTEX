@@ -390,6 +390,12 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 		pg.Close()
 		return nil, fmt.Errorf("recover finding retests: %w", err)
 	}
+	if stopped, queued, err := pg.RecoverFindingDetections(); err != nil {
+		pg.Close()
+		return nil, fmt.Errorf("recover finding detections: %w", err)
+	} else {
+		log.Printf("[detect] recovered stopped=%d queued=%d", stopped, queued)
+	}
 	m := &Manager{dir: dir, pg: pg, assets: pg.Assets(), tasks: map[string]*Task{}, interceptor: intercept.New(pg), toolRAG: newToolRAGWriter(pg.InsertToolRAGObservation)}
 	if proxyAddr != "" {
 		tr, err := traffic.Open(filepath.Join(dir, "traffic"), proxyAddr)

@@ -24,6 +24,31 @@ const rollbackCleanupFile = "rollback-cleanup-ledger.sql"
 // ran 5002 holds a ledger of more than the baseline set, so the cleanup above refuses it until 5002 is dropped.
 const rollbackDropToolRagFile = "rollback-drop-5002.sql"
 
+// rollbackDropDetectionsFile is the guarded drop of migration 5003 (docs/detector-plan.md section 5). A database that
+// ran 5003 has it as the newest fork migration, so the drop of 5002, the recipe for 0004 and the cleanup refuse it
+// until 5003 is dropped: the order is 5003, 5002, 0004, the ledger cleanup.
+const rollbackDropDetectionsFile = "rollback-drop-5003.sql"
+
+// detectionObjectTokens are the names that every catalog line of migration 5003 carries: the four tables with their
+// columns, constraints, indexes and sequences, the function and the trigger.
+var detectionObjectTokens = []string{"finding_detections", "detection_rules", "detection_steps", "detection_query_results",
+	"stop_deleted_conversation_detection", "trg_conversation_detection_delete"}
+
+// referenceWithoutDetections removes the lines of the objects that migration 5003 creates.
+func referenceWithoutDetections(lines []string) []string {
+	var out []string
+next:
+	for _, l := range lines {
+		for _, tok := range detectionObjectTokens {
+			if strings.Contains(l, tok) {
+				continue next
+			}
+		}
+		out = append(out, l)
+	}
+	return out
+}
+
 // referenceWithoutToolRag removes the lines of table tool_rag_observations (migration 5002): its columns,
 // constraints, index and sequence all carry the table name.
 func referenceWithoutToolRag(lines []string) []string {
@@ -73,12 +98,15 @@ func rollbackRowsWithoutLedger(s *dbtest.RowSnapshot) *dbtest.RowSnapshot {
 	return out
 }
 
-// rollbackToBaseline runs the two recipes that come before the ledger cleanup, in the documented order, on a
-// database that this release started (ledger 0001 0002 0003 0004 5001 5002): the drop of 5002 first (its guard
-// wants 5002 to be the newest fork migration), then the recipe for 0004 (its guard wants exactly baseline and
-// 0004). The ledger is the baseline set afterwards.
+// rollbackToBaseline runs the three recipes that come before the ledger cleanup, in the documented order, on a
+// database that this release started (ledger 0001 0002 0003 0004 5001 5002 5003): the drop of 5003 first (its guard
+// wants 5003 to be the newest fork migration), then the drop of 5002 (the same guard for 5002), then the recipe for
+// 0004 (its guard wants exactly baseline and 0004). The ledger is the baseline set afterwards.
 func rollbackToBaseline(t *testing.T, tmp *dbtest.Temp, d *DB) {
 	t.Helper()
+	if err := rollbackRunScript(t, d.DB, rollbackDropDetectionsFile); err != nil {
+		t.Fatalf("the 5003 drop failed (%s)", dbtest.AtomicErrorSummary(err))
+	}
 	if err := rollbackRunScript(t, d.DB, rollbackDropToolRagFile); err != nil {
 		t.Fatalf("the 5002 drop failed (%s)", dbtest.AtomicErrorSummary(err))
 	}
@@ -89,10 +117,10 @@ func rollbackToBaseline(t *testing.T, tmp *dbtest.Temp, d *DB) {
 }
 
 // AC22 (first half): on a database whose ledger is exactly the baseline set (a database that this release
-// started, after the drop of 5002 and the recipe for 0004, in that order), the cleanup drops the ledger and
-// nothing else (the catalog is the reference without the ledger lines, 5002's table and 0004's index, the rows
-// are those of before), and the next start adopts the baseline again, applies 0004 and 5002 and converges to
-// the reference.
+// started, after the drop of 5003, the drop of 5002 and the recipe for 0004, in that order), the cleanup drops the
+// ledger and nothing else (the catalog is the reference without the ledger lines, the detection objects, 5002's
+// table and 0004's index, the rows are those of before), and the next start adopts the baseline again, applies
+// 0004, 5002 and 5003 and converges to the reference.
 func TestUpgradeRollbackCleanupDropsABaselineLedger(t *testing.T) {
 	srv := dbtest.RequireServer(t)
 	var r0513 matrixShape
@@ -114,8 +142,8 @@ func TestUpgradeRollbackCleanupDropsABaselineLedger(t *testing.T) {
 	if migrationTableExists(t, d.DB, "schema_migrations") {
 		t.Fatal("the cleanup left the ledger table")
 	}
-	if diff := dbtest.DiffLines(referenceWithoutToolRag(referenceWithoutLlmUsageTsIndex(referenceWithoutLedger(t))), dbtest.Lines(tmp.Catalog(t, d.DB))); len(diff) > 0 {
-		t.Errorf("after the cleanup the catalog is not the reference without the ledger, 5002's table and 0004's index (%d objects):\n  %s", len(diff), strings.Join(diff, "\n  "))
+	if diff := dbtest.DiffLines(referenceWithoutDetections(referenceWithoutToolRag(referenceWithoutLlmUsageTsIndex(referenceWithoutLedger(t)))), dbtest.Lines(tmp.Catalog(t, d.DB))); len(diff) > 0 {
+		t.Errorf("after the cleanup the catalog is not the reference without the ledger, the detection objects, 5002's table and 0004's index (%d objects):\n  %s", len(diff), strings.Join(diff, "\n  "))
 	}
 	if p := dbtest.RepeatProblems(rollbackRowsWithoutLedger(rowsBefore), rollbackRowsWithoutLedger(takeRows(t, d.DB))); len(p) > 0 {
 		t.Errorf("the cleanup changed rows (%d):\n  %s", len(p), strings.Join(p, "\n  "))
@@ -124,7 +152,7 @@ func TestUpgradeRollbackCleanupDropsABaselineLedger(t *testing.T) {
 		t.Errorf("after the cleanup: %d granted and %d waiting locks on the key (err %v), want 0 and 0", granted, waiting, err)
 	}
 
-	// The next start re-adopts, applies 0004 and 5002 and converges.
+	// The next start re-adopts, applies 0004, 5002 and 5003 and converges.
 	d2 := startup(t, tmp.DSN)
 	requireEmbeddedLedger(t, readLedger(t, d2.DB))
 	if diff := dbtest.DiffLines(loadReference(t), dbtest.Lines(tmp.Catalog(t, d2.DB))); len(diff) > 0 {
@@ -141,7 +169,7 @@ func TestUpgradeRollbackCleanupDropsABaselineLedger(t *testing.T) {
 // AC22 (second half), negative control (g): on a ledger that holds anything but exactly the baseline set, the
 // cleanup RAISES and changes nothing: the ledger table, its rows, the catalog, every row and every sequence
 // stay as they were, and the session holds no lock afterwards. The ledgers tried are one with a later migration
-// (0004, a synthetic 5002, both, as a started database holds them), one that lacks a baseline version, and an empty one.
+// (0004, a synthetic 5002, both, as a started database holds them, and the real 5003 on top), one that lacks a baseline version, and an empty one.
 func TestUpgradeRollbackCleanupRefusesAnyOtherLedger(t *testing.T) {
 	srv := dbtest.RequireServer(t)
 	tmp := dbtest.TempDatabase(t, srv, "rollbackguard")
@@ -172,7 +200,8 @@ func TestUpgradeRollbackCleanupRefusesAnyOtherLedger(t *testing.T) {
 	}{
 		{"0004 applied", append(append([]appliedMigration{}, baseline...), extra(4, "0004_llm_usage_ts_index.sql"))},
 		{"5002 applied", append(append([]appliedMigration{}, baseline...), extra(5002, "5002_synthetic.sql"))},
-		{"0004 and 5002 applied (a started database)", append(append([]appliedMigration{}, baseline...), extra(4, "0004_llm_usage_ts_index.sql"), extra(5002, "5002_tool_rag_observations.sql"))},
+		{"0004 and 5002 applied", append(append([]appliedMigration{}, baseline...), extra(4, "0004_llm_usage_ts_index.sql"), extra(5002, "5002_tool_rag_observations.sql"))},
+		{"0004, 5002 and 5003 applied (a started database)", append(append([]appliedMigration{}, baseline...), extra(4, "0004_llm_usage_ts_index.sql"), extra(5002, "5002_tool_rag_observations.sql"), extra(5003, "5003_finding_detections.sql"))},
 		{"0003 missing", append(append([]appliedMigration{}, baseline[:2]...), baseline[3])},
 		{"ledger empty", nil},
 	} {
@@ -201,10 +230,10 @@ func TestUpgradeRollbackCleanupRefusesAnyOtherLedger(t *testing.T) {
 	requireBaselineLedger(t, readLedger(t, d.DB))
 }
 
-// AC24: a database this release started (ledger 0001 0002 0003 0004 5001 5002), started by a simulated 0.5.13m
-// binary, keeps its rows and gains nothing; after the guarded recipes in their documented order (drop 5002,
-// the 0004 recipe, the ledger cleanup) the new binary starts, adopts the baseline again, applies 0004 and 5002
-// and converges to the reference.
+// AC24: a database this release started (ledger 0001 0002 0003 0004 5001 5002 5003), started by a simulated 0.5.13m
+// binary, keeps its rows and gains nothing; after the guarded recipes in their documented order (drop 5003, drop
+// 5002, the 0004 recipe, the ledger cleanup) the new binary starts, adopts the baseline again, applies 0004, 5002
+// and 5003 and converges to the reference.
 //
 // The simulated 0.5.13m start is what that binary's Open and server start did, ignoring the ledger: the
 // schema.sql of the release (the recorded schema fixture of r0513, which is the frozen db/schema.sql), then
@@ -250,16 +279,16 @@ func TestUpgradeRollbackToTheReleaseWithoutTheLedgerAndForward(t *testing.T) {
 	}
 
 	// The optional cleanup restores the catalog of a database that never had the ledger; it needs the ledger to
-	// hold the baseline set only, so the drop of 5002 and the recipe for 0004 run first, in that order.
+	// hold the baseline set only, so the drops of 5003 and 5002 and the recipe for 0004 run first, in that order.
 	rollbackToBaseline(t, tmp, d)
 	if err := rollbackRunCleanup(t, d.DB); err != nil {
 		t.Fatalf("the cleanup failed (%s)", dbtest.AtomicErrorSummary(err))
 	}
-	if diff := dbtest.DiffLines(referenceWithoutToolRag(referenceWithoutLlmUsageTsIndex(referenceWithoutLedger(t))), dbtest.Lines(tmp.Catalog(t, d.DB))); len(diff) > 0 {
-		t.Errorf("after the cleanup the catalog is not the reference without the ledger, 5002's table and 0004's index (%d objects):\n  %s", len(diff), strings.Join(diff, "\n  "))
+	if diff := dbtest.DiffLines(referenceWithoutDetections(referenceWithoutToolRag(referenceWithoutLlmUsageTsIndex(referenceWithoutLedger(t)))), dbtest.Lines(tmp.Catalog(t, d.DB))); len(diff) > 0 {
+		t.Errorf("after the cleanup the catalog is not the reference without the ledger, the detection objects, 5002's table and 0004's index (%d objects):\n  %s", len(diff), strings.Join(diff, "\n  "))
 	}
 
-	// The new binary starts again: it adopts the baseline and applies 0004 and 5002.
+	// The new binary starts again: it adopts the baseline and applies 0004, 5002 and 5003.
 	d2 := startup(t, tmp.DSN)
 	requireEmbeddedLedger(t, readLedger(t, d2.DB))
 	if diff := dbtest.DiffLines(loadReference(t), dbtest.Lines(tmp.Catalog(t, d2.DB))); len(diff) > 0 {

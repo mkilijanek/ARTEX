@@ -65,6 +65,19 @@ var recordedShapes = []recordedShape{
 		{3, "0003_task_scope_icp_index.sql", "318e3e91b55552ed3322cb7fdb515133dc279d6fd76e5d94498bf56de1692331"},
 		{5001, "5001_llm_usage_fork_columns.sql", "d55ce9857b9ef9d526ecaeeeeada7750f156761d1ec6878e154c198c7c81553f"},
 	}},
+	// s3a is release 0.5.17m, the last one before migration 5003 (docs/detector-plan.md section 5): the same
+	// schema.sql bytes (frozen), and the ledger of 0.5.15m plus 0004 and 5002. It is the database that the release
+	// with the detection tables starts on, and the one the drop recipes of 5003 and 5002 take it back to.
+	{"s3a", "schema-951f3d0c8859.sql", "951f3d0c88597f494b5fc1a87ca6694daa9d35e490d3f131d4fb36a2f49f963a", "", "", []releaseCommit{
+		{"v0.5.17m", "024abf634efb0f48f13493b40fb4185c9fa1fc49"},
+	}, []shapeMigration{
+		{1, "0001_llm_records.sql", "202d1b5f84f8091f5e676526b15fb66c888f39f73ddab60f46c251f19e19aa1e"},
+		{2, "0002_llm_usage.sql", "3b3aece1c4c80bceef74d15652e1c97c972275d7c738a41938945f00588c8d39"},
+		{3, "0003_task_scope_icp_index.sql", "318e3e91b55552ed3322cb7fdb515133dc279d6fd76e5d94498bf56de1692331"},
+		{4, "0004_llm_usage_ts_index.sql", "1f27b2411ebb064b7b7cd4d0d8fdfc2021ad74082019e6c72e772f706a00d028"},
+		{5001, "5001_llm_usage_fork_columns.sql", "d55ce9857b9ef9d526ecaeeeeada7750f156761d1ec6878e154c198c7c81553f"},
+		{5002, "5002_tool_rag_observations.sql", "9fabb12a79280db7a102c57538bce03513feb0baa223d1d2771c28bca993a67c"},
+	}},
 }
 
 func sha256Hex(b []byte) string {
@@ -150,14 +163,14 @@ func TestUpgradeFixtureChecksums(t *testing.T) {
 	}
 }
 
-// The releases v0.5.13m and v0.5.15m (shapes r0513 and s2a) are the ones whose schema.sql is the frozen
+// The releases v0.5.13m, v0.5.15m and v0.5.17m (shapes r0513, s2a and s3a) are the ones whose schema.sql is the frozen
 // db/schema.sql: while the schema is frozen, the newest recorded shape holds exactly its bytes. A lockstep edit of schema.sql
 // (docs/phase-d2-stage2-plan.md 3.1) ends that equality on purpose: this test is then changed in the same
 // commit, to compare with the shape of the release that carried the edit.
 func TestUpgradeFrozenSchemaIsTheNewestRecordedShape(t *testing.T) {
 	newest := recordedShapes[len(recordedShapes)-1]
-	if newest.shape != "s2a" {
-		t.Fatalf("the newest recorded shape is %s, want s2a", newest.shape)
+	if newest.shape != "s3a" {
+		t.Fatalf("the newest recorded shape is %s, want s3a", newest.shape)
 	}
 	if newest.sha256 != currentSchemaSQLSHA256 {
 		t.Errorf("shape %s pins schema sha256 %s, the frozen schema.sql is pinned as %s", newest.shape, newest.sha256, currentSchemaSQLSHA256)

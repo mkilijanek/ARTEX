@@ -65,6 +65,11 @@ A release that ships migration `5002` (Tool RAG observation, Phase D.3) then app
 after a start the ledger holds **six** rows (`0001 0002 0003 0004 5001 5002`), the last one `5002`, and the database has one more table,
 `tool_rag_observations`. See "Migration 5002" below.
 
+A release that ships migration `5003` (detection storage, pull request 1a) applies it the same way, so after a start the
+ledger holds **seven** rows (`0001 0002 0003 0004 5001 5002 5003`), the last one `5003`, and the database has four more
+tables (`finding_detections`, `detection_rules`, `detection_steps`, `detection_query_results`), a function and a trigger.
+They are empty and unused until a later pull request. See "Migration 5003" below.
+
 A failure of an `llm_*` table migration (`0001`, `0002`, `5001`) now **stops the start**. Earlier releases only
 logged it and went on.
 
@@ -76,6 +81,7 @@ What the log shows (content-free lines: versions and file names, no data):
 | `[migrate] ledger absent: adopting baseline (4)`, then `[migrate] adopted baseline in <ms>ms` | the first start |
 | `[migrate] applied <file> in <ms>ms` | each later migration; for `0004`: `[migrate] applied 0004_llm_usage_ts_index.sql in <ms>ms`. It is written **after** the commit, so nothing is logged while the index builds |
 | `[migrate] up to date (upstream=<version>, fork=<version>)` | a successful start |
+| `[detect] recovered stopped=<n> queued=<n>` | every start, after the migrations (release with `5003`): detection runs the recovery stopped or left queued; `0` and `0` without runs |
 | `[migrate] refused: <label> (version <NNNN>, "<file>")` | a refusal (table below) |
 | `[migrate] WARNING: ARTEX_SCHEMA_ALLOW_NEWER=<NNNN>; unknown migration <NNNN> ("<file>")` | every start while the override applies |
 | `[migrate] lock timeout on <table> after 60s: another session holds a lock: ...` | a lock timeout |
@@ -197,8 +203,9 @@ a database that has the ledger, with or without `0004`. The ledger stays valid i
 
 **Going back to 0.5.15m** (it reads the ledger and refuses a database with `0004`: "unknown migration applied"). Pick
 one of two ways. The index is harmless to the older binary, so both are safe for the data. On a database that also has
-`5002` (see "Migration 5002"), the override must be `ARTEX_SCHEMA_ALLOW_NEWER=5002` (it covers both rows), and the
-recipe for `0004` comes after the drop of `5002`: see "Order of the recipes" below.
+`5002` (see "Migration 5002"), the override must be `ARTEX_SCHEMA_ALLOW_NEWER=5002` (it covers both rows); on a
+database that also has `5003` (see "Migration 5003") it must be `ARTEX_SCHEMA_ALLOW_NEWER=5003` (it covers all three
+rows). The recipe for `0004` comes after the drops of `5003` and `5002`: see "Order of the recipes" below.
 
 1. **Set `ARTEX_SCHEMA_ALLOW_NEWER=0004`** and start 0.5.15m. It starts and logs one warning per start. The override
    has a general risk (the older `schema.sql` runs over a database a newer release changed): read "The override
@@ -229,28 +236,30 @@ docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON
 
 The recipe drops the index and deletes the ledger row of `0004` **only when the ledger is exactly the baseline plus
 `0004` and the row of `0004` has the name of the shipped file**. Otherwise it raises the error above and changes
-nothing: a later migration has run (it refuses while `5002` is recorded: drop `5002` first), or the ledger was edited. **A second run raises that error too, and changes
+nothing: a later migration has run (it refuses while `5002` or `5003` is recorded: drop them first), or the ledger was edited. **A second run raises that error too, and changes
 nothing**, because the row is already gone. That is expected, not a fault. The next start of this release builds the
 index again.
 
 **Removing the ledger table** (only to restore the exact catalog of a database that never had it). Order: the drop of
-`5002` first (when it is recorded), then the `0004` recipe, then the cleanup below. Stop every ARTEX instance and run the cleanup SQL on the database that was rolled
+`5002` first (when it is recorded), then the `0004` recipe, then the cleanup below (and before all of them, the drop of `5003` when it is recorded). Stop every ARTEX instance and run the cleanup SQL on the database that was rolled
 back. It drops the ledger **only when it holds exactly the baseline versions** (1, 2, 3, 5001) and otherwise raises an
-error and changes nothing: it **refuses while `0004` or `5002` is recorded**, and so when a later migration has run or the ledger
+error and changes nothing: it **refuses while `0004`, `5002` or `5003` is recorded**, and so when a later migration has run or the ledger
 was edited; then the right way back is the pre-upgrade dump. The next start of the new binary adopts the baseline
 again.
 
-**Order of the recipes.** On a database that this release started (ledger `0001 0002 0003 0004 5001 5002`) run them in
+**Order of the recipes.** On a database that this release started (ledger `0001 0002 0003 0004 5001 5002 5003`) run them in
 this order, each only after the one before it succeeded, and stop at the first one that raises:
 
 | Step | Recipe | Ledger it accepts | What it refuses |
 |---|---|---|---|
-| 1 | drop `5002` (`rollback-drop-5002.sql`, see "Migration 5002") | any ledger whose newest fork version (5000 and above) is `5002`; on a started database `1 2 3 4 5001 5002`, afterwards `1 2 3 4 5001` | a ledger without `5002`, or with a fork version above it |
-| 2 | `0004` (`rollback-0004-index.sql`) | exactly `1 2 3 4 5001`, `0004` under the shipped name; afterwards `1 2 3 5001` | `5002` recorded, `0004` not recorded, or anything else |
-| 3 | ledger cleanup (`rollback-cleanup-ledger.sql`) | exactly `1 2 3 5001`; afterwards no ledger table | `0004` or `5002` recorded, or anything else |
+| 1 | drop `5003` (`rollback-drop-5003.sql`, see "Migration 5003") | any ledger whose newest fork version (5000 and above) is `5003` and whose `5003` row has the shipped name; on a started database `1 2 3 4 5001 5002 5003`, afterwards `1 2 3 4 5001 5002` | a ledger without `5003`, with a fork version above it, or with `5003` recorded under another name |
+| 2 | drop `5002` (`rollback-drop-5002.sql`, see "Migration 5002") | any ledger whose newest fork version (5000 and above) is `5002` and whose `5002` row has the shipped name; afterwards `1 2 3 4 5001` | a ledger without `5002`, with a fork version above it (so `5003` recorded), or with `5002` recorded under another name |
+| 3 | `0004` (`rollback-0004-index.sql`) | exactly `1 2 3 4 5001`, `0004` under the shipped name; afterwards `1 2 3 5001` | `5002` or `5003` recorded, `0004` not recorded, or anything else |
+| 4 | ledger cleanup (`rollback-cleanup-ledger.sql`) | exactly `1 2 3 5001`; afterwards no ledger table | `0004`, `5002` or `5003` recorded, or anything else |
 
-Steps 2 and 3 are only needed to go back without the override; 0.5.14m and older start with none of them. A
-database that has `5002` but not `0004` (it never ran a release with the index) skips step 2.
+Steps 3 and 4 are only needed to go back without the override; 0.5.14m and older start with none of them. A
+database that has `5002` but not `0004` (it never ran a release with the index) skips step 3. A database whose
+newest migration is `5002` (a start of 0.5.17m) skips step 1.
 
 ```sql
 BEGIN;
@@ -293,7 +302,8 @@ table references `tasks(id) ON DELETE CASCADE`, so the migration takes a short l
   started with `ARTEX_SCHEMA_ALLOW_NEWER=5002`. The table is then ignored.
 - **Drop recipe.** To remove the table after going back, stop every ARTEX instance and run
   `db/testdata/upgrade/rollback-drop-5002.sql` with `ON_ERROR_STOP`. It acts only when `5002` is the newest fork
-  migration in the ledger, and raises, changing nothing, on any other ledger (then restore the pre-upgrade dump):
+  migration in the ledger and its row has the shipped name, and raises, changing nothing, on any other ledger,
+  including `5002` recorded under another name (then restore the pre-upgrade dump):
 
   ```sql
   BEGIN;
@@ -303,16 +313,84 @@ table references `tasks(id) ON DELETE CASCADE`, so the migration takes a short l
     IF (SELECT max(version) FROM schema_migrations WHERE version >= 5000) IS DISTINCT FROM 5002 THEN
       RAISE EXCEPTION '5002 is not the newest fork migration: restore the pre-upgrade dump instead';
     END IF;
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = 5002 AND name = '5002_tool_rag_observations.sql') THEN
+      RAISE EXCEPTION '5002 is recorded under another name: restore the pre-upgrade dump instead';
+    END IF;
   END $$;
   DELETE FROM schema_migrations WHERE version = 5002 AND name = '5002_tool_rag_observations.sql';
   DROP TABLE IF EXISTS tool_rag_observations;
   COMMIT;
   ```
 
-- **Order.** Run this drop **first**, before the `0004` recipe and the ledger cleanup above (see "Order of the recipes"):
-  the `0004` recipe and the cleanup both refuse while `5002` is recorded. This recipe accepts a ledger with `0004`
+- **Order.** Run this drop before the `0004` recipe and the ledger cleanup above, and **after** the drop of `5003`
+  when `5003` is recorded (see "Order of the recipes"): it refuses a ledger with a fork version above `5002`, and the
+  `0004` recipe and the cleanup both refuse while `5002` is recorded. This recipe accepts a ledger with `0004`
   recorded (`1 2 3 4 5001 5002`) and one without it.
 - **Archives.** Task archiving deletes the task's rows of the table; restoring an archive does not bring them back.
+
+### Migration 5003 (detection storage)
+
+`db/migrations/5003_finding_detections.sql` (113 lines; first line `-- downgrade-safe: yes: additive tables, one function
+and one trigger on conversations; older binaries do not read them`) is the storage of the detection work. It creates four tables, `finding_detections`, `detection_rules`, `detection_steps`
+and `detection_query_results`, their indexes and CHECK constraints, the function `stop_deleted_conversation_detection()`
+and the trigger `trg_conversation_detection_delete` on `conversations`. **Nothing writes to these tables in this
+release except the recovery at start (below): there is no API, no UI and no worker yet, and no setting.** The first
+start of this release applies the migration; no step is needed from the operator.
+
+- **Ledger.** After a start the ledger holds seven rows and ends with `5003`: `0001`, `0002`, `0003`, `0004`, `5001`,
+  `5002`, `5003`. The reference catalog has four more tables (63 tables).
+- **Downgrade-safe: yes.** Older binaries never read the tables, and the trigger only acts when a conversation that a
+  detection run points to is deleted (it then stops that run if it is pending or running); with no run it does nothing. A binary that does not
+  ship `5003` refuses the database ("unknown migration applied") unless it is started with
+  `ARTEX_SCHEMA_ALLOW_NEWER=5003`. This is the way back to 0.5.17m (and to 0.5.16m and 0.5.15m, which
+  need the override anyway for `5002` or `0004`): set it in `.env`, restart, remove it when the right binary runs. Read
+  the risk in "The override" above. Detection rows written meanwhile stay, and the older binary has **no archive
+  refusal** (next bullet).
+- **Archives (behaviour change of this release).** Task archives do not carry detection runs yet. Queuing an archive
+  job for a task whose findings have at least one detection run is refused, and so is the purge of such a task if a run
+  appeared after the job was queued (the job then ends as a failed archive and nothing is deleted). The API answers
+  `409 Conflict` with the error text
+  `this task has detection results, which task archives do not carry yet; delete them from the findings or upgrade to a release that archives them`.
+  Deleted runs (tombstones, `deleted_at` set) do not count; deleting the task is not refused and removes its runs with
+  it. Because nothing creates detection runs in this release, an operator meets the refusal only on a database that
+  already has runs, for example one that ran a later release and came back with the override. To proceed: delete the
+  detection runs of the task's findings (a later release has the route), or wait for the release that carries
+  detections in archives. An older binary does not know the refusal and archives such a task, which **deletes its
+  detections** (they are not in the archive).
+- **Start log.** Every start prints `[detect] recovered stopped=<n> queued=<n>` after the migrations: how many
+  detection runs the recovery stopped (a run that was running when the server stopped) and how many it left queued. On
+  this release both are `0` unless the database has runs. If the recovery fails the start fails with
+  `recover finding detections: <error>`.
+- **Drop recipe (destructive).** To remove the tables after going back, stop every ARTEX instance, take a dump, and run
+  `db/testdata/upgrade/rollback-drop-5003.sql` with `ON_ERROR_STOP`. **It destroys every detection run, rule, step and
+  query result.** It acts only when `5003` is the newest fork migration and its row has the shipped name, and raises,
+  changing nothing, on any other ledger (then restore the pre-upgrade dump). It is optional: the older binary ignores the
+  tables. The text is the same as the file, which has a comment header:
+
+  ```sql
+  BEGIN;
+  SELECT pg_advisory_xact_lock(7337741001);
+  DO $$
+  BEGIN
+    IF (SELECT max(version) FROM schema_migrations WHERE version >= 5000) IS DISTINCT FROM 5003 THEN
+      RAISE EXCEPTION '5003 is not the newest fork migration: restore the pre-upgrade dump instead';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = 5003 AND name = '5003_finding_detections.sql') THEN
+      RAISE EXCEPTION '5003 is recorded under another name: restore the pre-upgrade dump instead';
+    END IF;
+  END $$;
+  DELETE FROM schema_migrations WHERE version = 5003 AND name = '5003_finding_detections.sql';
+  DROP TRIGGER IF EXISTS trg_conversation_detection_delete ON conversations;
+  DROP FUNCTION IF EXISTS stop_deleted_conversation_detection();
+  DROP TABLE IF EXISTS detection_query_results;
+  DROP TABLE IF EXISTS detection_steps;
+  DROP TABLE IF EXISTS detection_rules;
+  DROP TABLE IF EXISTS finding_detections;
+  COMMIT;
+  ```
+
+- **Order.** Run this drop **first** of all the recipes (see "Order of the recipes"). The drops of `5002`, the `0004`
+  recipe and the cleanup all refuse while `5003` is recorded.
 
 ### Restores
 
@@ -341,6 +419,7 @@ fixture of synthetic rows:
 | `r0512` | `db/schema.sql` as released in 0.5.12m (0.5.13m adds `findings.ticket_id` to it) |
 | `r0513` | `db/schema.sql` as released in 0.5.13m: the schema that is now frozen, and the same bytes as in 0.5.14m (no ledger) |
 | `s2a` | release 0.5.15m, the first release with the ledger: the frozen `schema.sql`, the four baseline migrations `0001`, `0002`, `0003`, `5001` and their ledger rows (the manifest records it as shape `s2a`, tag `v0.5.15m`, with a `migrations` list). Its data fixture is the `r0513` one |
+| `s3a` | release 0.5.17m (`v0.5.17m`), the last release before `5003`: the same frozen `schema.sql` as `s2a` (fixture `schema-951f3d0c8859.sql`), the ledger `0001 0002 0003 0004 5001 5002` and the table `tool_rag_observations`. As the manifest names it: shape `s3a`, tag `v0.5.17m`, commit `024abf634efb`, with a `migrations` list of those six rows. Its data fixture is the `r0513` one; startup adds only the four detection tables and the ledger row `5003`. `db/testdata/upgrade/flags-v0.5.17m.txt` records the startup seeds it ran |
 | `legacy` | **synthetic**: `r0509` plus `legacy-mutations.sql`, which puts back the old forms that the upgrade branches of `schema.sql` look for. It is not a recorded release |
 
 Checks (test names are in `db/`, `db/dbtest/` and `server/`):
@@ -351,7 +430,7 @@ Checks (test names are in `db/`, `db/dbtest/` and `server/`):
   `git show <commit>:db/schema.sql` by commit id.
 - **Fresh database** after startup (`Open` alone: it adopts the baseline migrations and creates the ledger table
   `schema_migrations`) has the catalog listed in `db/testdata/upgrade/reference-catalog-pg16.txt` (it now contains the index
-  `idx_llm_usage_ts` and the table `tool_rag_observations`) and the ledger versions 0001, 0002, 0003, 0004, 5001 and 5002.
+  `idx_llm_usage_ts`, the table `tool_rag_observations` and the four detection tables, the function and the trigger of `5003`) and the ledger versions 0001, 0002, 0003, 0004, 5001, 5002 and 5003.
 - **Upgrade keeps rows.** For each shape, startup removes no row and changes no value except
   what `expected-changes.json` lists exactly (see below). The fixture must have rows in every table or
   a stated exemption. Sequences do not go backwards.
@@ -422,11 +501,11 @@ Checks (test names are in `db/`, `db/dbtest/` and `server/`):
   built with `EXECUTE`, a file written for `standard_conforming_strings = off`, or `psql` meta-commands. The
   runtime marker (see "Changing the schema") is the second line and detects a file that ended the transaction after it
   ran; the file's effects up to that point then stay committed.
-- Local gate evidence is on linux/amd64 with PostgreSQL 16; the last gate run (Phase D.3, merged onto S2-C, with
-  migrations `0004` and `5002`; run twice in a row) printed `upgrade-gate: tests passed=142 skipped=0 failed=0 (minimum passed: 142), go
-  test exit 0` and `upgrade-gate: OK`. In the container runs the migration tag check was `NOT RUN` (no `.git`) unless
+- Local gate evidence is on linux/amd64 with PostgreSQL 16; the last gate run (detection storage, pull request 1a, with
+  migrations `0004`, `5002` and `5003`) printed `upgrade-gate: tests passed=166 skipped=0 failed=0 (minimum passed: 166)`
+  and `upgrade-gate: OK`, and `go test -p 1 ./db` was green (raw output in the pull request). In the container runs the migration tag check was `NOT RUN` (no `.git`) unless
   `UPGRADE_GATE_REQUIRE_GIT=1` and a history were present; it was run separately on the host. The recorded shapes are
-  `r0509`, `r0512`, `r0513`, `s2a` and the synthetic `legacy`.
+  `r0509`, `r0512`, `r0513`, `s2a`, `s3a` and the synthetic `legacy`.
 - The dry run on a restored copy of a real database (below) was run once for stage 1, on 2026-11-19, on a copy of one
   database that predates 0.5.12m (51 tables). Startup created the six missing tables, changed no row count in any
   existing table, left no catalog difference to the reference, and a second startup changed nothing. It compares
@@ -469,7 +548,12 @@ ARTEX_PG_DSN='postgres://USER:PASS@HOST:5432/DB?sslmode=disable' scripts/upgrade
   tries it on synthetic repositories.
 - CI runs the gate as the step "Schema upgrade test gate" after `go test -p 1 ./...`.
 
-The gate currently expects **150** passing top-level tests and zero skips (142 before the Tool RAG report tests).
+The gate currently expects **166** passing top-level tests and zero skips (150 before migration `5003`; 110 of them in
+`./db`, 51 in `./db/dbtest`, 1 in `./agent`, 4 in `./server`). It consists of 100 upgrade tests (`TestUpgrade*`,
+`TestConfigFileDSNIsNotUsed*`), the 53 migration runner tests of `./db` (`TestMigration*`, `TestLedger*`,
+`TestLoadMigrations*`; 14 of them are the tests of `5003`, `TestMigrationDetection*`, and 2 check that the drop recipes
+of `5002` and `5003` refuse a ledger row recorded under another name) and the 13 database tests of the tool RAG table
+and its report (`TestToolRag*`: 5 of the table, 8 of the report). The breakdown is the comment above `MIN_UPGRADE_TESTS` in `scripts/upgrade-gate.sh`.
 
 Whole suite: `go test -p 1 ./...` with the same variable. Four `db` tests
 (`TestCompanyScopeAttribution`, `TestPoolProfilesOrder`, `TestProfileRetryRoundTrip`,
@@ -578,9 +662,30 @@ Then run the gate.
 - The tests that a new migration adds are only counted by the gate when their names match its pattern (the `db`
   tests of `5002` are `TestToolRag*`, which the pattern lists); raise `MIN_UPGRADE_TESTS` to the new count.
 
+**What the next fork migration (`5003`, four tables, one function, one trigger) added to those steps:**
+
+- Record the release before it as a new shape (`s3a`, release 0.5.17m: fixture, manifest entry with its `migrations`
+  list, `flags-v0.5.17m.txt`, a case in the matrix with exemptions for the four tables that do not exist before
+  startup) and add the new ledger row as an `added` entry for every shape that lacks it (`5003` in all of them; `5002`
+  is not added to `s3a`, which has it).
+- Four tables raise `expectedTables` from 59 to 63 and the reference catalog; the function and the trigger are catalog
+  objects too (`reference-catalog-pg16.txt`).
+- The drop recipe has **two** guards: the newest fork version, and the row of the migration under its shipped name
+  (`5002` got the second guard in the same pull request). The drops of `5002` and `5003`, the `0004` recipe and the
+  cleanup run in that order, and each later recipe refuses while an earlier migration is recorded. Tests that assumed
+  that `5002` is the newest migration (rollback tests) run the drop of `5003` first.
+- The new recipe goes into `.github/CODEOWNERS` next to its siblings.
+- A migration whose rows hang on `findings` needs no entry in the archive delete list, but archiving must not lose
+  them silently: see "Migration 5003", "Archives". A test helper that builds an old archive fixture must create the
+  tables the purge now reads (`finding_detections`).
+- Test databases: the cleanup of a temporary database that a role owns waits for a server-user session to end before
+  the drop (`db/dbtest/server.go`).
+- Raise `MIN_UPGRADE_TESTS` (now 166) and the counts in its comment.
+
 Rollback of the first release with the ledger needs no step (see "Rollback" above). The `0004` recipe is
 `db/testdata/upgrade/rollback-0004-index.sql`, run by `TestUpgradeRollback0004RecipeDropsTheIndexAndTheLedgerRow` and
-`TestUpgradeRollback0004RecipeRefusesAnyOtherLedger`; the drop of `5002` runs before it (`TestMigrationToolRagDropRecipeIsGuardedAndReversible`). The cleanup SQL is
+`TestUpgradeRollback0004RecipeRefusesAnyOtherLedger`; the drop of `5002` runs before it (`TestMigrationToolRagDropRecipeIsGuardedAndReversible`); the drop of `5003` runs before that
+(`db/detection_migration_test.go`, `db/upgrade_rollback_test.go`). The cleanup SQL is
 `db/testdata/upgrade/rollback-cleanup-ledger.sql`, run by `TestUpgradeRollbackCleanupDropsABaselineLedger` and
 `TestUpgradeRollbackCleanupRefusesAnyOtherLedger`, and rehearsed end to end by
 `TestUpgradeRollbackToTheReleaseWithoutTheLedgerAndForward`.
@@ -597,8 +702,8 @@ database); `.gitattributes` (`db/migrations/*.sql -text`: no line-ending convers
 bytes); the gate's tag check (a file that a `v*` tag holds must be unchanged, undeleted and unrenamed at `HEAD`, and the
 upstream files must equal the pinned upstream commit); and `.github/CODEOWNERS`, which names the owner for
 `db/migrations/`, `db/migrate.go`, `db/db.go`, `db/schema.sql`, `db/migrate_pins_test.go`, `scripts/upgrade-gate.sh`,
-`.github/workflows/`, `.gitattributes`, `.github/CODEOWNERS`, `db/upgrade_gatescript_test.go` and the two rollback
-recipes (`rollback-cleanup-ledger.sql`, `rollback-0004-index.sql`). One
+`.github/workflows/`, `.gitattributes`, `.github/CODEOWNERS`, `db/upgrade_gatescript_test.go` and the rollback
+recipes (`rollback-cleanup-ledger.sql`, `rollback-0004-index.sql`, `rollback-drop-5002.sql`, `rollback-drop-5003.sql`). One
 pull request could still change a file, its pin and the gate together. **What the repository cannot enforce is the
 owner's own setting:** required review by code owners on `main`, and protection of `v*` tags (a deleted or moved tag
 weakens the tag check). Neither was verified from the repository.
@@ -624,7 +729,7 @@ Every entry has:
 Rows added to a table that does not exist before startup (the rows of `schema_migrations`) are `added` entries
 with a `pk` each (`{"version": "1"}`, `{"version": "2"}`, `{"version": "3"}`, `{"version": "5001"}`), one more for
 `{"version": "4"}` in every shape except `s2a` (which already holds the four baseline rows and gets only `4`), and one
-more, `{"version": "5002"}`, in every shape.
+more, `{"version": "5002"}`, in every shape except `s3a` (which has it); `{"version": "5003"}` is added in every shape.
 
 Special forms: `"after": "@startup"` stands for a `timestamptz` not earlier than the start of startup (the `set_updated_at`
 trigger); `"column_added": true` on a `value` entry means the column does not exist before startup, so there is no

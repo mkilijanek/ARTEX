@@ -721,7 +721,8 @@ func writeArchiveError(w http.ResponseWriter, err error) {
 		!errors.Is(err, pgdb.ErrTaskArchiveQueued) &&
 		!errors.Is(err, pgdb.ErrTaskArchiveDependent) &&
 		!errors.Is(err, pgdb.ErrTaskArchiveState) &&
-		!errors.Is(err, pgdb.ErrTaskArchiveDeleteBlocked) {
+		!errors.Is(err, pgdb.ErrTaskArchiveDeleteBlocked) &&
+		!errors.Is(err, pgdb.ErrTaskArchiveDetections) {
 		status = http.StatusInternalServerError
 	}
 	writeErr(w, status, err.Error())
