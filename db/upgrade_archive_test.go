@@ -43,7 +43,8 @@ var archiveNewTableRestore = map[string]string{
 // upgrade it. The llm tables (llm_records, llm_usage) are created through the Ensure wrappers
 // (the embedded migrations 0001, 0002 and 5001, in place of the Go DDL that a 0.5.9m server ran),
 // because the snapshot reads both tables; migration 5002 creates tool_rag_observations, which the archive
-// transaction deletes from.
+// transaction deletes from, and migration 5003 creates finding_detections, which the purge reads (the archive
+// refusal of docs/detector-plan.md section 6.10).
 func archiveOldDB(t *testing.T, tmp *dbtest.Temp) *DB {
 	t.Helper()
 	d := &DB{tmp.Conn(t)}
@@ -54,6 +55,7 @@ func archiveOldDB(t *testing.T, tmp *dbtest.Temp) *DB {
 		t.Fatalf("EnsureLLMUsageTable on r0509 failed (%s)", dbtest.AtomicErrorSummary(err))
 	}
 	tmp.Load(t, "migration "+migrationToolRag, string(mustReadEmbedded(t, migrationToolRag)))
+	tmp.Load(t, "migration "+migrationDetections, string(mustReadEmbedded(t, migrationDetections)))
 	return d
 }
 
