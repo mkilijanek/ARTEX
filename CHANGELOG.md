@@ -6,6 +6,13 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
+- **Tool RAG observation report (Phase D.3, pull request 2).** `scripts/toolrag/report.sql` is a read-only report
+  (`psql -v ON_ERROR_STOP=1 -v t0='<window start>' -f`) over `tool_rag_observations`, joined with `llm_usage` and
+  `tool_usage`. It leads with coverage and data quality and the share of runs where upstream's projection would hide
+  anything, then computes the four comparisons of the issue (retrieval quality, permission behaviour, locked versus
+  unlockable tools, fallback) and a short list of verdict inputs. It changes nothing: one `BEGIN READ ONLY`
+  transaction that is rolled back. `docs/tool-rag-observation.md` says how to run and read it, and has the empty
+  place for the results of the observation window. No new table, endpoint or setting.
 - **Versioned migrations (Phase D.2 stage 2, S2-A).** `db/schema.sql` is frozen at its 0.5.13m bytes; every later
   schema change is a numbered file in `db/migrations/`, recorded with its sha256 in the table `schema_migrations`.
   Upstream's files keep their bytes in `0001`-`4999`, the fork's use `5000`-`9999`. This release ships the baseline only:

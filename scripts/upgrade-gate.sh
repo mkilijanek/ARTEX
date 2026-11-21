@@ -33,13 +33,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# Count of the top-level tests selected by PATTERN, from a run with -v: 158 (./db 102, ./db/dbtest 51, ./agent 1,
+# Count of the top-level tests selected by PATTERN, from a run with -v: 166 (./db 110, ./db/dbtest 51, ./agent 1,
 # ./server 4): 100 upgrade tests (TestUpgrade*, TestConfigFileDSNIsNotUsed*), the 53 migration runner tests of ./db
 # (TestMigration*, TestLedger*, TestLoadMigrations*; 14 of them are those of migration 5003, TestMigrationDetection*,
 # and 2 check that the drop recipes of 5002 and 5003 refuse a ledger row recorded under another name)
-# and the 5 database tests of the tool RAG table (TestToolRag*), so that none of those can skip unseen. Raise the
-# count with the tests, never lower it to make the gate pass.
-MIN_UPGRADE_TESTS=158
+# and the 13 database tests of the tool RAG table and its report (TestToolRag*: 5 of the table, 8 of
+# scripts/toolrag/report.sql), so that none of those can skip unseen. Raise the count with the tests, never lower it
+# to make the gate pass.
+MIN_UPGRADE_TESTS=166
 PATTERN='^(TestUpgrade|TestConfigFileDSNIsNotUsed|TestMigration|TestLedger|TestLoadMigrations|TestToolRag)'
 PACKAGES=(./db ./db/dbtest ./agent ./server)
 

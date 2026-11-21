@@ -469,7 +469,7 @@ ARTEX_PG_DSN='postgres://USER:PASS@HOST:5432/DB?sslmode=disable' scripts/upgrade
   tries it on synthetic repositories.
 - CI runs the gate as the step "Schema upgrade test gate" after `go test -p 1 ./...`.
 
-The gate currently expects **142** passing top-level tests and zero skips.
+The gate currently expects **150** passing top-level tests and zero skips (142 before the Tool RAG report tests).
 
 Whole suite: `go test -p 1 ./...` with the same variable. Four `db` tests
 (`TestCompanyScopeAttribution`, `TestPoolProfilesOrder`, `TestProfileRetryRoundTrip`,
