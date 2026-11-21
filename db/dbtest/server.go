@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver "pgx"
@@ -110,12 +112,26 @@ func (s *Server) CreateDatabase(ctx context.Context, name string) error {
 	return s.execAdmin(ctx, OpCreate, name, `CREATE DATABASE `+quoteIdent(name))
 }
 
-// DropDatabase drops a temporary database, terminating its sessions.
+// dropRetryWindow bounds how long DropDatabase waits for a session it may not terminate.
+const dropRetryWindow = 30 * time.Second
+
+// DropDatabase drops a temporary database, terminating its sessions. A database that a canary role
+// owns is dropped by that role, which may not terminate a session of the server user: an autovacuum
+// worker (a superuser session) on the database makes the statement fail with SQLSTATE 42501 until
+// the worker ends, which takes moments. DropDatabase repeats the statement for that SQLSTATE only,
+// for dropRetryWindow; any other error, and a 42501 that stays, is returned.
 func (s *Server) DropDatabase(ctx context.Context, name string) error {
 	if err := Guard(OpDrop, s.dsn, name); err != nil {
 		return err
 	}
-	return s.execAdmin(ctx, OpDrop, name, `DROP DATABASE IF EXISTS `+quoteIdent(name)+` WITH (FORCE)`)
+	deadline := time.Now().Add(dropRetryWindow)
+	for {
+		err := s.execAdmin(ctx, OpDrop, name, `DROP DATABASE IF EXISTS `+quoteIdent(name)+` WITH (FORCE)`)
+		if err == nil || !strings.Contains(err.Error(), "SQLSTATE 42501") || time.Now().After(deadline) || ctx.Err() != nil {
+			return err
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // LoadSQL executes sqlText in a temporary database as one simple-protocol query

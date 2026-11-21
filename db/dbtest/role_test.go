@@ -3,6 +3,8 @@ package dbtest
 import (
 	"context"
 	"database/sql"
+	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -104,5 +106,63 @@ func TestUpgradeCanaryRoleCleanupLeavesForeignRolesAlone(t *testing.T) {
 	left, err := srv.LeftoverRoles(ctx)
 	if err != nil || len(left) != 1 || left[0] != foreign {
 		t.Errorf("LeftoverRoles = %v, %v; want only the foreign role", left, err)
+	}
+}
+
+// A temporary database that a canary role owns is dropped by that role, which may terminate only
+// the sessions of roles it has privileges of. A session of the server user on that database (in a
+// real run an autovacuum worker, which belongs to the bootstrap superuser) makes DROP DATABASE
+// WITH (FORCE) fail with SQLSTATE 42501 until the session ends: DropDatabase waits for it for a
+// bounded time and fails only if it stays (FLAKE-1).
+func TestDropDatabaseOwnedByRoleWaitsForForeignSession(t *testing.T) {
+	super := RequireServer(t)
+	role := super.CreateCanaryRole(t)
+	var name string
+	// The safety net runs after the environment is restored (cleanups run last in, first out): the
+	// server user may drop anything, and the guard wants the DSN of the environment.
+	t.Cleanup(func() {
+		if name == "" {
+			return
+		}
+		if err := super.DropDatabase(context.Background(), name); err != nil {
+			t.Errorf("safety-net drop: %v", err)
+		}
+	})
+	name = super.TempName("foreignsess")
+	dsn, err := super.DSN(name) // before the environment changes: the guard compares with it
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := url.Parse(os.Getenv(EnvDSN))
+	if err != nil || u.Scheme == "" {
+		t.Fatalf("this test needs a URL-form %s", EnvDSN)
+	}
+	u.User = url.UserPassword(role.Name, role.Password)
+	t.Setenv(EnvDSN, u.String())
+	owner := RequireServer(t)
+	ctx := context.Background()
+
+	if err := owner.DropDatabase(ctx, name); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.CreateDatabase(ctx, name); err != nil {
+		t.Fatal(err)
+	}
+	// A session of the server user (a superuser) on the database, released after a while.
+	foreign, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := foreign.Conn(ctx)
+	if err != nil {
+		t.Fatalf("foreign session failed (%s)", sqlState(err))
+	}
+	go func() {
+		time.Sleep(700 * time.Millisecond)
+		conn.Close()
+		foreign.Close()
+	}()
+	if err := owner.DropDatabase(ctx, name); err != nil {
+		t.Fatalf("the owner could not drop its database after the foreign session ended: %v", err)
 	}
 }
