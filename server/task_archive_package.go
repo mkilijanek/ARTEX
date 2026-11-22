@@ -11,9 +11,12 @@ import (
 	"io/fs"
 	"log"
 	"os"
+	"path"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/klauspost/compress/zstd"
 	pgdb "github.com/mkilijanek/artex/db"
@@ -250,8 +253,26 @@ func installTaskArchiveFiles(dataDir, extractedDir, taskID string, archiveID int
 			Source: filepath.Join(transcripts, entry.Name()), Destination: filepath.Join(dataDir, "transcripts", entry.Name()),
 		})
 	}
-	for _, move := range sources {
-		if _, err := os.Lstat(move.Destination); err == nil {
+	// Destinations and sources are resolved through a root on the data directory:
+	// a link in a destination component that leaves it is refused by the root, and
+	// one that stays inside it is refused by the directory check below.
+	dataRoot, err := os.OpenRoot(dataDir)
+	if err != nil {
+		return nil, err
+	}
+	defer dataRoot.Close()
+	relatives := make([][2]string, len(sources))
+	for i, move := range sources {
+		source, err := filepath.Rel(dataDir, move.Source)
+		if err != nil || !filepath.IsLocal(source) {
+			return nil, fmt.Errorf("restore source is outside the data directory: %s", move.Source)
+		}
+		destination, err := filepath.Rel(dataDir, move.Destination)
+		if err != nil || !filepath.IsLocal(destination) {
+			return nil, fmt.Errorf("restore destination is outside the data directory: %s", move.Destination)
+		}
+		relatives[i] = [2]string{source, destination}
+		if _, err := dataRoot.Lstat(destination); err == nil {
 			return nil, fmt.Errorf("restore destination already exists: %s", move.Destination)
 		} else if !os.IsNotExist(err) {
 			return nil, err
@@ -262,17 +283,41 @@ func installTaskArchiveFiles(dataDir, extractedDir, taskID string, archiveID int
 	if err := writeArchiveJournal(filepath.Join(extractedDir, "restore-journal.json"), journal); err != nil {
 		return nil, err
 	}
-	for _, move := range sources {
-		if err := os.MkdirAll(filepath.Dir(move.Destination), 0o755); err != nil {
+	for i := range sources {
+		parent := filepath.Dir(relatives[i][1])
+		if err := ensureRealDirectory(dataRoot, parent); err != nil {
 			_ = stage.rollback()
 			return nil, err
 		}
-		if err := os.Rename(move.Source, move.Destination); err != nil {
+		if err := dataRoot.Rename(relatives[i][0], relatives[i][1]); err != nil {
 			_ = stage.rollback()
 			return nil, err
 		}
 	}
 	return stage, nil
+}
+
+// ensureRealDirectory creates rel (a path relative to root) and requires every
+// component to be a real directory, never a link.
+func ensureRealDirectory(root *os.Root, rel string) error {
+	if rel == "." {
+		return nil
+	}
+	if err := root.MkdirAll(rel, 0o755); err != nil {
+		return err
+	}
+	current := ""
+	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
+		current = filepath.Join(current, part)
+		info, err := root.Lstat(current)
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("restore destination component is not a directory: %s", current)
+		}
+	}
+	return nil
 }
 
 func (s *taskArchiveRestoreFiles) rollback() error {
@@ -519,6 +564,150 @@ func stageTaskArchivePackageDelete(archivePath string, archiveID int64) (string,
 	return staged, false, nil
 }
 
+// errArchiveEntryChanged marks an entry that was not what the directory listing
+// and Lstat said it was when it was opened, or that changed while being read.
+var errArchiveEntryChanged = errors.New("entry changed during packaging")
+
+// archiveBeforeOpenHook is a test seam, called after an entry was checked with Lstat
+// and before it is opened. It is nil in production.
+var archiveBeforeOpenHook func(dir, name string)
+
+type archiveWalker struct {
+	tw           *tar.Writer
+	root         string
+	originalSize int64
+	skipped      int64
+}
+
+func (w *archiveWalker) refuse(rel, cause string) error {
+	log.Printf("[task-archive] refused: entry changed during packaging: %q", rel)
+	return fmt.Errorf("%w: %s", errArchiveEntryChanged, cause)
+}
+
+// walkDir archives the entries of dir in name order. Every directory and file is
+// opened relative to its parent through os.Root and compared with the Lstat taken
+// before the open, so a swap between the check and the open is detected on the
+// descriptor instead of being followed.
+func (w *archiveWalker) walkDir(dir *os.Root, rel string) error {
+	listing, err := dir.Open(".")
+	if err != nil {
+		return err
+	}
+	entries, readErr := listing.ReadDir(-1)
+	if err := errors.Join(readErr, listing.Close()); err != nil {
+		return err
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	for _, entry := range entries {
+		name := entry.Name()
+		display := path.Join(rel, name)
+		info, err := dir.Lstat(name)
+		if errors.Is(err, fs.ErrNotExist) {
+			return w.refuse(display, "entry vanished")
+		}
+		if err != nil {
+			return err
+		}
+		if archiveBeforeOpenHook != nil {
+			archiveBeforeOpenHook(filepath.Join(w.root, filepath.FromSlash(rel)), name)
+		}
+		switch {
+		case info.IsDir():
+			err = w.archiveDir(dir, name, display, info)
+		case info.Mode().IsRegular():
+			err = w.archiveFile(dir, name, display, info)
+		default:
+			// The archive format supports only regular files and directories end to end
+			// (the unpacker errors out on other types), so links and special files cannot
+			// be restored. Skip rather than fail the whole package; the entry is never
+			// opened, and it is counted in the manifest.
+			w.skipped++
+			log.Printf("[task-archive] skipping unsupported entry (type %s, other files unaffected): %q", info.Mode().Type(), display)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (w *archiveWalker) archiveDir(parent *os.Root, name, display string, info fs.FileInfo) error {
+	child, err := parent.OpenRoot(name)
+	if err != nil {
+		return w.refuse(display, "directory could not be opened in place: "+err.Error())
+	}
+	defer child.Close()
+	opened, err := child.Stat(".")
+	if err != nil {
+		return err
+	}
+	if !opened.IsDir() || !os.SameFile(info, opened) {
+		return w.refuse(display, "directory was replaced")
+	}
+	header, err := tar.FileInfoHeader(opened, "")
+	if err != nil {
+		return err
+	}
+	header.Name = display
+	if err := w.tw.WriteHeader(header); err != nil {
+		return err
+	}
+	return w.walkDir(child, display)
+}
+
+func (w *archiveWalker) archiveFile(dir *os.Root, name, display string, info fs.FileInfo) error {
+	input, err := dir.OpenFile(name, os.O_RDONLY|archiveOpenFlags, 0)
+	if err != nil {
+		return w.refuse(display, "file could not be opened in place: "+err.Error())
+	}
+	defer input.Close()
+	opened, err := input.Stat()
+	if err != nil {
+		return err
+	}
+	if !opened.Mode().IsRegular() || !os.SameFile(info, opened) ||
+		opened.Size() != info.Size() || !opened.ModTime().Equal(info.ModTime()) {
+		return w.refuse(display, "file was replaced or modified")
+	}
+	// A file with more than one hard link may be the same file as one outside the payload; like a
+	// symlink it is skipped and counted, never read.
+	if links, ok := archiveLinkCount(opened); ok && links > 1 {
+		w.skipped++
+		log.Printf("[task-archive] skipping unsupported entry (hard-linked file, other files unaffected): %q", display)
+		return nil
+	}
+	header, err := tar.FileInfoHeader(opened, "")
+	if err != nil {
+		return err
+	}
+	header.Name = display
+	if err := w.tw.WriteHeader(header); err != nil {
+		return err
+	}
+	copied, err := io.CopyN(w.tw, input, opened.Size())
+	if errors.Is(err, io.EOF) {
+		return w.refuse(display, fmt.Sprintf("file shrank while reading (%d of %d bytes)", copied, opened.Size()))
+	}
+	if err != nil {
+		return err
+	}
+	var probe [1]byte
+	if n, err := input.Read(probe[:]); n > 0 {
+		return w.refuse(display, "file grew while reading")
+	} else if err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	after, err := input.Stat()
+	if err != nil {
+		return err
+	}
+	if after.Size() != opened.Size() || !after.ModTime().Equal(opened.ModTime()) {
+		return w.refuse(display, "file was modified while reading")
+	}
+	w.originalSize += opened.Size()
+	return nil
+}
+
 func writeTaskArchivePackage(path, payloadDir string, snapshot *pgdb.TaskArchiveSnapshot) (originalSize, compressedSize int64, checksum string, err error) {
 	if snapshot == nil {
 		return 0, 0, "", errors.New("nil task archive snapshot")
@@ -526,22 +715,11 @@ func writeTaskArchivePackage(path, payloadDir string, snapshot *pgdb.TaskArchive
 	if err = os.MkdirAll(filepath.Dir(path), archiveDirMode); err != nil {
 		return 0, 0, "", err
 	}
-	manifestFile, err := os.OpenFile(
-		filepath.Join(payloadDir, "manifest.json"),
-		os.O_CREATE|os.O_TRUNC|os.O_WRONLY,
-		archiveFileMode,
-	)
+	payloadRoot, err := os.OpenRoot(payloadDir)
 	if err != nil {
 		return 0, 0, "", err
 	}
-	encodeErr := json.NewEncoder(manifestFile).Encode(snapshot)
-	var syncErr error
-	if encodeErr == nil {
-		syncErr = manifestFile.Sync()
-	}
-	if err := errors.Join(encodeErr, syncErr, manifestFile.Close()); err != nil {
-		return 0, 0, "", err
-	}
+	defer payloadRoot.Close()
 	temporary := path + ".partial"
 	_ = os.Remove(temporary)
 	file, err := os.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY, archiveFileMode)
@@ -565,49 +743,34 @@ func writeTaskArchivePackage(path, payloadDir string, snapshot *pgdb.TaskArchive
 		return 0, 0, "", err
 	}
 	tarWriter := tar.NewWriter(encoder)
-	walkErr := filepath.WalkDir(payloadDir, func(current string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		relative, err := filepath.Rel(payloadDir, current)
-		if err != nil || relative == "." {
-			return err
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			// The archive format supports only regular files and directories end to end (the
-			// unpacker errors out on other types), so symlinks cannot be restored. Skip rather
-			// than fail the whole package: the link target is not read (lstat, never leaves the tree) and no symlink entry is written; when a link points inside the tree, the target file itself is still walked and archived separately.
-			log.Printf("[task-archive] skipping symlink (unsupported by the archive, other files unaffected): %s", current)
-			return nil
-		}
-		header, err := tar.FileInfoHeader(info, "")
-		if err != nil {
-			return err
-		}
-		header.Name = filepath.ToSlash(relative)
-		if err := tarWriter.WriteHeader(header); err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		originalSize += info.Size()
-		input, err := os.Open(current)
-		if err != nil {
-			return err
-		}
-		_, copyErr := io.Copy(tarWriter, input)
-		closeErr := input.Close()
-		return errors.Join(copyErr, closeErr)
-	})
-	if walkErr != nil {
+	walker := &archiveWalker{tw: tarWriter, root: payloadDir}
+	if walkErr := walker.walkDir(payloadRoot, ""); walkErr != nil {
 		_ = tarWriter.Close()
 		_ = encoder.Close()
 		return 0, 0, "", walkErr
+	}
+	originalSize = walker.originalSize
+	// The manifest is written last so that it can count the entries that were skipped.
+	manifestSnapshot := *snapshot
+	manifestSnapshot.DataCounts = make(map[string]int64, len(snapshot.DataCounts)+1)
+	for key, value := range snapshot.DataCounts {
+		manifestSnapshot.DataCounts[key] = value
+	}
+	if walker.skipped > 0 {
+		manifestSnapshot.DataCounts["skipped_entries"] = walker.skipped
+	}
+	manifest, err := json.Marshal(&manifestSnapshot)
+	if err != nil {
+		return 0, 0, "", err
+	}
+	manifest = append(manifest, '\n')
+	if err := tarWriter.WriteHeader(&tar.Header{
+		Name: "manifest.json", Typeflag: tar.TypeReg, Mode: archiveFileMode, Size: int64(len(manifest)), ModTime: time.Now(),
+	}); err != nil {
+		return 0, 0, "", err
+	}
+	if _, err := tarWriter.Write(manifest); err != nil {
+		return 0, 0, "", err
 	}
 	if err := tarWriter.Close(); err != nil {
 		_ = encoder.Close()
@@ -665,6 +828,13 @@ func extractTaskArchivePackage(path, expectedSHA, destination string) error {
 	if err := os.MkdirAll(destination, archiveDirMode); err != nil {
 		return err
 	}
+	// Everything is written through the root, so no path can resolve outside the
+	// destination and a link is never followed or created.
+	destRoot, err := os.OpenRoot(destination)
+	if err != nil {
+		return err
+	}
+	defer destRoot.Close()
 	var entries int
 	var total int64
 	for {
@@ -684,20 +854,16 @@ func extractTaskArchivePackage(path, expectedSHA, destination string) error {
 		if clean == "." || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 			return fmt.Errorf("unsafe task archive path %q", header.Name)
 		}
-		target := filepath.Join(destination, clean)
-		if relative, err := filepath.Rel(destination, target); err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("unsafe task archive target %q", header.Name)
-		}
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, archiveDirMode); err != nil {
+			if err := destRoot.MkdirAll(clean, archiveDirMode); err != nil {
 				return err
 			}
 		case tar.TypeReg, tar.TypeRegA:
-			if err := os.MkdirAll(filepath.Dir(target), archiveDirMode); err != nil {
+			if err := destRoot.MkdirAll(filepath.Dir(clean), archiveDirMode); err != nil {
 				return err
 			}
-			output, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, fs.FileMode(header.Mode)&0o777)
+			output, err := destRoot.OpenFile(clean, os.O_CREATE|os.O_EXCL|os.O_WRONLY|archiveOpenFlags, fs.FileMode(header.Mode)&0o777)
 			if err != nil {
 				return err
 			}

@@ -6,6 +6,40 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
+- **Tool isolation.** In the Docker image, every process an agent starts (Bash, background tasks, `Monitor`,
+  interactive shells, MCP stdio servers, custom command and script tools, and the file tools `Read`, `Write`, `Edit`,
+  `MultiEdit`, `LS`, `Glob`, `Grep`) runs as the unprivileged user `artex-tool` (uid/gid 30002; 30001, 30003 and 30004
+  are reserved), with no capabilities, `no_new_privs`, an allow-listed environment and at most 4096 processes. The
+  server stays root. The file tools run in a helper process per call. At every start the server ends leftover tool
+  processes and checks that the user change works; the result is the **tool isolation status** (`enforced`,
+  `degraded`, `unavailable`, `disabled`), shown at every start in the log (`[isolation] status=...`, with a
+  `[isolation] WARNING` block repeated every 6 hours when it is not `enforced`), at every session start in the log and
+  the activity trace, as a banner on every page of the web UI, and in `GET /api/stats` as `tool_isolation`. Sessions
+  run in every status. `ARTEX_TOOL_ISOLATION=off` (environment only) runs tools as the server's user, with the
+  warnings. Tool processes are also ended at a graceful stop and whenever no session holds one. See
+  `docs/tool-isolation.md` and `docs/adr/0006-agent-tools-run-as-a-separate-user.md`.
+- **Egress forwarder for tools.** With traffic capture off and a global egress proxy set, agent tools get
+  `http://127.0.0.1:8789` as their proxy; the forwarder adds the global proxy's credentials itself, so tools see
+  neither its address nor its credentials. Without a global egress proxy it answers `502` and never connects
+  directly. New server flag `-egress` (default `127.0.0.1:8789`, loopback only, empty disables). Proxy variables
+  containing `@` in the server's environment are dropped before a tool starts. WebFetch and WebSearch are unchanged.
+- **Login throttling** for `POST /api/auth/login` and `POST /api/auth/change-password`: after 5 failed password checks
+  a source gets `429` with `Retry-After` (1 second, doubling up to 15 minutes; a success resets it). Loopback and the
+  server's own interface addresses count as one source, IPv6 sources per `/64`; forwarded headers are not read. A
+  successful login sets the signed cookie `artex_device` (HttpOnly, SameSite=Strict, Secure when ARTEX itself serves TLS, 90 days); a
+  request with a valid one is counted per device, not per source. A locked key is refused before the body is read; the body is
+  limited to 64 KiB (`413`) and 10 seconds (`400`, connection closed), and neither limit counts as a failure. A check
+  is counted from the start of the password comparison: parallel comparisons beyond the failures a source or device has
+  left get `429` with `Retry-After` at once, and after a lock one comparison at a time is admitted. There is no global lockout. README, "Login throttling".
+- **Human approval for the platform tools that write configuration.** `create_skill`, `update_skill_file`,
+  `create_custom_tool`, `update_custom_tool`, `create_mcp` and `update_mcp` wait for an operator on the Approval
+  Records page, in every session kind; the AI judge and intercept rules are not consulted for them, and a rejection,
+  timeout or error writes nothing. The record shows the content to be written; MCP environment values are shown except
+  those whose key names a secret, and secret parts of URLs are masked.
+- **`artex __migrate-workspaces [--data DIR] [--task ID]`**: hands the contents of every workspace (or one task's) to
+  the tool user in one go, with the server stopped. Exit codes `0` done, `1` failed or not finished, `2` usage, `3` a
+  server is running. `docs/tool-isolation.md`, "Workspaces".
+
 - **Tool RAG observation report (Phase D.3, pull request 2).** `scripts/toolrag/report.sql` is a read-only report
   (`psql -v ON_ERROR_STOP=1 -v t0='<window start>' -f`) over `tool_rag_observations`, joined with `llm_usage` and
   `tool_usage`. It leads with coverage and data quality and the share of runs where upstream's projection would hide
@@ -101,6 +135,42 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Changed
 
+- **The bundled PostgreSQL has no network and listens on no TCP port.** `docker-compose.yml` gives it
+  `network_mode: "none"` and `listen_addresses=`; `artex` reaches it through a Unix socket in the new volume `pgsock`,
+  mounted under `/run/artex-private/postgres` (`:z` for SELinux hosts). New database volumes require scram-sha-256
+  for every connection (`POSTGRES_INITDB_ARGS`). Use `docker compose exec postgres psql ...`; `scripts/backup.sh` and
+  `reset-password.sh -m docker` pass `POSTGRES_PASSWORD` through the environment.
+- **`docker-compose.yml`: `init: true` and `pids_limit: 8192`** on the `artex` service.
+- **`update.sh` (Docker) runs `docker compose up -d` for all services** instead of `artex` only, then warns if the
+  database volume still trusts local connections without a password (or that the check was skipped because
+  `postgres` is not running).
+  `update.sh` and `install.sh` print, for a local build, that agent tools run as the login user.
+- **Workspaces** of tasks and chat sessions are owned by uid 30002, mode 0700; older content is handed over at the
+  first session start of each workspace (at most 200,000 entries or 10 seconds per start; hard-linked files and
+  links are left alone and logged).
+- **Workspace API** (`/api/workspace/*`) opens paths one component at a time without following links: a link, a file
+  with more than one name, a FIFO, device or socket, or a path that changes while it is opened is refused (`400`;
+  download of a special file `404`; a write to a file replaced by a FIFO at that moment `500`); deleting a link removes
+  the link.
+- **Task archives** skip files with more than one name, like links (counted in `skipped_entries`), and fail with
+  `entry changed during packaging` if an entry changes while it is packed.
+- **MCP stdio rows** with environment names such as `LD_*`, `PYTHON*`, `NODE_OPTIONS`, `PATH` or `HOME` are refused
+  when saved (`denied variable name <KEY>`, `400`) and when started (`[mcp] refused server <name>: ...`). `http` and
+  `sse` rows are not affected.
+- **Skills load from a snapshot** (`/var/lib/artex/skills/<generation>` in the image) copied without following links;
+  links and special files are skipped (`[skills] refused non-regular entry <path>`). If the skills of an agent cannot
+  be loaded, its run gets no MCP tools.
+- **Spill files** (long tool output) moved from `<workspace>/cmd-output` to `<data>/spill/<kind>/<session>`;
+  directories untouched for 7 days are removed at server start. Script tools write their script to
+  `<data>/spill/scripts/`.
+- **`ask_operator`** accepts an image only as a regular file with one name, at most 10 MB, inside the task's working
+  directory or `/home/artex-tool/mcp/browser`.
+- **The provider connection test runs no tools.**
+- **The signing key is read only from next to the binary.** A `jwt.key` file in the data directory is not read; it is renamed `jwt.key.ignored-<unix>` and the log
+  shows `[auth] ignored a legacy key file in the data directory`; the key next to the binary is used.
+- **`ARTEX_LLM_PROXY` is removed from the server's environment after start-up**, like `ARTEX_PG_DSN` and the
+  provider API keys, so processes the server starts do not see it.
+- **`/bin/ping` has no file capability in the image**; it uses ICMP datagram sockets.
 - **The first start of this release on an existing database writes one new table, `schema_migrations`, with four
   rows (`0001`, `0002`, `0003`, `5001`), in one transaction.** Everything else the start does is what earlier
   releases did. This write is **not undone by rolling the binary back**; binaries up to 0.5.13m ignore the table and
@@ -196,6 +266,43 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Upgrade notes
 
+- **Tool isolation (Docker).** Run `./update.sh` or `docker compose build artex && docker compose up -d`: bring up
+  **all** services, so the `postgres` container is re-created without a network (its data volume is kept). Then check
+  the log for `[isolation] status=enforced tool_uid=30002`; any other status names its reason, and
+  `docs/tool-isolation.md` says what to do about each.
+- **Existing database volume.** A volume created by an earlier release keeps its `pg_hba.conf`, which trusts local
+  connections without a password; `update.sh` warns about it. Nothing reaches the database except through the socket,
+  which tools cannot open, but to require the password as new volumes do, follow the two steps in `.env.example`
+  (make the stored role password equal `POSTGRES_PASSWORD`, then switch `trust` to `scram-sha-256` and reload).
+  After that, `docker compose exec postgres psql` asks for the password: pass it with
+  `PGPASSWORD="$POSTGRES_PASSWORD" docker compose exec -T -e PGPASSWORD postgres psql ...`.
+- **Own Compose files.** Carry over the socket layout (`network_mode: "none"`, `listen_addresses=`, the `pgsock`
+  volume with `:z` on both services, the socket DSN), `init: true` and `pids_limit: 8192`, keep Docker's default
+  capabilities and run `artex` as root. A file that keeps TCP to the database works, and the server warns (C7).
+  `docs/tool-isolation.md`, "Custom Compose files".
+- **Hosts where `fs.protected_hardlinks` or `fs.protected_symlinks` is not `1`** run with status `degraded` (C11).
+  Set both to `1` on the host.
+- **Workspaces** become owned by uid 30002 when next used; edit them on the host with `sudo`. For large workspaces,
+  `artex __migrate-workspaces` finishes the hand-over with the server stopped:
+  `docker compose stop artex && docker compose run --rm --no-deps --entrypoint /app/artex artex __migrate-workspaces`.
+- **Raw-socket scans** (`nmap -sS`, `-sU`, `-O`) and packet capture do not work for agent tools in this release; use
+  `nmap -sT`. A separate tool runner that restores them is planned for the next release.
+- **Tools that need a variable outside the allow-list, or write outside the workspace, `/tmp` and their home**, need
+  a change. MCP stdio rows with a refused variable name do not start until the name is removed.
+- **`Monitor` commands** still bypass the recording proxy and the global egress proxy; use Bash for target traffic.
+- **Long-running tool processes** are ended when no session holds them.
+- **Archives** fail while a task is still writing; archive again once it is idle.
+- **One re-login** may be needed if a `jwt.key` was left in the data directory.
+- **Binary installs** keep working, with status `unavailable`: agent tools run as your login user with its access,
+  and the server warns at every start, every session and in the UI. Use the Docker image to run tools as a separate
+  user.
+- **Containers run with `--user` or Kubernetes `runAsNonRoot`** exit at start, as in earlier releases; run the image
+  as root (its default).
+- **Rollback to 0.5.17m:** restore its `docker-compose.yml` and image, and **set `ARTEX_SCHEMA_ALLOW_NEWER=5003`**:
+  this release applies database migration `5003`, and without the override the older server refuses to start. After
+  the rollback, agent tools run as root again and the database uses the older TCP layout; the `pgsock` volume can be
+  removed. Files owned by uid 30002 stay readable.
+  `ARTEX_TOOL_ISOLATION=off` is a partial rollback that keeps everything else of this release.
 - **Migration `0004` builds an index on `llm_usage` at the first start** (`downgrade-safe: yes`; the pin records the flag
   because upstream's file carries no header). A plain `CREATE INDEX` takes a `SHARE` lock: reads continue, every
   write to `llm_usage` waits for the whole build. The 60 second lock timeout bounds only the wait for the lock, not

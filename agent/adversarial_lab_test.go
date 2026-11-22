@@ -392,7 +392,7 @@ func webFetchCall(rawURL string, extract bool) scriptCall {
 func runWebFetch(t *testing.T, ri RunInfo, proxy string, calls ...scriptCall) []toolOutcome {
 	t.Helper()
 	p := &scriptedToolProvider{calls: calls}
-	opts := agentcore.Options{Provider: p, EnableWebFetch: true, WebFetchProxy: proxy, PermissionMode: permission.ModeBypass, NonStreaming: true, MaxTurns: len(calls) + 3}
+	opts := agentcore.Options{Provider: p, Tools: noTools, EnableWebFetch: true, WebFetchProxy: proxy, PermissionMode: permission.ModeBypass, NonStreaming: true, MaxTurns: len(calls) + 3}
 	if _, _, err := captureRun(WithRunInfo(t.Context(), ri), opts, "fetch from the lab", nil); err != nil {
 		t.Fatalf("captureRun: %v", err)
 	}
@@ -476,13 +476,23 @@ func testControlPlane(ctlPort string, res *fakeResolver) ControlPlane {
 	if res == nil {
 		res = newFakeResolver(map[string][]string{"localhost": {"127.0.0.1"}})
 	}
-	return ControlPlane{
+	cp := ControlPlane{
+		DBCaptured: true, // the endpoints are captured once at startup; without a capture every fetch is refused
 		ListenAddr: ":" + ctlPort,
 		Resolver:   res.Resolve,
 		InterfaceAddrs: func() ([]netip.Addr, error) {
 			return []netip.Addr{netip.MustParseAddr("10.77.0.5")}, nil
 		},
 	}
+	// What main does once at startup: parse the DSN of the environment into the endpoints. A test
+	// that sets ARTEX_PG_DSN before building the control plane gets them; the policy itself never
+	// reads the environment.
+	if dsn := os.Getenv("ARTEX_PG_DSN"); dsn != "" {
+		if eps, err := DatabaseEndpoint(dsn); err == nil {
+			cp.DBEndpoints = eps
+		}
+	}
+	return cp
 }
 
 // lockedBuffer is a goroutine-safe log sink.

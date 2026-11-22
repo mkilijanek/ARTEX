@@ -3,15 +3,18 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	actool "github.com/Autumn-27/norma/tool"
 	"github.com/mkilijanek/artex/agent"
+	"github.com/mkilijanek/artex/sandbox"
 )
 
 const askOperatorMaxImage = 10 << 20
@@ -59,7 +62,7 @@ func (s *Server) toolAskOperator() actool.CoreTool {
 			if t == nil {
 				return actool.Errorf("Error: task not found"), nil
 			}
-			att, err := stageAskOperatorImage(s.m.dir, taskID, req.ImagePath)
+			att, err := stageAskOperatorImage(s.m.dir, taskID, "i"+fmt.Sprint(ri.IntentID), req.ImagePath)
 			if err != nil {
 				return actool.Errorf("Error: " + err.Error()), nil
 			}
@@ -80,7 +83,17 @@ func (s *Server) toolAskOperator() actool.CoreTool {
 // stageAskOperatorImage copies the referenced image into the task's uploads dir
 // (the same place chat uploads land, so the transcript attachment card resolves)
 // and returns the attachment descriptor. Empty src returns no attachment.
-func stageAskOperatorImage(dataDir, taskID, src string) ([]chatAttachment, error) {
+//
+// The path is the model's, and the workspace is writable by the tool user, so both sides go
+// through os.Root:
+//   - the source must lie in the task's working directory (relative paths are taken from workRel,
+//     the intent's own directory, which is the tool's cwd) or in the browser MCP server's working
+//     directory, and is opened relative to that directory; a link as
+//     the last component is refused, one that leaves the directory fails in the root, and what was
+//     opened must be a regular file with one name and at most askOperatorMaxImage bytes;
+//   - the copy is created with O_EXCL (never through a link) under a random name in an uploads
+//     directory that was checked as a directory of the workspace, and handed to the tool user.
+func stageAskOperatorImage(dataDir, taskID, workRel, src string) ([]chatAttachment, error) {
 	src = strings.TrimSpace(src)
 	if src == "" {
 		return nil, nil
@@ -89,30 +102,150 @@ func stageAskOperatorImage(dataDir, taskID, src string) ([]chatAttachment, error
 	if !askOperatorImageExt[ext] {
 		return nil, fmt.Errorf("image_path must be a png/jpg/jpeg/webp/gif file, got %q", filepath.Base(src))
 	}
-	st, err := os.Stat(src)
+	taskDir := filepath.Join(dataDir, "tasks", taskID)
+	where, rel, err := imageSource(taskDir, workRel, src)
+	if err != nil {
+		return nil, err
+	}
+	var task *os.Root
+	if where == imageInBrowserDir {
+		// A screenshot the browser MCP server saved in its own working directory (the one the spawn
+		// function made under the tool home). Each component is checked as a directory, not a link.
+		home := browserDirBase()
+		task, err = sandbox.OpenDirNoFollow(home, "mcp", mcpDirName(browserServerName))
+	} else {
+		fi, lerr := os.Lstat(taskDir)
+		if lerr != nil {
+			return nil, fmt.Errorf("image not readable: %v", lerr)
+		}
+		if !fi.IsDir() {
+			return nil, errors.New("the task's working directory is not a directory")
+		}
+		task, err = os.OpenRoot(taskDir)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("image not readable: %v", err)
 	}
-	if st.Size() > askOperatorMaxImage {
-		return nil, fmt.Errorf("image too large (%s, max 10MB)", humanBytes(st.Size()))
-	}
-	dir := filepath.Join(dataDir, "tasks", taskID, "uploads")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, err
-	}
-	name := fmt.Sprintf("ask-operator-%d%s", time.Now().Unix(), ext)
-	in, err := os.Open(src)
+	defer task.Close()
+	in, size, err := openWorkspaceImage(task, rel)
 	if err != nil {
 		return nil, err
 	}
 	defer in.Close()
-	out, err := os.Create(filepath.Join(dir, name))
+
+	iso := sandbox.Current()
+	uploads, err := iso.OpenWorkspace(taskDir, "uploads")
 	if err != nil {
 		return nil, err
 	}
-	defer out.Close()
-	if _, err := io.Copy(out, in); err != nil {
+	defer uploads.Close()
+	out, name, err := createUnique(uploads, "ask-operator-"+strconv.FormatInt(time.Now().Unix(), 10), ext)
+	if err != nil {
 		return nil, err
 	}
-	return []chatAttachment{{Name: name, Path: "uploads/" + name, Size: st.Size()}}, nil
+	fail := func(err error) ([]chatAttachment, error) {
+		out.Close()
+		_ = uploads.Remove(name)
+		return nil, err
+	}
+	n, err := io.Copy(out, io.LimitReader(in, askOperatorMaxImage+1))
+	if err != nil {
+		return fail(err)
+	}
+	if n > askOperatorMaxImage {
+		return fail(fmt.Errorf("image too large (more than %s, max 10MB)", humanBytes(askOperatorMaxImage)))
+	}
+	if iso.On() && os.Geteuid() == 0 {
+		if err := out.Chown(sandbox.ToolUID, sandbox.ToolGID); err != nil {
+			return fail(err)
+		}
+	}
+	if err := out.Chmod(0o644); err != nil {
+		return fail(err)
+	}
+	if err := out.Close(); err != nil {
+		_ = uploads.Remove(name)
+		return nil, err
+	}
+	return []chatAttachment{{Name: name, Path: "uploads/" + name, Size: size}}, nil
+}
+
+// browserServerName is the seeded browser MCP server, whose working directory is the one place
+// outside the task directory a screenshot may come from.
+const browserServerName = "browser"
+
+type imageWhere int
+
+const (
+	imageInTaskDir imageWhere = iota
+	imageInBrowserDir
+)
+
+// browserDirBase is the tool home the spawn function puts MCP working directories under.
+func browserDirBase() string {
+	if h := sandbox.Current().Layout().ToolHome; h != "" {
+		return h
+	}
+	return sandbox.ToolHome
+}
+
+// imageSource decides where the model's path lies and returns it relative to that directory. An
+// absolute path must lie in the task directory or in the browser MCP server's working directory;
+// a relative one is taken from taskDir/workRel. The check is lexical: it only decides what to ask
+// which root for, and the root then refuses whatever leaves its directory.
+func imageSource(taskDir, workRel, src string) (imageWhere, string, error) {
+	abs := src
+	if !filepath.IsAbs(abs) {
+		abs = filepath.Join(taskDir, workRel, src)
+	}
+	abs = filepath.Clean(abs)
+	inside := func(dir string) (string, bool) {
+		rel, err := filepath.Rel(dir, abs)
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return "", false
+		}
+		return rel, true
+	}
+	if rel, ok := inside(taskDir); ok {
+		return imageInTaskDir, rel, nil
+	}
+	if rel, ok := inside(filepath.Join(browserDirBase(), "mcp", mcpDirName(browserServerName))); ok {
+		return imageInBrowserDir, rel, nil
+	}
+	return 0, "", errors.New("image_path must be a file in this task's working directory or in the browser server's output directory")
+}
+
+// openWorkspaceImage opens rel in the task root and returns the file with its size, read from the
+// open descriptor. os.Root follows a link that stays inside the root, even as the last component,
+// so a link there is found with Lstat and refused, and the open file must be the one that was seen.
+func openWorkspaceImage(task *os.Root, rel string) (*os.File, int64, error) {
+	lfi, err := task.Lstat(rel)
+	if err != nil {
+		return nil, 0, fmt.Errorf("image not readable: %v", err)
+	}
+	if !lfi.Mode().IsRegular() {
+		return nil, 0, errors.New("image_path must be a regular file, not a link or a directory")
+	}
+	f, err := task.OpenFile(rel, os.O_RDONLY|noFollowFlag|nonBlockFlag, 0)
+	if err != nil {
+		return nil, 0, fmt.Errorf("image not readable: %v", err)
+	}
+	st, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, 0, fmt.Errorf("image not readable: %v", err)
+	}
+	if !st.Mode().IsRegular() || !os.SameFile(lfi, st) {
+		f.Close()
+		return nil, 0, errors.New("image_path changed while it was being opened")
+	}
+	if names, ok := linkCount(st); ok && names > 1 {
+		f.Close()
+		return nil, 0, errors.New("image_path is a file with more than one name")
+	}
+	if st.Size() > askOperatorMaxImage {
+		f.Close()
+		return nil, 0, fmt.Errorf("image too large (%s, max 10MB)", humanBytes(st.Size()))
+	}
+	return f, st.Size(), nil
 }

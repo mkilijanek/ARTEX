@@ -33,6 +33,7 @@ import type {
   SkillCall,
   SkillItem,
   Stats,
+  ToolIsolation,
   Task,
   TaskCategory,
   TaskNode,
@@ -206,6 +207,18 @@ const grandTotal: TokenTotal = tasks.reduce(
 );
 
 // ── Stats ──────────────────────────────────────────────────────────────────
+// Mock mode shows one isolation state per page load: ?isolation=degraded|unavailable|disabled|warnings (default enforced).
+const MOCK_ISOLATION: Record<string, ToolIsolation> = {
+  degraded: { status: "degraded", reason: "mock", warnings: [] },
+  unavailable: { status: "unavailable", reason: "mock", warnings: [] },
+  disabled: { status: "disabled", reason: "mock", warnings: [] },
+  warnings: { status: "enforced", reason: "", warnings: ["mock"] },
+};
+function mockToolIsolation(): ToolIsolation {
+  const q = typeof window === "undefined" ? "" : (new URLSearchParams(window.location.search).get("isolation") ?? "");
+  return MOCK_ISOLATION[q] ?? { status: "enforced", reason: "", warnings: [] };
+}
+
 export function stats(
   taskId?: string,
   state: { tasks?: readonly Task[]; findings?: readonly Finding[]; activeTask?: string } = {},
@@ -218,6 +231,7 @@ export function stats(
     llm_configured: true,
     roe_enabled: true,
     findings_confirmed: findingList.filter((f) => f.severity !== "low").length,
+    tool_isolation: mockToolIsolation(),
   };
   const selectedTaskID = taskId ?? state.activeTask ?? ACTIVE_TASK;
   const t = taskList.find((item) => item.id === selectedTaskID);

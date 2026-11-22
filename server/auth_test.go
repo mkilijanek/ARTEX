@@ -14,7 +14,7 @@ import (
 //
 // Both tests close the handlers' connection pool to force a read failure and assert both fail closed.
 func TestAuthStatusFailsClosedWhenDataSourceUnavailable(t *testing.T) {
-	m, err := NewManager(t.TempDir(), "")
+	m, err := NewManager(t.TempDir(), "", testDSN())
 	if err != nil {
 		t.Skipf("postgres unavailable (%v)", err)
 	}
@@ -40,7 +40,7 @@ func TestAuthStatusFailsClosedWhenDataSourceUnavailable(t *testing.T) {
 }
 
 func TestAuthInitFailsClosedWhenDataSourceUnavailable(t *testing.T) {
-	m, err := NewManager(t.TempDir(), "")
+	m, err := NewManager(t.TempDir(), "", testDSN())
 	if err != nil {
 		t.Skipf("postgres unavailable (%v)", err)
 	}
@@ -65,7 +65,7 @@ func TestAuthInitFailsClosedWhenDataSourceUnavailable(t *testing.T) {
 // While no password is set, authInit must reject a missing or wrong setup token
 // and accept the one generated at startup, once.
 func TestAuthInitRequiresSetupToken(t *testing.T) {
-	m, err := NewManager(t.TempDir(), "")
+	m, err := NewManager(t.TempDir(), "", testDSN())
 	if err != nil {
 		t.Skipf("postgres unavailable (%v)", err)
 	}

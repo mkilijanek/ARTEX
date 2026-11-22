@@ -124,12 +124,15 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 	tsx.steerWork = m.steerWork   // enable steer_work tool (nil = unavailable)
 	// domain tools + basic default toolset (Read/Write/Edit/MultiEdit/LS/Glob/Grep/Bash)
 	// when the asset coverage feature is off, drop add_task_scope/list_untested_assets (not in the prompt).
-	base := append(tsx.DropCoverageTools(tsx.MainAgentTools()), actool.DefaultTools()...)
+	base := append(tsx.DropCoverageTools(tsx.MainAgentTools()), defaultTools()...)
 	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, ExplorationID: explorationID(ts)})
 	tools, def, cleanup := AugmentTools(ctx, "mainagent", base)
 	defer cleanup()
 	// this task's working directory <workDir>/tasks/<taskID>, created up front.
-	mainDir := ensureRunDir(m.workDir, taskID, 0)
+	mainDir, err := prepareRunDir(ctx, m.workDir, taskID, 0)
+	if err != nil {
+		return "", err
+	}
 	ctx = intercept.WithReviewWorkingDirectory(ctx, mainDir)
 	system, boundary := deferredSystem(mainAgentSystem(goal, m.workDir, mainDir), def)
 	opts := agentcore.Options{
@@ -153,9 +156,8 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 		DeepSeekSearchAPIKey:  m.webSearch.DeepSeekAPIKey,
 		DeepSeekSearchModel:   m.webSearch.DeepSeekModel,
 		WebSearchProxy:        m.webSearch.Proxy,
-		BashEnv:               proxyEnv(m.proxyAddr, m.proxyCACert), // Bash subcommands go through the proxy + trust the CA by default
-		WorkingDir:            mainDir,                              // this task's working directory <workDir>/tasks/<taskID>
-		ToolOutputDir:         cmdOutDir(mainDir),
+		BashEnv:               toolEnv(m.proxyAddr, m.proxyCACert),    // Bash subcommands go through the proxy + trust the CA by default
+		WorkingDir:            mainDir,                                // this task's working directory <workDir>/tasks/<taskID>
 		MaxTurns:              m.maxTurns,                             // 0 = unlimited (configurable in agent management)
 		Compaction:            compactionConfig(m.compactionWindow()), // long chats stay within the window
 		Todos:                 actool.NewTodoStore(),                  // session-level temporary todos (TodoWrite), planning only, dropped on exit
@@ -178,9 +180,25 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 		noaSession = fmt.Sprintf("exp%d-main-s%d", ts.ID(), mainSeg)
 	}
 	enableNoa(&opts, m.noaEnabledFn, m.workDir, noaSession, noaWarn(noaSession))
-	ctx = attachSideCapture(ctx, &opts)
-	s := agentcore.NewSession(opts)
-	defer s.Close()
+	spillDir, err := sessionSpillDir(m.workDir, "main", opts.SessionID)
+	if err != nil {
+		return "", err
+	}
+	opts.ToolOutputDir = spillDir
+	ctx, err = attachSideCapture(ctx, &opts)
+	if err != nil {
+		return "", err
+	}
+	s, closeSession, err := newSession(ctx, opts, SessionInfo{Kind: "main", ID: opts.SessionID, NoaDir: noaSessionDir(m.workDir, noaSession), Emit: func(r db.Activity) {
+		if emit != nil {
+			r.Worker = "mainagent"
+			emit(r)
+		}
+	}})
+	if err != nil {
+		return "", err
+	}
+	defer closeSession()
 	// reload the prior conversation from the transcript so the agent has context
 	// across turns (each Chat is a fresh session; without this it can't see earlier
 	// messages). First turn: no file yet → Resume loads nothing and proceeds.

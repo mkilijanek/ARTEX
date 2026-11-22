@@ -103,7 +103,7 @@ func TestOllamaProviderWiresOpenAIProtocol(t *testing.T) {
 // loadProfileConfig accepts it, the task chain validates it, the failover pool
 // includes it, and the connection test completes against a fake Ollama.
 func TestOllamaKeylessProfileLifecycle(t *testing.T) {
-	m, err := NewManager(t.TempDir(), "")
+	m, err := NewManager(t.TempDir(), "", testDSN())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func TestOllamaListModels(t *testing.T) {
 	}))
 	t.Cleanup(fake.Close)
 
-	m, err := NewManager(t.TempDir(), "")
+	m, err := NewManager(t.TempDir(), "", testDSN())
 	if err != nil {
 		t.Fatal(err)
 	}

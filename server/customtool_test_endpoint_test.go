@@ -1,3 +1,5 @@
+//go:build unix
+
 package server
 
 import (
@@ -6,8 +8,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mkilijanek/artex/agent"
 	"github.com/mkilijanek/artex/db"
@@ -86,4 +90,42 @@ func TestCustomToolTestEndpointDestinationPolicy(t *testing.T) {
 			t.Fatal("the rule loader was never consulted: the policy did not run")
 		}
 	})
+}
+
+// A command run through the test endpoint starts a tool process outside any session, so it holds a
+// lease for the whole run and the idle sweep cannot end it.
+func TestCustomToolTestEndpointHoldsALeaseWhileTheCommandRuns(t *testing.T) {
+	iso, _ := activateEnforcedTree(t)
+	flag := t.TempDir() + "/go"
+	body, _ := json.Marshal(map[string]any{
+		"kind":   "command",
+		"exec":   json.RawMessage(`{"command":"while [ ! -e ` + flag + ` ]; do sleep 0.02; done; echo finished"}`),
+		"params": map[string]any{},
+	})
+	s := &Server{m: &Manager{pg: &db.DB{}, dir: t.TempDir()}}
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		s.pgTestCustomTool(rec, httptest.NewRequest(http.MethodPost, "/api/tools/custom/test", bytes.NewReader(body)))
+		close(done)
+	}()
+	waitHeld := func(want int) {
+		t.Helper()
+		for i := 0; i < 500; i++ {
+			if iso.Leases().Held() == want {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("leases held %d, want %d", iso.Leases().Held(), want)
+	}
+	waitHeld(1)
+	if err := os.WriteFile(flag, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+	waitHeld(0)
+	if !strings.Contains(rec.Body.String(), "finished") {
+		t.Fatalf("body %s", credTrunc(rec.Body.String()))
+	}
 }

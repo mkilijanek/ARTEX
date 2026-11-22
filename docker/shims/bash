@@ -1,0 +1,5 @@
+#!/bin/sh
+# Shell shim for model-driven commands. Installed root-owned 0755 as
+# /usr/local/libexec/artex/shims/bash and put on the server's PATH only; it is not on the
+# image PATH. Its arguments are the SDK's `-c <command>` and nothing else.
+exec /app/artex __astool -- /bin/bash "$@"

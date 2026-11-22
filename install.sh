@@ -63,6 +63,8 @@ install_docker(){
 
 # ── 2) Local build & run ──────────────────────────────
 install_local(){
+  warn "A local build runs agent tools as your login user: they can read this server's secrets, its database"
+  warn "and your home directory. Use the All-Docker install (option 1) for protection."
   echo "Database setup:"
   echo "  1) Connect to an existing PostgreSQL"
   echo "  2) Start a PostgreSQL with Docker (requires docker)"

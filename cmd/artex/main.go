@@ -8,17 +8,23 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/mkilijanek/artex/agent"
 	"github.com/mkilijanek/artex/config"
+	"github.com/mkilijanek/artex/db"
+	"github.com/mkilijanek/artex/sandbox"
 	"github.com/mkilijanek/artex/server"
+	"github.com/mkilijanek/artex/traffic"
 )
 
 // version is the build version, injected at release time via
@@ -48,10 +54,18 @@ func main() {
 }
 
 func run() int {
+	// The stages of the drop chain are subcommands of this binary. They run before anything
+	// else (no flags, no logging, no banner), so the root stage touches nothing it need not.
+	if len(os.Args) > 1 {
+		if code, ok := runStage(os.Args[1], os.Args[2:]); ok {
+			return code
+		}
+	}
 	var (
 		addr    = flag.String("addr", ":8787", "HTTP listen address")
 		dataDir = flag.String("data", filepath.Join(config.BaseDir(), "data"), "data directory for SQLite stores (default: data/ next to the executable)")
 		proxy   = flag.String("proxy", "127.0.0.1:8788", "traffic recording proxy address (empty to disable)")
+		egress  = flag.String("egress", traffic.DefaultEgressAddr, "credential-free egress forwarder for tools, loopback address only (empty to disable)")
 	)
 	flag.Parse()
 
@@ -82,12 +96,6 @@ func run() int {
 	ctx, shutdown := shutdownContext(sigCtx)
 	defer shutdown(agent.AbortShutdown)
 
-	mgr, err := server.NewManager(*dataDir, *proxy)
-	if err != nil {
-		log.Fatalf("open stores: %v", err)
-	}
-	defer mgr.Close()
-
 	skillDir, err := config.SkillDir()
 	if err != nil {
 		log.Printf("[config] %v", err)
@@ -97,7 +105,61 @@ func run() int {
 		skillDir = abs
 	}
 	log.Printf("[config] skill directory: %s", skillDir)
-	srv := server.New(ctx, mgr, skillDir, *dataDir, config.BaseDir(), server.WithSecretScrub(), server.WithControlPlane(*addr, *proxy))
+
+	// Activation order. Step 1: read every secret once, then remove it from the environment.
+	// Nothing below can start a tool process before this is done, and isolation start-up refuses
+	// to go on while any of them is still set.
+	dsn, dsnSource, err := db.DSN()
+	if err != nil {
+		log.Fatalf("open stores: %v", err)
+	}
+	log.Printf("[pg] database config source: %s", dsnSource)
+	dbEndpoints, endpointsErr := agent.DatabaseEndpoint(dsn)
+	if endpointsErr != nil {
+		// The text carries no part of the DSN. Without the endpoints WebFetch refuses every fetch.
+		log.Printf("[webfetch-policy] database endpoints unavailable: %v", endpointsErr)
+	}
+	envLLM, envLLMOK := agent.FromEnv()
+	server.ScrubSecretEnv()
+
+	// Steps 2-7: kill leftovers, TMPDIR, PATH, permissions, the self-check, the mode.
+	absData, err := filepath.Abs(*dataDir)
+	if err != nil {
+		log.Printf("[config] data directory: %v", err)
+		return 1
+	}
+	iso, err := sandbox.Activate(ctx, sandbox.Config{
+		Layout: sandbox.DefaultLayout(), DataDir: absData, KeyDir: config.BaseDir(), ConfigPath: config.Path(), SkillDir: skillDir,
+		DBSockets: databaseSockets(dbEndpoints), DBTCP: databaseTCP(dbEndpoints), SecretNames: server.SecretEnvNames(),
+	})
+	if err != nil {
+		log.Printf("[isolation] start-up failed: %v", err)
+		return 1
+	}
+	sandbox.Set(iso)
+	go iso.Run(ctx)
+	agent.SweepSpill(absData) // old spill directories, before any session runs
+
+	mgr, err := server.NewManager(*dataDir, *proxy, dsn)
+	if err != nil {
+		log.Fatalf("open stores: %v", err)
+	}
+	defer mgr.Close()
+
+	// The forwarder tools reach the operator's global egress proxy through. If it cannot start, tools
+	// are still pointed at its address (their egress fails visibly instead of using the credentials)
+	// and the status becomes degraded with the reason.
+	if err := mgr.StartEgressForwarder(*egress); err != nil {
+		log.Printf("[egress] %v", err)
+		iso.ReportFailure("E1", "the egress forwarder is not running ("+err.Error()+"): tools cannot use the global egress proxy")
+	}
+
+	options := []server.Option{server.WithControlPlane(*addr, *proxy), server.WithEnvLLM(envLLM, envLLMOK)}
+	if endpointsErr == nil {
+		options = append(options, server.WithDatabaseEndpoints(dbEndpoints))
+	}
+	srv := server.New(ctx, mgr, skillDir, *dataDir, config.BaseDir(), options...)
+	iso.ReapplyPermissions() // entries the store and the server created while starting
 	httpSrv := &http.Server{
 		Addr:              *addr,
 		Handler:           srv.Handler(),
@@ -118,7 +180,34 @@ func run() int {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = httpSrv.Shutdown(shutdownCtx)
+	// Graceful stop: wait for the tool-process leases, then end whatever the tool user still runs.
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer drainCancel()
+	iso.Drain(drainCtx)
 	return 0
+}
+
+// databaseSockets lists the socket files the DSN's endpoints name (a host that is a path), for
+// the self-check's reachability probe.
+func databaseSockets(eps []agent.DBEndpoint) []string {
+	var out []string
+	for _, e := range eps {
+		if strings.HasPrefix(e.Host, "/") {
+			out = append(out, fmt.Sprintf("%s/.s.PGSQL.%d", strings.TrimRight(e.Host, "/"), e.Port))
+		}
+	}
+	return out
+}
+
+// databaseTCP lists the host:port endpoints the DSN reaches over the network.
+func databaseTCP(eps []agent.DBEndpoint) []string {
+	var out []string
+	for _, e := range eps {
+		if !strings.HasPrefix(e.Host, "/") && !strings.HasPrefix(e.Host, "@") {
+			out = append(out, net.JoinHostPort(e.Host, strconv.Itoa(int(e.Port))))
+		}
+	}
+	return out
 }
 
 // shutdownContext deliberately does not derive from signalCtx. If it did, the

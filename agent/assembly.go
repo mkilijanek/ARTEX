@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	actool "github.com/Autumn-27/norma/tool"
+	"github.com/mkilijanek/artex/sandbox"
 )
 
 // DeferredInfo carries the deferred-tools wiring an agent needs to build its
@@ -64,13 +65,25 @@ func AugmentTools(ctx context.Context, agentKey string, base []actool.CoreTool) 
 		cleanup = func() {}
 		out     = base
 	)
+	// MCP servers start in the augment hook, long before the session exists, so this is where the
+	// tool-process lease starts: held until the cleanup returned below has closed the clients. With
+	// no lease (a cancelled context) nothing is started.
+	lease, err := sandbox.Current().Leases().Acquire(ctx)
+	if err != nil {
+		log.Printf("[tools] no tool-process lease for %s: %v", agentKey, err)
+		return out, def, cleanup
+	}
+	cleanup = lease.Release
 	// Copy each hook once under its lock, then call it outside the lock.
 	if augment := ToolAugment(); augment != nil {
 		var extra []actool.CoreTool
 		var cl func()
 		extra, def, cl = augment(ctx, agentKey)
 		if cl != nil {
-			cleanup = cl
+			cleanup = func() {
+				cl()
+				lease.Release()
+			}
 		}
 		if len(extra) > 0 {
 			out = append(append([]actool.CoreTool{}, base...), extra...)

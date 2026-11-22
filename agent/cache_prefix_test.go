@@ -110,7 +110,7 @@ func TestProviderFacingPromptBudgetsWithTrafficAndDeferredTools(t *testing.T) {
 						system, boundary := deferredSystem(body, def)
 						var request llm.CompletionRequest
 						provider := &plannerContextFixtureProvider{receive: func(req llm.CompletionRequest) { request = req }}
-						opts := agentcore.Options{Provider: provider, SystemPrompt: system, DynamicBoundary: boundary, NonStreaming: true, MaxTurns: 1}
+						opts := agentcore.Options{Provider: provider, SystemPrompt: system, DynamicBoundary: boundary, Tools: noTools, NonStreaming: true, MaxTurns: 1}
 						if _, _, err := captureRun(t.Context(), opts, "fixture only", nil); err != nil {
 							t.Fatal(err)
 						}

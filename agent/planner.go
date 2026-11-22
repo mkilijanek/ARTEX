@@ -430,7 +430,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	}
 	// Domain tools + the basic default tool set (Read/Write/Edit/MultiEdit/LS/Glob/Grep/Bash).
 	// When the asset-coverage feature is off, drop add_task_scope/list_untested_assets (not in the prompt).
-	base := append(tsx.DropCoverageTools(tsx.PlannerTools()), actool.DefaultTools()...)
+	base := append(tsx.DropCoverageTools(tsx.PlannerTools()), defaultTools()...)
 	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, ExplorationID: explorationID(ts)})
 	tools, def, cleanup := AugmentTools(WithToolQuery(ctx, plannerToolQuery(goal, triggers)), "planner", base)
 	defer cleanup()
@@ -506,7 +506,10 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		situational += "\n\n[Task endgame wrap-up (special instruction for this round, overriding the normal planning flow above)]: " + resolveTaskTimeoutWrapup("planner")
 	}
 	// This task's work dir <workDir>/tasks/<taskID>; create it first.
-	taskDir := ensureRunDir(p.workDir, taskID, 0)
+	taskDir, err := prepareRunDir(ctx, p.workDir, taskID, 0)
+	if err != nil {
+		return false, string(ReasonSessionStart), err
+	}
 	ctx = intercept.WithReviewContext(ctx, taskDir, intercept.ReviewBackground{})
 	sysBody := plannerSystem(goal, p.workDir, taskDir) + p.lessonsBlock
 	constraints := ""
@@ -544,11 +547,10 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		DeepSeekSearchAPIKey:  p.webSearch.DeepSeekAPIKey,
 		DeepSeekSearchModel:   p.webSearch.DeepSeekModel,
 		WebSearchProxy:        p.webSearch.Proxy,
-		BashEnv:               proxyEnv(p.proxyAddr, p.proxyCACert), // Bash subcommands go through the proxy + trust its CA by default
-		WorkingDir:            taskDir,                              // this task's work dir <workDir>/tasks/<taskID>
-		ToolOutputDir:         cmdOutDir(taskDir),
-		MaxTurns:              p.maxTurns, // 0 = unlimited (configurable in agent management)
-		MaxDuration:           maxDur,     // 0=unlimited; with a deadline = time remaining until it
+		BashEnv:               toolEnv(p.proxyAddr, p.proxyCACert), // Bash subcommands go through the proxy + trust its CA by default
+		WorkingDir:            taskDir,                             // this task's work dir <workDir>/tasks/<taskID>
+		MaxTurns:              p.maxTurns,                          // 0 = unlimited (configurable in agent management)
+		MaxDuration:           maxDur,                              // 0=unlimited; with a deadline = time remaining until it
 		Compaction:            compactionConfig(p.compactionWindow()),
 		// Planning todos shared across wake-ups: keep the serial chain across rounds (the session is new; the store isn't).
 		Todos: p.todoFor(ts.ID()),
@@ -568,6 +570,10 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// Experimental: when on, noa takes over context compression (archives persist under <workDir>/noa/<SessionID>).
 	noaSession := fmt.Sprintf("exp%d-planner", ts.ID())
 	enableNoa(&opts, p.noaEnabledFn, p.workDir, noaSession, noaWarn(noaSession))
+	ctx = withNoaDir(ctx, noaSessionDir(p.workDir, noaSession))
+	if opts.ToolOutputDir, err = sessionSpillDir(p.workDir, "run", opts.SessionID); err != nil {
+		return false, string(ReasonSessionStart), err
+	}
 	// The situation (just-finished intents + the full graph) is now spliced into this
 	// round's user input (see input below). The user message also carries the
 	// instruction + cross-wake todos (todos are the model's own planning scratchpad,

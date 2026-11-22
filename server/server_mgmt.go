@@ -27,6 +27,7 @@ import (
 	"github.com/Autumn-27/norma/skill"
 	"github.com/mkilijanek/artex/agent"
 	"github.com/mkilijanek/artex/db"
+	"github.com/mkilijanek/artex/sandbox"
 )
 
 // validSkillName checks the agentskills.io name constraints, widened so a skill can
@@ -870,6 +871,12 @@ func (s *Server) pgSaveMCP(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
+	// A stdio row's env keys become variables of a process: refuse the names the drop chain
+	// refuses. For http and sse the same column holds headers and is not checked.
+	if err := checkMCPEnvKeys(m.Name, m.Transport, m.Env); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
 	isNew := m.ID == 0
 	id, err := pg.SaveMCP(&m)
 	if err != nil {
@@ -974,7 +981,10 @@ type skillFileNode struct {
 
 func (s *Server) fsListSkills(w http.ResponseWriter, r *http.Request) {
 	_ = os.MkdirAll(s.skillDir, 0o755)
-	allReg, _ := skill.LoadDir(s.skillDir)
+	allReg, err := sandbox.LoadSkills(s.skillDir)
+	if err != nil {
+		log.Printf("[skills] list: not loaded: %v", err)
+	}
 	metaByDir := map[string]skill.Skill{}
 	if allReg != nil {
 		for _, sk := range allReg.List() {
@@ -1201,7 +1211,7 @@ func yamlScalar(s string) string {
 // verifySkillFile re-loads a written SKILL.md with the real skill parser and
 // asserts the name and the mcps list survived the round trip.
 func verifySkillFile(skillPath, wantName string, wantMCPs []string) error {
-	reg, err := skill.LoadDir(skillPath)
+	reg, err := sandbox.LoadSkills(skillPath)
 	if err != nil {
 		return fmt.Errorf("load: %w", err)
 	}
@@ -1224,15 +1234,16 @@ func verifySkillFile(skillPath, wantName string, wantMCPs []string) error {
 // name: the signature of frontmatter that failed to parse and silently fell back
 // (fields empty, mcps gate lost). Best-effort, startup only.
 func warnBrokenSkills(dir string) {
-	reg, err := skill.LoadDir(dir)
+	reg, err := sandbox.LoadSkills(dir)
 	if err != nil {
+		log.Printf("[skills] not checked for broken frontmatter: %v", err)
 		return
 	}
 	for _, s := range reg.List() {
 		if s.Dir == "" || s.Name == filepath.Base(s.Dir) {
 			continue
 		}
-		log.Printf("[skill] %s: frontmatter did not parse (loaded under the directory name; description and mcps are empty) - fix the YAML in %s", s.Name, filepath.Join(s.Dir, "SKILL.md"))
+		log.Printf("[skill] %s: frontmatter did not parse (loaded under the directory name; description and mcps are empty) - fix the YAML in %s", s.Name, filepath.Join(dir, filepath.Base(s.Dir), "SKILL.md"))
 	}
 }
 

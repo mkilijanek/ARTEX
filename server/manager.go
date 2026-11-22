@@ -21,6 +21,7 @@ import (
 	"github.com/mkilijanek/artex/enrich"
 	"github.com/mkilijanek/artex/guard"
 	"github.com/mkilijanek/artex/intercept"
+	"github.com/mkilijanek/artex/sandbox"
 	"github.com/mkilijanek/artex/traffic"
 )
 
@@ -266,8 +267,13 @@ type Manager struct {
 	// globalProxy is the egress proxy all target traffic routes through
 	// (http/https/socks5, optional user:pass). Empty = direct. When traffic
 	// capture is on it becomes the MITM's upstream; when capture is off it is
-	// injected into agent bash env / WebFetch directly. See ProxyAddr.
+	// injected into WebFetch directly; tools reach it through the forwarder. See ProxyAddr.
 	globalProxy string
+	// egress is the credential-free forwarder tools use while capture is off and a global proxy is
+	// set; egressAddr is the host:port tools are pointed at (the forwarder's address, or the default
+	// when it is disabled or could not start, so tool egress fails visibly). See ToolProxyAddr.
+	egress     *traffic.Forwarder
+	egressAddr string
 }
 
 // Settings keys the UI toggles at runtime.
@@ -362,9 +368,12 @@ func (m *Manager) SetWorkers(n int) error {
 // Enrich returns the asset auto-completion engine (may be nil if init failed).
 func (m *Manager) Enrich() *enrich.Engine { return m.enrich }
 
-// NewManager connects to PostgreSQL and, if proxyAddr is non-empty, starts the
-// traffic-recording proxy. PostgreSQL is required (it is the single data source).
-func NewManager(dir, proxyAddr string) (*Manager, error) {
+// NewManager connects to PostgreSQL with dsn and, if proxyAddr is non-empty, starts the
+// traffic-recording proxy. PostgreSQL is required (it is the single data source). The caller
+// resolves the DSN once at startup (db.DSN) and removes it from the environment afterwards; this
+// function never reads the environment, so a later start of a tool process cannot be affected by
+// when it runs.
+func NewManager(dir, proxyAddr, dsn string) (*Manager, error) {
 	// Resolve the data dir to an ABSOLUTE path up front. Every data path derives
 	// from it — notably the MITM CA cert, whose path is injected into worker shells
 	// (SSL_CERT_FILE/CURL_CA_BUNDLE) and read by WebFetch. A relative path (the
@@ -377,11 +386,9 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	dsn, source, err := pgdb.DSN()
-	if err != nil {
-		return nil, err
+	if strings.TrimSpace(dsn) == "" {
+		return nil, errors.New("no database config")
 	}
-	log.Printf("[pg] database config source: %s", source)
 	pg, err := pgdb.Open(dsn)
 	if err != nil {
 		return nil, err
@@ -396,7 +403,7 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	} else {
 		log.Printf("[detect] recovered stopped=%d queued=%d", stopped, queued)
 	}
-	m := &Manager{dir: dir, pg: pg, assets: pg.Assets(), tasks: map[string]*Task{}, interceptor: intercept.New(pg), toolRAG: newToolRAGWriter(pg.InsertToolRAGObservation)}
+	m := &Manager{dir: dir, pg: pg, assets: pg.Assets(), tasks: map[string]*Task{}, interceptor: intercept.New(pg), toolRAG: newToolRAGWriter(pg.InsertToolRAGObservation), egressAddr: traffic.DefaultEgressAddr}
 	if proxyAddr != "" {
 		tr, err := traffic.Open(filepath.Join(dir, "traffic"), proxyAddr)
 		if err != nil {
@@ -421,6 +428,10 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 			}
 		}
 		if tr != nil {
+			// The store is closed to the tool user; the tools trust a copy of the certificate.
+			if err := tr.PublishCA(filepath.Join(dir, "public")); err != nil {
+				log.Printf("[traffic] the CA certificate could not be published for tools: %v", err)
+			}
 			m.traffic = tr
 			go func() {
 				log.Printf("[traffic] recording proxy on %s (set HTTP_PROXY=%s + trust _ca CA)", proxyAddr, tr.ProxyAddr())
@@ -658,8 +669,10 @@ const browserMCPName = "browser"
 // syncBrowserMCPProxy reconciles the seeded browser MCP's proxy args + CA env with
 // the current traffic-capture state: capture on → route Playwright through the
 // recording proxy (--proxy-server) and trust its MITM CA (NODE_EXTRA_CA_CERTS);
-// capture off → strip both. Idempotent, and a no-op if the user deleted/renamed the
-// MCP. Must be called WITHOUT m.mu held (ProxyAddr/ProxyCACert take the lock).
+// capture off with a global proxy → route it through the credential-free forwarder
+// (the operator's proxy address and credentials are never written to the MCP row, its
+// arguments or its environment); capture off without one → strip both. Idempotent, and
+// a no-op if the user deleted/renamed the MCP. Must be called WITHOUT m.mu held (ProxyAddr/ProxyCACert take the lock).
 func (m *Manager) syncBrowserMCPProxy() {
 	servers, err := m.pg.ListMCP()
 	if err != nil {
@@ -677,8 +690,8 @@ func (m *Manager) syncBrowserMCPProxy() {
 		return // user removed/renamed it — leave it alone
 	}
 
-	proxy := m.ProxyAddr()  // "" when capture off
-	cert := m.ProxyCACert() // "" when capture off
+	proxy := m.ToolProxyAddr() // the recording proxy, or the credential-free forwarder; never the global proxy itself
+	cert := m.ProxyCACert()    // "" when capture off
 
 	args := stripProxyArgs(decodeStrSlice(srv.Args))
 	env := decodeStrMap(srv.Env)
@@ -777,6 +790,77 @@ func (m *Manager) ProxyAddr() string {
 	return m.globalProxy
 }
 
+// ToolProxyAddr returns the proxy address tool processes get, as ProxyAddr but never the operator's
+// global proxy: with capture off and a global proxy set, tools get the local credential-free
+// forwarder (which dials through that proxy and adds its credentials itself); with none set, "".
+// The forwarder's address is returned even when it is disabled or failed to start, so tool egress
+// fails visibly instead of falling back to the credentials.
+func (m *Manager) ToolProxyAddr() string {
+	if m.traffic != nil && m.TrafficEnabled() {
+		return m.traffic.ProxyAddr()
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.globalProxy == "" {
+		return ""
+	}
+	return "http://" + m.egressAddr
+}
+
+// StartEgressForwarder starts the credential-free forwarder on addr (loopback only; see
+// traffic.ParseEgressAddr). An empty addr leaves it off. It reads the global proxy live, so a
+// change applies without a restart. A failure is returned for the caller to log and report; tools
+// are pointed at the forwarder's address regardless (see ToolProxyAddr).
+func (m *Manager) StartEgressForwarder(addr string) error {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		log.Printf("[egress] forwarder disabled (-egress is empty): tools have no route through a global egress proxy")
+		return nil
+	}
+	f, err := traffic.NewForwarder(addr, m.GlobalProxy)
+	if err != nil {
+		return err
+	}
+	if err := f.Listen(); err != nil {
+		m.pointToolsAt(f) // still the configured address: tool egress fails instead of using credentials
+		return err
+	}
+	m.mu.Lock()
+	m.egress = f
+	m.mu.Unlock()
+	m.pointToolsAt(f) // the bound address (it differs from the configured one for port 0)
+	go m.serveEgress(f)
+	log.Printf("[egress] forwarder on %s: tools reach the global egress proxy through it and never see its address or credentials", f.Addr())
+	return nil
+}
+
+// serveEgress runs the forwarder until it is closed. Serve returning an error means it stopped on
+// its own: that raises the same status warning (E1) as a start-up failure.
+func (m *Manager) serveEgress(f *traffic.Forwarder) {
+	if err := f.Serve(); err != nil {
+		log.Printf("[egress] forwarder stopped: %v", err)
+		sandbox.Current().ReportFailure("E1", "the egress forwarder stopped ("+err.Error()+"): tools cannot use the global egress proxy")
+	}
+}
+
+// pointToolsAt makes the forwarder's current address the one tools and the browser MCP get.
+func (m *Manager) pointToolsAt(f *traffic.Forwarder) {
+	m.mu.Lock()
+	m.egressAddr = f.Addr()
+	m.mu.Unlock()
+	agent.SetEgressForwarder("http://" + f.Addr())
+	if f.Addr() != traffic.DefaultEgressAddr {
+		m.syncBrowserMCPProxy() // NewManager's sync used the default address
+	}
+}
+
+// EgressAddr is the host:port the forwarder listens on, or the default while it is off.
+func (m *Manager) EgressAddr() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.egressAddr
+}
+
 // ProxyCACert returns the CA cert path agents must trust to verify HTTPS through
 // the egress proxy. Non-empty ONLY when traffic capture is on (the MITM re-signs
 // certs): the global proxy used directly (capture off) is a plain forwarder that
@@ -831,6 +915,9 @@ func (m *Manager) Close() error {
 	defer m.mu.Unlock()
 	if m.traffic != nil {
 		m.traffic.Close()
+	}
+	if m.egress != nil {
+		m.egress.Close()
 	}
 	return m.pg.Close()
 }

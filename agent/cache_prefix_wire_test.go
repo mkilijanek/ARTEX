@@ -40,7 +40,7 @@ func TestCachePrefixPhysicalAnthropicRequestRetainsBothBreakpoints(t *testing.T)
 			for _, goal := range []string{"goal one", "different goal"} {
 				body := plannerSystem(goal, "/data", "/data/tasks/1")
 				system, boundary := deferredSystem(body, DeferredInfo{GlobalNames: []string{"mcp__fixture__read"}, FindingGuidance: findingIDGuidance})
-				opts := agentcore.Options{Provider: provider, SystemPrompt: system, DynamicBoundary: boundary, NonStreaming: true, MaxTurns: 1}
+				opts := agentcore.Options{Provider: provider, SystemPrompt: system, DynamicBoundary: boundary, Tools: noTools, NonStreaming: true, MaxTurns: 1}
 				if _, _, err := captureRun(t.Context(), opts, "Only finish this fixture; no tools.", nil); err != nil {
 					t.Fatal(err)
 				}

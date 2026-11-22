@@ -15,7 +15,7 @@ import (
 // trafficEvidenceServer but without the finding plumbing.
 func ingestServer(t *testing.T) (*Server, func(method, path, body string) *httptest.ResponseRecorder) {
 	t.Helper()
-	m, err := NewManager(t.TempDir(), "")
+	m, err := NewManager(t.TempDir(), "", testDSN())
 	if err != nil {
 		t.Fatal(err)
 	}

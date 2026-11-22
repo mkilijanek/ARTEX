@@ -11,6 +11,10 @@ import (
 // ReasonSessionRestore is an ARTEX integration failure, not a retryable model error.
 const ReasonSessionRestore harness.TerminalReason = "session_restore_error"
 
+// ReasonSessionStart is an ARTEX integration failure too: the session guard refused the session's
+// options (a missing tool list, for example), so nothing was started and no model request was sent.
+const ReasonSessionStart harness.TerminalReason = "session_start_error"
+
 // Missing transcripts are fresh sessions in Norma. Any other load failure must
 // stop before Run: continuing would append a new conversation to damaged history.
 func resumeSession(s *agentcore.Session, id string, stores ...*transcript.Store) error {

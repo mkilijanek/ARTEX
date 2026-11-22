@@ -11,13 +11,16 @@
 #   --output-dir   where to write (default backups/, relative to the repo root)
 #
 # The database dump runs inside the postgres compose service, so no psql client
-# is needed on the host. Restore:
-#   gunzip -c backups/artex-db-<ts>.sql.gz | docker compose exec -T postgres \
-#     psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+# is needed on the host. The bundled database listens on a Unix socket only and
+# needs the password even there: it is read from POSTGRES_PASSWORD (.env) and
+# handed over as an environment variable, never on a command line. Restore:
+#   set -a; . ./.env; set +a
+#   gunzip -c backups/artex-db-<ts>.sql.gz | PGPASSWORD="$POSTGRES_PASSWORD" \
+#     docker compose exec -T -e PGPASSWORD postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-usage() { sed -n '2,15p' "$0" | sed 's/^# \?//'; }
+usage() { sed -n '2,20p' "$0" | sed 's/^# \?//'; }
 
 KEEP=14
 OUTPUT_DIR="backups"
@@ -44,6 +47,9 @@ if [ -f .env ]; then
 fi
 PGUSER_NAME="${POSTGRES_USER:-artex}"
 PGDATABASE_NAME="${POSTGRES_DB:-artex}"
+# The bundled database requires the password on every connection (scram on a new
+# volume; an old volume accepts and ignores it). Without it pg_dump fails.
+[ -n "${POSTGRES_PASSWORD:-}" ] || { echo "POSTGRES_PASSWORD is not set (.env): pg_dump cannot authenticate" >&2; exit 1; }
 
 mkdir -p "$OUTPUT_DIR"
 TS=$(date -u +%Y%m%dT%H%M%SZ)
@@ -53,7 +59,9 @@ if [ -e "$DB_OUT" ]; then
   exit 1
 fi
 
-if ! docker compose exec -T postgres pg_dump -U "$PGUSER_NAME" "$PGDATABASE_NAME" | gzip > "$DB_OUT"; then
+# -e with a name only: docker reads the value from this process, so it stays off
+# every command line (docker and ps) and out of the logs.
+if ! PGPASSWORD="$POSTGRES_PASSWORD" docker compose exec -T -e PGPASSWORD postgres pg_dump -U "$PGUSER_NAME" "$PGDATABASE_NAME" | gzip > "$DB_OUT"; then
   rm -f "$DB_OUT"
   echo "pg_dump failed (is the stack running?)" >&2
   exit 1

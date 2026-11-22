@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	actool "github.com/Autumn-27/norma/tool"
 	"github.com/mkilijanek/artex/agent"
 	"github.com/mkilijanek/artex/db"
+	"github.com/mkilijanek/artex/sandbox"
 )
 
 // This file implements the custom tool executor (docs/custom-tool-design.md). tools rows
@@ -163,6 +165,14 @@ func (s *Server) pgTestCustomTool(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
 	defer cancel()
+	// A command or script run starts a tool process outside any session: hold a lease so the idle
+	// sweep cannot end it mid-run.
+	lease, err := sandbox.Current().Leases().Acquire(ctx)
+	if err != nil {
+		writeErr(w, 503, "tool processes are being restarted; retry")
+		return
+	}
+	defer lease.Release()
 	tc := &actool.ToolContext{WorkingDir: s.m.dir} // run in the project dir, like a real call
 	var res actool.Result
 	switch req.Kind {
@@ -370,45 +380,71 @@ func (s *Server) runScriptTool(ctx context.Context, key string, execRaw json.Raw
 		}
 		sessionEnv = tc.Env
 	}
-	body, err := execPython(ctx, interp, key, spec.Code, params, workDir, sessionEnv, timeoutOr(spec.TimeoutMs, 120000))
+	body, err := execPython(ctx, interp, spec.Code, params, workDir, s.m.dir, sessionEnv, timeoutOr(spec.TimeoutMs, 120000))
 	if err != nil {
 		return actool.Errorf(err.Error()), nil
 	}
 	return actool.Text(actool.Capture(tc, body)), nil
 }
 
-// execPython writes the code to a temp .py under workDir/.tools, runs it via interp
-// with the params JSON on stdin + scalar params mirrored to TOOL_<NAME> env, and
-// returns combined stdout+stderr (with a timeout/exit note). Standalone + testable.
-func execPython(ctx context.Context, interp, key, code string, params map[string]any, workDir string, sessionEnv []string, timeout time.Duration) (string, error) {
-	toolsDir := filepath.Join(workDir, ".tools")
-	if err := os.MkdirAll(toolsDir, 0o755); err != nil {
-		return "", err
+// scriptWaitDelay is how long after the interpreter ends (or is killed on the timeout) the run
+// waits for its output pipe: a child it left behind that holds the pipe open must not keep the
+// call, and the lease it holds, waiting for the idle sweep that can only run once the call ends.
+const scriptWaitDelay = 3 * time.Second
+
+// execPython runs one script tool. The code goes to a file in the server's script directory
+// (<data>/spill/scripts: root 0711, the file 0644 under a random name, made exclusively), never
+// into the workspace, and the interpreter starts through the drop chain in the workspace, so
+// nothing the model wrote runs as root. The params JSON goes via stdin; scalar params are mirrored
+// as TOOL_<NAME> variables, which travel in the root-only variables file and not in the
+// environment or arguments of the root stage. Returns combined stdout+stderr (with a
+// timeout/exit note). Standalone + testable.
+func execPython(ctx context.Context, interp, code string, params map[string]any, workDir, dataDir string, sessionEnv []string, timeout time.Duration) (string, error) {
+	vars := make(map[string]string)
+	for k, v := range params { // scalar params mirrored as TOOL_<NAME>
+		sv, ok := scalarStr(v)
+		if !ok {
+			continue
+		}
+		name := "TOOL_" + strings.ToUpper(k)
+		if sandbox.ValidateVarName(name) != nil {
+			continue // not a name an environment variable can have; stdin still carries the parameter
+		}
+		vars[name] = sv
 	}
-	f, err := os.CreateTemp(toolsDir, key+"-*.py")
-	if err != nil {
-		return "", err
+	if err := sandbox.ValidateVars(vars); err != nil {
+		return "", fmt.Errorf("a parameter cannot be passed as a variable: %w", err)
 	}
-	tmp := f.Name()
-	defer os.Remove(tmp)
-	if _, err := f.WriteString(code); err != nil {
-		f.Close()
-		return "", err
-	}
-	f.Close()
+	pj, _ := json.Marshal(params)
 
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	c := exec.CommandContext(runCtx, interp, tmp)
-	c.Dir = workDir
-	c.Env = append(os.Environ(), sessionEnv...) // session proxy env
-	for k, v := range params {                  // scalar params mirrored as TOOL_<NAME>
-		if sv, ok := scalarStr(v); ok {
-			c.Env = append(c.Env, "TOOL_"+strings.ToUpper(k)+"="+sv)
-		}
+	iso := sandbox.Current()
+	lease, err := iso.Leases().Acquire(runCtx)
+	if err != nil {
+		return "", fmt.Errorf("tool processes are being restarted: %w", err)
 	}
-	pj, _ := json.Marshal(params)
+	defer lease.Release()
+
+	script, remove, err := writeScriptFile(dataDir, code)
+	if err != nil {
+		return "", err
+	}
+	defer remove()
+
+	c, cleanup, err := iso.Command(runCtx, lease, sandbox.Spec{Dir: workDir, Vars: vars, Program: interp, Args: []string{script}})
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+	if iso.On() {
+		// The root stage reduces this to its allow-list (the session's proxy variables pass).
+		c.Env = append(os.Environ(), sessionEnv...)
+	} else {
+		c.Env = append(append(os.Environ(), sessionEnv...), varEnv(vars)...)
+	}
 	c.Stdin = bytes.NewReader(pj) // parameter JSON goes via stdin
+	c.WaitDelay = scriptWaitDelay
 	out, err := c.CombinedOutput()
 	body := string(out)
 	if runCtx.Err() == context.DeadlineExceeded {
@@ -417,6 +453,55 @@ func execPython(ctx context.Context, interp, key, code string, params map[string
 		body += "\n[exit: " + err.Error() + "]"
 	}
 	return body, nil
+}
+
+// varEnv renders variables as environment entries, in name order.
+func varEnv(vars map[string]string) []string {
+	keys := make([]string, 0, len(vars))
+	for k := range vars {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	env := make([]string, 0, len(keys))
+	for _, k := range keys {
+		env = append(env, k+"="+vars[k])
+	}
+	return env
+}
+
+// writeScriptFile writes code to <data>/spill/scripts/<random>.py and returns its path and a
+// function that removes it. The directories are the server's and made without following a link;
+// the file is created exclusively, so nothing planted at the name is written through.
+func writeScriptFile(dataDir, code string) (string, func(), error) {
+	abs, err := filepath.Abs(dataDir)
+	if err != nil {
+		return "", nil, err
+	}
+	dir, err := sandbox.OpenServerDir(abs, 0o711, "spill", "scripts")
+	if err != nil {
+		return "", nil, fmt.Errorf("script directory: %w", err)
+	}
+	f, name, err := createUnique(dir, "s", ".py")
+	if err != nil {
+		dir.Close()
+		return "", nil, fmt.Errorf("script file: %w", err)
+	}
+	remove := func() { _ = dir.Remove(name); dir.Close() }
+	if _, err := f.WriteString(code); err != nil {
+		f.Close()
+		remove()
+		return "", nil, fmt.Errorf("script file: %w", err)
+	}
+	if err := f.Chmod(0o644); err != nil {
+		f.Close()
+		remove()
+		return "", nil, fmt.Errorf("script file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		remove()
+		return "", nil, fmt.Errorf("script file: %w", err)
+	}
+	return filepath.Join(abs, "spill", "scripts", name), remove, nil
 }
 
 // ---------- http: native request + proxy ----------

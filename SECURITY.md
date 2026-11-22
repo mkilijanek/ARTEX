@@ -50,6 +50,19 @@ vulnerability.
   commands, custom tools, proxies and skill directories are set by the operator.
   Requests to those addresses and the start of those commands are intended
   behaviour.
+- **Configuration written by an agent is not trusted until an operator approves
+  it.** The platform tools that create or change skills, custom tools and MCP
+  servers (`create_skill`, `update_skill_file`, `create_custom_tool`,
+  `update_custom_tool`, `create_mcp`, `update_mcp`) wait for a human decision on
+  the Approval Records page; the AI judge and intercept rules are not consulted
+  for them.
+- **Agent tools are not the server.** In the Docker image, every process an agent
+  starts runs as a separate unprivileged user (`artex-tool`, uid 30002) without
+  capabilities, and the server's key, configuration, environment and database
+  socket are closed to it. The server reports whether this holds as the tool
+  isolation status; where it does not (binary installs, `cap_drop: ALL`,
+  `ARTEX_TOOL_ISOLATION=off`), agent tools run with the server's own access. See
+  [docs/tool-isolation.md](docs/tool-isolation.md), including its "Limits".
 - **Targets are untrusted.** Content returned by a target, including pages, API
   responses, recorded traffic and anything an agent reads, must never gain
   operator privileges, escape the configured scope, or alter stored evidence. A
@@ -204,6 +217,8 @@ These are not fixed, and the destination checks above do not cover them:
   environment set), custom tools of kind `command` and `script`, MCP tools and
   WebSearch queries can reach any destination. Against an injected model, the
   destination checks are therefore advisory while such tools are available.
+  Running tools as a separate user (see "Trust Model") limits what they can read
+  on the server, not where they can connect.
 - **Operator headers and templated hosts.** A custom http tool whose URL template
   takes the host from a model parameter sends its operator-set headers to any host
   that an enabled task allow rule matches. Those hosts are targets, so a broad allow

@@ -108,6 +108,11 @@ docker compose up -d --build  # builds artex from this checkout + starts postgre
 
 The image already includes common tools (ripgrep/curl/vim/npm/nmap…); `./skills` and `./data` are persisted via bind mounts.
 
+In the image, agent tools (Bash, file tools, MCP stdio servers, custom tools) run as a separate unprivileged user
+(`artex-tool`, uid 30002), not as the server's user, and the bundled PostgreSQL is reached only through a Unix socket.
+The server checks this at every start and shows the result in its log and as a banner in the UI. Statuses, checks,
+custom Compose files and limits: [docs/tool-isolation.md](docs/tool-isolation.md).
+
 For remote MCP, you can choose `http` (Streamable HTTP) or `sse` (legacy SSE) in system settings.
 Legacy SSE servers usually establish the event stream with `GET /sse`, then receive JSON-RPC requests via the
 `/message?sessionId=...` returned by the server; when configuring, set the URL to `/sse` and the request header as
@@ -124,6 +129,11 @@ cp config.example.json config.json   # fill in the database connection
 
 > Please start with `start.sh` / `start.bat` instead of running `./artex` directly. It is a daemon script: if the process crashes, it restarts it after a backoff.
 > To keep it running in the background: `nohup ./start.sh >artex.log 2>&1 &`.
+
+> A binary install (options 3 and 4, and `install.sh` option 2) runs agent tools as your login user: they can read
+> what that user can read, including this server's configuration, its database and your home directory. The tool
+> isolation status is `unavailable` and the server warns at every start, every session and in the UI. Use the Docker
+> image to run tools as a separate user ([docs/tool-isolation.md](docs/tool-isolation.md)).
 
 ### Option 4: build the single binary from source
 
@@ -167,11 +177,13 @@ scripts/backup.sh --keep 7             # db only, keep 7
 
 Restore only **full** dumps, into a freshly created database: a partial or data-only restore, or an edit of the
 migration ledger table `schema_migrations`, is unsupported (see [docs/schema-upgrade.md](docs/schema-upgrade.md),
-"Restores"). Restore a dump into a running stack:
+"Restores"). Restore a dump into a running stack (with the variables of `.env` in your shell; the database has no
+network, so this goes through `docker compose exec`, and a database volume created with the current
+`docker-compose.yml` requires the password):
 
 ```bash
-gunzip -c backups/artex-db-<timestamp>.sql.gz | docker compose exec -T postgres \
-  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+gunzip -c backups/artex-db-<timestamp>.sql.gz | PGPASSWORD="$POSTGRES_PASSWORD" \
+  docker compose exec -T -e PGPASSWORD postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"
 ```
 
 Daily cron example (03:20, operator crontab):
@@ -182,7 +194,7 @@ Daily cron example (03:20, operator crontab):
 
 ## Updating and upgrading
 
-> Upgrading only swaps the program and never touches data: the Postgres volume `pgdata`, `./data` (jwt.key / SQLite, etc.), and `./skills` are all preserved. **No manual database migration is needed**: on every start `artex` re-runs the frozen `schema.sql` (with `ADD COLUMN` / `CREATE INDEX IF NOT EXISTS`) and then applies the numbered migrations in `db/migrations/` that are not yet recorded in the table `schema_migrations`, i.e. "restart equals migrate". **Back up the database (`scripts/backup.sh`) and `./data` before upgrading**, stop older instances, and do not run `pg_dump` during the upgrade: migration statements wait at most 60 seconds for a lock and then fail. The first start of a release with migrations writes the table `schema_migrations` (four baseline rows, one more for each later migration) and applies the migrations after them: `0004` builds the index `idx_llm_usage_ts` on `llm_usage` (writes to that table wait for the build, which runs before the server listens; for a large table pre-build it, see the page below), and `5002` adds the table `tool_rag_observations`, and `5003` adds the four detection tables (storage only: no API or UI yet; archiving a task that has detection runs is refused); going back to 0.5.14m or older needs nothing (they ignore the tables), going back to 0.5.15m needs `ARTEX_SCHEMA_ALLOW_NEWER=5003` (the override covers `0004`, `5002` and `5003`; use `5002` on a database that never ran `5003`) or the guarded recipes, and a binary that has the ledger but does not ship `5003` (0.5.17m) refuses the ledger entry `5003` unless it is started with `ARTEX_SCHEMA_ALLOW_NEWER=5003` (0.5.16m, which does not ship `5002` either, needs the same value). The start refuses a database it does not understand (for example one that a newer release migrated) before it writes anything; the message names the fix, and `ARTEX_SCHEMA_ALLOW_NEWER` is a capped override for keeping the service up. Details, refusals, rollback and what is not covered: [docs/schema-upgrade.md](docs/schema-upgrade.md).
+> Upgrading only swaps the program and never touches data: the Postgres volume `pgdata`, `./data` (SQLite, workspaces, etc.), and `./skills` are all preserved. **No manual database migration is needed**: on every start `artex` re-runs the frozen `schema.sql` (with `ADD COLUMN` / `CREATE INDEX IF NOT EXISTS`) and then applies the numbered migrations in `db/migrations/` that are not yet recorded in the table `schema_migrations`, i.e. "restart equals migrate". **Back up the database (`scripts/backup.sh`) and `./data` before upgrading**, stop older instances, and do not run `pg_dump` during the upgrade: migration statements wait at most 60 seconds for a lock and then fail. The first start of a release with migrations writes the table `schema_migrations` (four baseline rows, one more for each later migration) and applies the migrations after them: `0004` builds the index `idx_llm_usage_ts` on `llm_usage` (writes to that table wait for the build, which runs before the server listens; for a large table pre-build it, see the page below), and `5002` adds the table `tool_rag_observations`, and `5003` adds the four detection tables (storage only: no API or UI yet; archiving a task that has detection runs is refused); going back to 0.5.14m or older needs nothing (they ignore the tables), going back to 0.5.15m needs `ARTEX_SCHEMA_ALLOW_NEWER=5003` (the override covers `0004`, `5002` and `5003`; use `5002` on a database that never ran `5003`) or the guarded recipes, and a binary that has the ledger but does not ship `5003` (0.5.17m) refuses the ledger entry `5003` unless it is started with `ARTEX_SCHEMA_ALLOW_NEWER=5003` (0.5.16m, which does not ship `5002` either, needs the same value). The start refuses a database it does not understand (for example one that a newer release migrated) before it writes anything; the message names the fix, and `ARTEX_SCHEMA_ALLOW_NEWER` is a capped override for keeping the service up. Details, refusals, rollback and what is not covered: [docs/schema-upgrade.md](docs/schema-upgrade.md).
 
 ### Upgrading from a clone made before 2026-10-23
 
@@ -206,8 +218,8 @@ cd ARTEX
 
 The script first optionally `git pull`s the latest code, then lets you choose **① Docker update** or **② local build update** (matching `install.sh`):
 
-- **① Docker**: rebuilds the image from this checkout → `docker compose build artex` → `docker compose up -d artex` (restarting migrates the schema automatically).
-- **② Local**: rebuild the frontend static assets → recompile `./artex` (restart the process for it to take effect).
+- **① Docker**: rebuilds the image from this checkout → `docker compose build artex` → `docker compose up -d` (re-creates every service whose configuration changed, including `postgres`; restarting migrates the schema automatically). Afterwards it warns if the database volume still trusts local connections without a password, and says when that check was skipped because `postgres` is not running.
+- **② Local**: rebuild the frontend static assets → recompile `./artex` (restart the process for it to take effect). It prints that a binary install runs agent tools as your login user.
 
 ### Option 2: Docker Compose (manual)
 
@@ -215,9 +227,13 @@ The script first optionally `git pull`s the latest code, then lets you choose **
 cd ARTEX
 git pull                       # update compose / scripts
 docker compose build artex     # rebuild the image from this checkout
-docker compose up -d artex     # recreate the container → schema migrates automatically
+docker compose up -d           # recreate the changed services → schema migrates automatically
 docker image prune -f          # clean up old images (optional)
 ```
+
+Bring up **all** services, not only `artex`: a release can change the `postgres` service too (the release after
+0.5.17m removes its network), and `up -d artex` alone leaves the old database container running. Upgrade notes of
+each release are in [CHANGELOG.md](CHANGELOG.md).
 
 ### Option 3: prebuilt binaries (Releases)
 
@@ -259,7 +275,9 @@ Optional: `ARTEX_LLM_PROVIDER` (anthropic | openai | openai-responses | ollama) 
 
 **Concurrency**: the number of work agents per task is configured in "System Settings" (default 3).
 
-**Common flags**: `./start.sh -addr :8787 -proxy :8788` (`-addr` frontend+API, `-proxy` traffic recording proxy). The startup script passes arguments through to `artex` verbatim.
+**Common flags**: `./start.sh -addr :8787 -proxy :8788` (`-addr` frontend+API, `-proxy` traffic recording proxy, `-egress` the local forwarder agent tools use to reach the global egress proxy, default `127.0.0.1:8789`, loopback only; empty disables it, and tools then have no route through a global egress proxy). The startup script passes arguments through to `artex` verbatim.
+
+**Tool isolation**: `ARTEX_TOOL_ISOLATION=off` (environment only) makes agent tools run as the server's user, with warnings. See [docs/tool-isolation.md](docs/tool-isolation.md).
 
 ### Reverse proxy deployment (HTTPS / only exposing 443)
 
@@ -289,6 +307,39 @@ server {
 ```
 
 > Only when SSE needs a different origin from the page (e.g. a dedicated subdomain) should you set `NEXT_PUBLIC_SSE_BASE` **at build time** (this variable is baked into the static bundle during `next build`; setting it at container runtime has no effect).
+
+Behind a reverse proxy every client reaches ARTEX from the proxy's address, so they all share one login throttle
+(next section).
+
+### Login throttling
+
+`POST /api/auth/login` and `POST /api/auth/change-password` count failed password checks:
+
+- **Per source.** The source is the address the connection comes from; `X-Forwarded-For` and other headers are never
+  read. Loopback and every address of the server's own interfaces count as **one** source. IPv6 sources are counted
+  per `/64`. Every other address is its own source.
+- **Rule.** After 5 failures the source gets `429 Too Many Requests` with `Retry-After`, also for a correct password.
+  The lock starts at 1 second and doubles with each further failure up to 15 minutes. A successful check resets the
+  count; a count with no failure for 30 minutes is forgotten.
+- **Order of a request.** A locked source (or device) gets `429` before its body is read. The body must be at most
+  64 KiB (else `413 Request body too large`) and arrive within 10 seconds (else `400` and the connection is closed);
+  neither counts as a failure, and neither does a malformed body.
+- **Parallel attempts.** A check is counted from the start of the password comparison. A source (or device) with k
+  failures left before its lock runs at most k comparisons at the same time; further parallel attempts reaching the
+  comparison get `429` with `Retry-After` at once. After a lock ends, one comparison at a time is admitted.
+- **Device cookie.** A successful login sets the cookie `artex_device` (HttpOnly, SameSite=Strict, Secure when ARTEX itself serves TLS (behind a
+  TLS-terminating reverse proxy it is not marked Secure),
+  90 days, a new value at every login). A request with a valid cookie is counted against that device alone, never
+  against its source: a browser that logged in before can still log in while its source is locked, and its own wrong
+  passwords answer `401` until the device's own count locks it.
+- **No global lockout.** Failures from one source never lock out another source.
+- State is in memory (a restart clears it), bounded to 10,000 sources. When a lock starts the log shows
+  `[auth] source <address> is locked out of password checks for <duration> after repeated failures` (or
+  `a device at source <address> ...`).
+
+Behind a reverse proxy, or through the Docker gateway, all clients share one source, so wrong passwords from any of
+them lock all cookie-less clients out for a while, and concurrent logins without a device cookie whose password comparisons
+overlap beyond the source's remaining failures (5 when none failed) can briefly get `429` even with correct passwords. Log in from a browser that has the device cookie, or wait.
 
 ---
 

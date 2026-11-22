@@ -4,8 +4,10 @@ import (
 	"archive/tar"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/klauspost/compress/zstd"
@@ -253,4 +255,257 @@ func TestTaskArchivePackageRejectsTraversal(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(filepath.Dir(root), "escape.txt")); !os.IsNotExist(err) {
 		t.Fatalf("traversal wrote outside destination: %v", err)
 	}
+}
+
+// archiveRaceFixture builds a payload with one directory and one file, plus a secret
+// outside it that must never appear in a package.
+type archiveRaceFixture struct {
+	base, payload, secretDir, secretFile string
+	secret                               string
+}
+
+func newArchiveRaceFixture(t *testing.T) *archiveRaceFixture {
+	t.Helper()
+	base := t.TempDir()
+	f := &archiveRaceFixture{
+		base: base, payload: filepath.Join(base, "payload"),
+		secretDir: filepath.Join(base, "outside"), secret: "TOP-SECRET-MARKER-0123456789abcdef",
+	}
+	f.secretFile = filepath.Join(f.secretDir, "secret.txt")
+	for dir, files := range map[string]map[string]string{
+		filepath.Join(f.payload, "sub"): {"inner.txt": "inner"},
+		f.payload:                       {"plain.txt": "x" + strings.Repeat("y", len(f.secret)-1)},
+		f.secretDir:                     {"secret.txt": f.secret},
+	} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		for name, body := range files {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	return f
+}
+
+func (f *archiveRaceFixture) hook(t *testing.T, fn func(dir, name string)) {
+	t.Helper()
+	archiveBeforeOpenHook = fn
+	t.Cleanup(func() { archiveBeforeOpenHook = nil })
+}
+
+// pack runs the packager and returns the error plus the raw bytes of the package, if any.
+func (f *archiveRaceFixture) pack(t *testing.T) (error, []byte) {
+	t.Helper()
+	archivePath := filepath.Join(f.base, "out", "archive.tar.zst")
+	snapshot := &pgdb.TaskArchiveSnapshot{FormatVersion: pgdb.TaskArchiveFormatVersion, TaskID: 42}
+	_, _, checksum, err := writeTaskArchivePackage(archivePath, f.payload, snapshot)
+	if err != nil {
+		if _, statErr := os.Stat(archivePath); !os.IsNotExist(statErr) {
+			t.Fatalf("a failed packaging left an archive behind: %v", statErr)
+		}
+		return err, nil
+	}
+	extracted := filepath.Join(f.base, "restored")
+	if err := extractTaskArchivePackage(archivePath, checksum, extracted); err != nil {
+		t.Fatal(err)
+	}
+	var all bytes.Buffer
+	_ = filepath.WalkDir(extracted, func(p string, d os.DirEntry, err error) error {
+		if err == nil && d.Type().IsRegular() {
+			raw, _ := os.ReadFile(p)
+			all.Write(raw)
+		}
+		return nil
+	})
+	return nil, all.Bytes()
+}
+
+func TestArchivePackagingRefusesFileSwappedForSymlink(t *testing.T) {
+	f := newArchiveRaceFixture(t)
+	f.hook(t, func(dir, name string) {
+		if name != "plain.txt" {
+			return
+		}
+		target := filepath.Join(dir, name)
+		if err := os.Remove(target); err != nil {
+			t.Error(err)
+		}
+		if err := os.Symlink(f.secretFile, target); err != nil {
+			t.Error(err)
+		}
+	})
+	err, content := f.pack(t)
+	if !errors.Is(err, errArchiveEntryChanged) {
+		t.Fatalf("packaging a file swapped for a symlink: err=%v, want errArchiveEntryChanged", err)
+	}
+	if bytes.Contains(content, []byte(f.secret)) {
+		t.Fatal("the archive contains the link target")
+	}
+}
+
+func TestArchivePackagingRefusesDirectorySwappedForSymlink(t *testing.T) {
+	f := newArchiveRaceFixture(t)
+	f.hook(t, func(dir, name string) {
+		if name != "sub" {
+			return
+		}
+		target := filepath.Join(dir, name)
+		if err := os.RemoveAll(target); err != nil {
+			t.Error(err)
+		}
+		if err := os.Symlink(f.secretDir, target); err != nil {
+			t.Error(err)
+		}
+	})
+	err, content := f.pack(t)
+	if !errors.Is(err, errArchiveEntryChanged) {
+		t.Fatalf("packaging a directory swapped for a symlink: err=%v, want errArchiveEntryChanged", err)
+	}
+	if bytes.Contains(content, []byte(f.secret)) {
+		t.Fatal("the archive contains the link target")
+	}
+}
+
+func TestArchivePackagingRefusesDirectorySwappedForOtherDirectory(t *testing.T) {
+	f := newArchiveRaceFixture(t)
+	other := filepath.Join(f.payload, "zz-other")
+	if err := os.MkdirAll(other, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f.hook(t, func(dir, name string) {
+		if name != "sub" {
+			return
+		}
+		target := filepath.Join(dir, name)
+		if err := os.RemoveAll(target); err != nil {
+			t.Error(err)
+		}
+		// A link to another directory inside the tree stays within the root, so only the
+		// identity check on the opened directory catches it.
+		if err := os.Symlink(other, target); err != nil {
+			t.Error(err)
+		}
+	})
+	if err, _ := f.pack(t); !errors.Is(err, errArchiveEntryChanged) {
+		t.Fatalf("packaging a directory swapped for an in-tree link: err=%v", err)
+	}
+}
+
+func TestArchivePackagingRefusesSizeChangeAfterCheck(t *testing.T) {
+	f := newArchiveRaceFixture(t)
+	f.hook(t, func(dir, name string) {
+		if name != "plain.txt" {
+			return
+		}
+		file, err := os.OpenFile(filepath.Join(dir, name), os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		_, _ = file.WriteString("more")
+		_ = file.Close()
+	})
+	if err, _ := f.pack(t); !errors.Is(err, errArchiveEntryChanged) {
+		t.Fatalf("packaging a file whose size changed: err=%v", err)
+	}
+}
+
+func TestArchivePackagingSkipsPlantedLinkAndCountsIt(t *testing.T) {
+	f := newArchiveRaceFixture(t)
+	if err := os.Symlink(f.secretFile, filepath.Join(f.payload, "planted-file")); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	if err := os.Symlink(f.secretDir, filepath.Join(f.payload, "planted-dir")); err != nil {
+		t.Fatal(err)
+	}
+	err, content := f.pack(t)
+	if err != nil {
+		t.Fatalf("planted links must be skipped, not fail the package: %v", err)
+	}
+	if bytes.Contains(content, []byte(f.secret)) {
+		t.Fatal("the archive contains the link target")
+	}
+	var manifest pgdb.TaskArchiveSnapshot
+	raw, err2 := os.ReadFile(filepath.Join(f.base, "restored", "manifest.json"))
+	if err2 != nil {
+		t.Fatal(err2)
+	}
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if got := manifest.DataCounts["skipped_entries"]; got != 2 {
+		t.Fatalf("manifest skipped_entries=%d, want 2", got)
+	}
+}
+
+func TestArchiveRestoreRefusesSymlinkedDestinationComponent(t *testing.T) {
+	dataDir := t.TempDir()
+	outside := t.TempDir()
+	extracted := filepath.Join(dataDir, "archives", "tasks", ".restore", "11-test")
+	source := filepath.Join(extracted, "files", "tasks", "42", "evidence.txt")
+	if err := os.MkdirAll(filepath.Dir(source), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, []byte("evidence"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dataDir, "tasks")); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	if _, err := installTaskArchiveFiles(dataDir, extracted, "42", 11); err == nil {
+		t.Fatal("restore followed a symlinked destination component")
+	}
+	if entries, _ := os.ReadDir(outside); len(entries) != 0 {
+		t.Fatalf("restore wrote through the link: %d entries", len(entries))
+	}
+	if _, err := os.Stat(source); err != nil {
+		t.Fatalf("the extracted source must stay in place after a refused restore: %v", err)
+	}
+}
+
+func TestArchivePackagingSkipsHardLinkedFileAndCountsIt(t *testing.T) {
+	f := newArchiveRaceFixture(t)
+	if err := os.Link(f.secretFile, filepath.Join(f.payload, "hard-link")); err != nil {
+		t.Skipf("hard links unsupported: %v", err)
+	}
+	if links, ok := archiveLinkCount(mustLstat(t, f.secretFile)); !ok {
+		t.Skip("link count not available on this platform")
+	} else if links != 2 {
+		t.Fatalf("fixture link count=%d want 2", links)
+	}
+	err, content := f.pack(t)
+	if err != nil {
+		t.Fatalf("a hard-linked file must be skipped, not fail the package: %v", err)
+	}
+	if bytes.Contains(content, []byte(f.secret)) {
+		t.Fatal("the archive contains the content of the hard-linked file")
+	}
+	if !bytes.Contains(content, []byte("inner")) {
+		t.Fatal("the other files were not archived")
+	}
+	if _, err := os.Lstat(filepath.Join(f.base, "restored", "hard-link")); !os.IsNotExist(err) {
+		t.Fatalf("the hard-linked file was archived: %v", err)
+	}
+	var manifest pgdb.TaskArchiveSnapshot
+	raw, err2 := os.ReadFile(filepath.Join(f.base, "restored", "manifest.json"))
+	if err2 != nil {
+		t.Fatal(err2)
+	}
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if got := manifest.DataCounts["skipped_entries"]; got != 1 {
+		t.Fatalf("manifest skipped_entries=%d, want 1", got)
+	}
+}
+
+func mustLstat(t *testing.T, p string) os.FileInfo {
+	t.Helper()
+	info, err := os.Lstat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info
 }

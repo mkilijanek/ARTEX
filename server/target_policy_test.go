@@ -11,32 +11,30 @@ import (
 	"github.com/mkilijanek/artex/agent"
 )
 
-// Finding 5: ScrubSecretEnv removes ARTEX_PG_DSN after startup, so a re-registration of
-// the policy (the global-proxy handler does it) must reuse the database endpoint captured
-// at startup instead of reading the DSN again.
+// Finding 5: main removes ARTEX_PG_DSN after reading it once, so a re-registration of the policy
+// (the global-proxy handler does it) must reuse the database endpoints main handed over instead
+// of reading the DSN again.
 func TestTargetPolicyKeepsDBEndpointOnReRegistration(t *testing.T) {
 	dsn := os.Getenv("ARTEX_PG_DSN")
 	if dsn == "" {
 		t.Skip("ARTEX_PG_DSN not set")
 	}
-	t.Setenv("ARTEX_PG_DSN", dsn) // restored after the scrub below
 	eps, err := agent.DatabaseEndpoint(dsn)
 	if err != nil || len(eps) == 0 {
 		t.Fatalf("fixture: no network endpoint in the DSN: %v", err)
 	}
 	port := eps[0].Port
-	m, err := NewManager(t.TempDir(), "")
+	m, err := NewManager(t.TempDir(), "", testDSN())
 	if err != nil {
 		t.Skipf("no manager: %v", err)
 	}
 	t.Cleanup(func() { m.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	s := New(ctx, m, t.TempDir(), t.TempDir(), t.TempDir(), WithSecretScrub())
+	s := New(ctx, m, t.TempDir(), t.TempDir(), t.TempDir(), WithDatabaseEndpoints(eps))
 	t.Cleanup(func() { agent.SetTargetPolicy(nil, agent.ControlPlane{}, false) })
-	if os.Getenv("ARTEX_PG_DSN") != "" {
-		t.Fatal("fixture: the scrub did not remove the DSN")
-	}
+	t.Setenv("ARTEX_PG_DSN", dsn) // records the value so the scrub below is undone for the later tests
+	ScrubSecretEnv()              // what main does before anything else can start
 
 	u := mustParseURL(t, "http://127.0.0.1:"+strconv.Itoa(int(port))+"/")
 	denied := func(when string) {
@@ -58,14 +56,14 @@ func TestTargetPolicyLoaderComposesGlobalAndTaskRules(t *testing.T) {
 	if os.Getenv("ARTEX_PG_DSN") == "" {
 		t.Skip("ARTEX_PG_DSN not set")
 	}
-	m, err := NewManager(t.TempDir(), "")
+	m, err := NewManager(t.TempDir(), "", testDSN())
 	if err != nil {
 		t.Skipf("no manager: %v", err)
 	}
 	t.Cleanup(func() { m.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	New(ctx, m, t.TempDir(), t.TempDir(), t.TempDir())
+	New(ctx, m, t.TempDir(), t.TempDir(), t.TempDir(), WithDatabaseEndpoints(nil))
 	t.Cleanup(func() { agent.SetTargetPolicy(nil, agent.ControlPlane{}, false) })
 
 	global, err := m.pg.CreateAssetInterceptRule("exact_ip", "127.0.0.9", "loader test", true)
@@ -137,8 +135,12 @@ func TestTargetPolicyKeepsEveryDBEndpointOnReRegistration(t *testing.T) {
 	for _, k := range []string{"PGHOST", "PGPORT", "PGSERVICE", "PGSERVICEFILE", "PGSSLMODE", "PGSSLROOTCERT", "PGSSLCERT", "PGSSLKEY", "PGPASSFILE"} {
 		t.Setenv(k, "")
 	}
-	t.Setenv("ARTEX_PG_DSN", "postgres://artex:pw@10.77.0.9:5432,10.77.0.10:6432/artex?sslmode=disable")
+	eps, err := agent.DatabaseEndpoint("postgres://artex:pw@10.77.0.9:5432,10.77.0.10:6432/artex?sslmode=disable")
+	if err != nil {
+		t.Fatal(err)
+	}
 	s := &Server{listenAddr: ":1"} // no manager: only the control-plane part of the policy is exercised
+	WithDatabaseEndpoints(eps)(s)
 	s.registerTargetPolicy()
 	t.Cleanup(func() { agent.SetTargetPolicy(nil, agent.ControlPlane{}, false) })
 	t.Setenv("ARTEX_PG_DSN", "") // what ScrubSecretEnv leaves behind
@@ -165,4 +167,18 @@ func TestTargetPolicyKeepsEveryDBEndpointOnReRegistration(t *testing.T) {
 	check("after startup")
 	s.registerTargetPolicy() // what the global-proxy settings handler does
 	check("after re-registration")
+}
+
+// AC39: a server that was never handed the database endpoints installs a policy that refuses
+// every fetch, instead of reading the DSN at fetch time.
+func TestTargetPolicyWithoutCapturedEndpointsRefusesFetches(t *testing.T) {
+	t.Setenv("ARTEX_PG_DSN", "postgres://artex:pw@10.77.0.9:5432/artex?sslmode=disable") // present, and still not read
+	s := &Server{listenAddr: ":1"}
+	s.registerTargetPolicy()
+	t.Cleanup(func() { agent.SetTargetPolicy(nil, agent.ControlPlane{}, false) })
+	_, err := agent.NewTargetGuard("", false).Check(agent.WithRunInfo(t.Context(), agent.RunInfo{TaskID: 7, ExplorationID: 1}), mustParseURL(t, "http://203.0.113.5:80/"))
+	var te *agent.TargetError
+	if !errors.As(err, &te) || te.Code != agent.TargetUnavailable {
+		t.Fatalf("got %v, want a %s refusal", err, agent.TargetUnavailable)
+	}
 }

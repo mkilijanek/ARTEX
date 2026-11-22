@@ -1,13 +1,21 @@
 "use client";
 
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 
 import { usePathname } from "next/navigation";
 
+import { IsolationBanner } from "@/components/isolation-banner";
 import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { useCurrentUser } from "@/hooks/use-current-user";
 import { api } from "@/lib/api";
+import {
+  displayedIsolation,
+  ISOLATION_POLL_MS,
+  type IsolationState,
+  isolationBannerKind,
+  nextIsolationState,
+} from "@/lib/isolation-banner";
 import { cn } from "@/lib/utils";
 
 import { AccountSwitcher } from "./sidebar/account-switcher";
@@ -34,6 +42,10 @@ export function MainContent({ children }: { children: ReactNode }) {
   const currentUser = useCurrentUser();
   const pathname = usePathname();
   const [version, setVersion] = useState("");
+  const [isolationState, setIsolationState] = useState<IsolationState>({ isolation: null, failures: 0 });
+  const isolation = displayedIsolation(isolationState);
+  // Only the newest refresh may update the state: a slow answer must not overwrite a later one.
+  const refreshSeq = useRef(0);
 
   useEffect(() => {
     api
@@ -42,8 +54,43 @@ export function MainContent({ children }: { children: ReactNode }) {
       .catch(() => setVersion(""));
   }, []);
 
+  // The status is read again every minute and when the window gets focus. A failed read keeps the
+  // last known status; after two in a row the banner says the status is unknown instead of hiding.
+  const refreshIsolation = useCallback(() => {
+    const seq = ++refreshSeq.current;
+    api
+      .stats()
+      .then((s) => {
+        if (seq === refreshSeq.current)
+          setIsolationState((prev) => nextIsolationState(prev, { ok: true, isolation: s.tool_isolation }));
+      })
+      .catch((e) => {
+        console.warn("isolation status unavailable", e);
+        if (seq === refreshSeq.current) setIsolationState((prev) => nextIsolationState(prev, { ok: false }));
+      });
+  }, []);
+
+  useEffect(() => {
+    refreshIsolation();
+    const timer = window.setInterval(refreshIsolation, ISOLATION_POLL_MS);
+    window.addEventListener("focus", refreshIsolation);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refreshIsolation);
+    };
+  }, [refreshIsolation]);
+
   if (isFullBleed(pathname)) {
-    return <>{children}</>;
+    return (
+      <>
+        {isolationBannerKind(isolation) !== "none" && (
+          <div className="px-4 pt-4">
+            <IsolationBanner isolation={isolation} />
+          </div>
+        )}
+        {children}
+      </>
+    );
   }
 
   return (
@@ -74,6 +121,7 @@ export function MainContent({ children }: { children: ReactNode }) {
         </div>
       </header>
       <div className="min-h-0 min-w-0 flex-1 overflow-x-clip p-4 has-data-[content-padding=false]:p-0 md:p-6 md:has-data-[content-padding=false]:p-0">
+        <IsolationBanner isolation={isolation} />
         {children}
       </div>
     </>
