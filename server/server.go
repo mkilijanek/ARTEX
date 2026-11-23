@@ -3504,7 +3504,7 @@ func (s *Server) settingsPayload() map[string]any {
 	if concLimit == 0 {
 		concLimit = defaultConcurrencyLimit // when off, still echo a sane default to the UI
 	}
-	return map[string]any{
+	payload := map[string]any{
 		"traffic_capture":          s.m.TrafficEnabled(),
 		"agent_traffic_binding":    s.m.pg.GetBool(settingAgentTrafficBinding, false),
 		"llm_record":               s.m.LLMRecordEnabled(),
@@ -3534,6 +3534,10 @@ func (s *Server) settingsPayload() map[string]any {
 		"notify_public_base_url":     notifyPublicBaseURL(s.m.pg),
 		"notify_digest_interval_min": notifyDigestIntervalMin(s.m.pg),
 	}
+	for k, v := range userAgentPayload() {
+		payload[k] = v
+	}
+	return payload
 }
 
 // notifyPublicBaseURL reads the external address used in push backlinks.
@@ -3605,10 +3609,24 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		NotifyEnabled    *bool   `json:"notify_enabled"`
 		NotifyBaseURL    *string `json:"notify_public_base_url"`
 		NotifyDigestMins *int    `json:"notify_digest_interval_min"`
+		userAgentPatch
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err.Error())
 		return
+	}
+	// User-Agent settings first: they are validated as a whole and nothing is stored when one part
+	// is refused. They apply to the next request without a restart or an agent rebuild.
+	if req.userAgentPatch.any() {
+		invalid, failed := s.applyUserAgentPatch(req.userAgentPatch)
+		if invalid != nil {
+			writeErr(w, 400, invalid.Error())
+			return
+		}
+		if failed != nil {
+			writeErr(w, 500, failed.Error())
+			return
+		}
 	}
 	if req.ConstraintsInjectPlanner != nil {
 		if err := s.m.pg.SetBool(settingConstraintsInjectPlanner, *req.ConstraintsInjectPlanner); err != nil {

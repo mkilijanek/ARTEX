@@ -6,8 +6,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/mkilijanek/artex/useragent"
 )
 
 // A Streamable HTTP server whose slow_call tool takes 3s, so the client's
@@ -72,4 +76,77 @@ func TestStreamableClientRequestTimeout(t *testing.T) {
 		t.Fatalf("default-timeout Call() = %q, %v", got, err)
 	}
 	_ = c3.Close()
+}
+
+// mcpUA connects to a Streamable HTTP server and returns the User-Agent of every request seen.
+func mcpUA(t *testing.T, headers map[string]string) []string {
+	t.Helper()
+	var mu sync.Mutex
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.Header.Get("User-Agent"))
+		mu.Unlock()
+		var req rpcRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		switch req.Method {
+		case "initialize":
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"t","version":"0"}}}`, req.ID)
+		default:
+			w.WriteHeader(http.StatusAccepted)
+		}
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, err := New(ctx, "t", srv.URL, headers, false, 5)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	_ = c.Close()
+	mu.Lock()
+	defer mu.Unlock()
+	return append([]string(nil), seen...)
+}
+
+func TestMCPUserAgent(t *testing.T) {
+	t.Cleanup(func() { useragent.SetHidden(true); useragent.SetVersion("dev") })
+	useragent.SetVersion("9.9.9")
+
+	useragent.SetHidden(true)
+	for _, ua := range mcpUA(t, nil) {
+		if !strings.HasPrefix(ua, "Go-http-client/") {
+			t.Fatalf("hidden: User-Agent = %q", ua)
+		}
+	}
+	useragent.SetHidden(false)
+	seen := mcpUA(t, nil)
+	if len(seen) == 0 {
+		t.Fatal("no request reached the server")
+	}
+	for _, ua := range seen {
+		if !strings.Contains(ua, "ARTEX/9.9.9 (+MCP)") {
+			t.Fatalf("shown: User-Agent = %q", ua)
+		}
+	}
+	for _, ua := range mcpUA(t, map[string]string{"user-agent": "mcp-cfg/1"}) {
+		if ua != "mcp-cfg/1" {
+			t.Fatalf("a configured header must win, got %q", ua)
+		}
+	}
+}
+
+func TestMCPUserAgentLatin1Byte(t *testing.T) {
+	t.Cleanup(func() { useragent.Apply(true, "", useragent.Configurable()) })
+	useragent.Apply(false, "caf\u00e9/1", useragent.Configurable())
+	seen := mcpUA(t, nil)
+	if len(seen) == 0 {
+		t.Fatal("no request reached the server")
+	}
+	for _, ua := range seen {
+		if ua != "caf\xe9/1" {
+			t.Fatalf("User-Agent bytes = %q", ua)
+		}
+	}
 }

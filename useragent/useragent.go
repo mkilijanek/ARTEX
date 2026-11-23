@@ -1,0 +1,184 @@
+// Package useragent resolves the User-Agent ARTEX puts on its own outbound requests. It is a
+// leaf package (it imports nothing from the repo) so the request-building packages can use it
+// without import cycles. All state is atomic: the settings API updates it at runtime and each
+// request resolves the value when it is built.
+package useragent
+
+import (
+	"slices"
+	"sync/atomic"
+)
+
+// Configurable lists the components whose User-Agent the operator can switch on. WebFetch and
+// WebSearch are sent by the Norma library with its own User-Agent and cannot be configured yet.
+func Configurable() []string {
+	return []string{"LLM", "Enrichment", "MCP", "Notify", "Tools", "API Recon"}
+}
+
+// Locked lists the components that are shown in the UI but never active.
+func Locked() []string { return []string{"WebFetch", "WebSearch"} }
+
+type state struct {
+	hidden     bool
+	custom     string
+	components []string
+}
+
+var (
+	version atomic.Value // string
+	cur     atomic.Pointer[state]
+)
+
+func init() {
+	version.Store("dev")
+	cur.Store(&state{hidden: true, components: Configurable()})
+}
+
+// SetVersion sets the build version shown in the User-Agent.
+func SetVersion(v string) { version.Store(v) }
+
+func update(f func(s *state)) {
+	for {
+		old := cur.Load()
+		n := &state{hidden: old.hidden, custom: old.custom, components: old.components}
+		f(n)
+		if cur.CompareAndSwap(old, n) {
+			return
+		}
+	}
+}
+
+// normalize keeps the configurable component names, in their fixed order.
+func normalize(names []string) []string {
+	keep := make([]string, 0, len(names))
+	for _, n := range Configurable() {
+		if slices.Contains(names, n) {
+			keep = append(keep, n)
+		}
+	}
+	return keep
+}
+
+// Apply publishes all three settings at once with a single atomic store of an immutable state,
+// so no request or reader can see a mix of an old and a new update. Names that are not
+// configurable (unknown ones and the locked Norma components) are dropped.
+func Apply(hidden bool, custom string, components []string) {
+	cur.Store(&state{hidden: hidden, custom: custom, components: normalize(components)})
+}
+
+// SetHidden, SetCustom and SetComponents change one part each (each is atomic on its own). The
+// server publishes with Apply; these are for callers that really mean to change a single part.
+//
+// SetHidden sets the master switch. While hidden, For returns "" for every component.
+func SetHidden(h bool) { update(func(s *state) { s.hidden = h }) }
+
+// SetCustom sets the operator's own User-Agent (already validated by the caller); "" = unset.
+func SetCustom(c string) { update(func(s *state) { s.custom = c }) }
+
+// SetComponents sets the checked components. Names that are not configurable (unknown ones and
+// the locked Norma components) are dropped.
+func SetComponents(names []string) {
+	keep := normalize(names)
+	update(func(s *state) { s.components = keep })
+}
+
+// State is one consistent view of the settings.
+type State struct {
+	Hidden     bool
+	Custom     string
+	Components []string
+}
+
+// Snapshot returns the master switch, the custom value and the checked components from a single
+// atomic load, so a reader never sees the parts of two different updates.
+func Snapshot() State {
+	s := cur.Load()
+	return State{Hidden: s.hidden, Custom: s.custom, Components: slices.Clone(s.components)}
+}
+
+// Hidden reports the master switch.
+func Hidden() bool { return cur.Load().hidden }
+
+// Custom returns the operator's custom User-Agent, "" when unset.
+func Custom() string { return cur.Load().custom }
+
+// Components returns the checked components in their fixed order.
+func Components() []string { return slices.Clone(cur.Load().components) }
+
+// For returns the User-Agent for a component, or "" meaning "do not set the header". It is ""
+// while the master switch is on and for a component that is not checked. Otherwise it is the
+// custom value, or the ARTEX string with the version and the component.
+func For(component string) string {
+	s := cur.Load()
+	if s.hidden || !slices.Contains(s.components, component) {
+		return ""
+	}
+	if s.custom != "" {
+		return s.custom
+	}
+	return "Mozilla/5.0 (X11; Linux x86_64; rv:146.0) Gecko/20100101 ARTEX/" + version.Load().(string) + " (+" + component + ")"
+}
+
+// Version returns the build version shown in the User-Agent.
+func Version() string { return version.Load().(string) }
+
+// Fixed values the Norma library sends for WebFetch and WebSearch. They are not ours to change;
+// they are here only so the settings page can show them. A test reads the Norma sources and fails
+// when these drift (third_party/norma/tool/webfetch.go:236, websearch.go:226).
+const (
+	WebFetchUA  = "norma/0.4"
+	WebSearchUA = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
+)
+
+// What goes out when For returns "": the Go HTTP client's own value, or, for API Recon, the
+// strings the skill scripts carry (skills/api-recon/scripts/harvest_static.py and spider_mpa.py).
+const (
+	goDefault        = "Go default (Go-http-client/1.1 or /2.0)"
+	apiReconDefaults = "script default (Mozilla/5.0 (spa-api-recon) / Mozilla/5.0 (spa-api-recon spider))"
+)
+
+// Effective returns, for every component the settings page lists, the User-Agent it sends right
+// now. It uses For, so the page and the wire cannot disagree. A User-Agent configured on a
+// provider profile, MCP server, notify channel or custom tool overrides the value for that one.
+func Effective() map[string]string {
+	out := make(map[string]string, 8)
+	for _, c := range Configurable() {
+		if ua := For(c); ua != "" {
+			out[c] = ua
+		} else if c == "API Recon" {
+			out[c] = apiReconDefaults
+		} else {
+			out[c] = goDefault
+		}
+	}
+	out["WebFetch"] = WebFetchUA
+	out["WebSearch"] = WebSearchUA
+	return out
+}
+
+// HeaderValue turns a validated User-Agent into the bytes to put on the wire: every character of
+// the 8-bit set (U+0000-U+00FF) becomes its single Latin-1 byte, so "café" goes out as
+// 63 61 66 E9 and not as UTF-8 (C3 A9). Use it wherever a User-Agent comes from the settings,
+// a profile or For; not for headers an operator typed. A value with a character beyond U+00FF
+// (a profile saved before the 8-bit rule) cannot be turned into Latin-1 and is returned as it
+// is, which is what was sent before.
+func HeaderValue(s string) string {
+	ascii := true
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			ascii = false
+			break
+		}
+	}
+	if ascii {
+		return s
+	}
+	b := make([]byte, 0, len(s))
+	for _, r := range s {
+		if r > 0xFF {
+			return s
+		}
+		b = append(b, byte(r))
+	}
+	return string(b)
+}

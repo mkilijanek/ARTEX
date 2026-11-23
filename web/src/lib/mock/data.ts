@@ -3369,6 +3369,15 @@ export const settings: Settings = {
   llm_pool_enabled: true,
   llm_pool_bind_fallback: false,
   noa_compaction: false,
+  user_agent_hidden: true,
+  user_agent_custom: "",
+  user_agent_components: ["LLM", "Enrichment", "MCP", "Notify", "Tools", "API Recon"],
+  user_agent_locked: ["WebFetch", "WebSearch"],
+  user_agent_version: "dev",
+  user_agent_effective: {
+    WebFetch: "norma/0.4",
+    WebSearch: "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0",
+  },
 };
 
 // ── LLM polling (failover)──────────────────────────────────────────────────────

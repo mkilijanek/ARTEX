@@ -14,6 +14,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/mkilijanek/artex/useragent"
 )
 
 // allowLocalTargets decides whether delivering messages to loopback / link-local
@@ -170,6 +172,10 @@ func doJSON(ctx context.Context, method, url string, headers map[string]string, 
 	}
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	}
+	// ARTEX User-Agent first (when the switch resolves one); a configured header of any case replaces it.
+	if ua := useragent.For("Notify"); ua != "" {
+		req.Header.Set("User-Agent", useragent.HeaderValue(ua))
 	}
 	for k, v := range headers {
 		req.Header.Set(k, v)

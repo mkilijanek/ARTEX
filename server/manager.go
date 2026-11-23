@@ -446,6 +446,10 @@ func NewManager(dir, proxyAddr, dsn string) (*Manager, error) {
 	m.trafficOn = pg.GetBool(settingTrafficCapture, false)
 	// LLM recording switch (off by default). The recorder reads this flag on every call.
 	m.llmRecOn = pg.GetBool(settingLLMRecord, false)
+	// User-Agent family (hidden by default); consulted by every outbound request when it is built.
+	if err := loadUserAgentSettings(pg); err != nil {
+		log.Printf("[useragent] settings not applied, the User-Agent stays hidden: %v", err)
+	}
 	// Load persisted web-search config (default: off, ddgs).
 	m.webSearchOn = pg.GetBool(settingWebSearchOn, false)
 	if v, ok, _ := pg.GetSetting(settingWebSearchBackend); ok && v != "" {

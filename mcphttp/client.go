@@ -26,6 +26,8 @@ import (
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
+
+	"github.com/mkilijanek/artex/useragent"
 )
 
 const protocolVersion = "2025-06-18"
@@ -78,6 +80,14 @@ type Client struct {
 	pending      map[int]chan *rpcResponse
 	streamErr    chan error
 	protocol     string
+}
+
+// setUserAgent sets the ARTEX User-Agent for this request when the switch resolves one. It runs
+// before the configured headers are applied, so a User-Agent in them (any case) replaces it.
+func setUserAgent(req *http.Request) {
+	if ua := useragent.For("MCP"); ua != "" {
+		req.Header.Set("User-Agent", useragent.HeaderValue(ua))
+	}
 }
 
 func normalizeHeaders(headers map[string]string) (map[string]string, error) {
@@ -144,6 +154,7 @@ func NewSSE(ctx context.Context, server, sseURL string, headers map[string]strin
 		return nil, err
 	}
 	req.Header.Set("Accept", "text/event-stream")
+	setUserAgent(req)
 	for k, v := range cleanHeaders {
 		req.Header.Set(k, v)
 	}
@@ -387,6 +398,7 @@ func (c *Client) Close() error {
 		return nil
 	}
 	req.Header.Set("Mcp-Session-Id", sid)
+	setUserAgent(req)
 	for k, v := range c.headers {
 		req.Header.Set(k, v)
 	}
@@ -443,6 +455,7 @@ func (c *Client) roundTrip(ctx context.Context, body rpcRequest, expectResp bool
 		version = protocolVersion
 	}
 	req.Header.Set("MCP-Protocol-Version", version)
+	setUserAgent(req)
 	for k, v := range c.headers {
 		req.Header.Set(k, v)
 	}
@@ -514,6 +527,7 @@ func (c *Client) legacyRoundTrip(ctx context.Context, body rpcRequest, expectRes
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	setUserAgent(req)
 	for k, v := range c.headers {
 		req.Header.Set(k, v)
 	}

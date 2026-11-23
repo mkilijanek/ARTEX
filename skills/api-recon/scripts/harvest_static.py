@@ -21,6 +21,13 @@ from concurrent.futures import ThreadPoolExecutor
 
 CTX = ssl.create_default_context(); CTX.check_hostname = False; CTX.verify_mode = ssl.CERT_NONE
 UA = "Mozilla/5.0 (spa-api-recon)"
+_env_ua = os.environ.get("ARTEX_USER_AGENT")
+if _env_ua:  # set by the server only when the User-Agent switch shows one
+    try:
+        _env_ua.encode("latin-1")  # urllib sends headers as latin-1
+        UA = _env_ua
+    except UnicodeEncodeError:
+        print("ARTEX_USER_AGENT cannot be sent in an HTTP header (non-Latin-1 characters); using the built-in User-Agent", file=sys.stderr)
 
 def fetch(url, binary=False):
     try:

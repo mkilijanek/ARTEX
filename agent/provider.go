@@ -21,6 +21,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/compaction"
@@ -29,6 +31,7 @@ import (
 	actool "github.com/Autumn-27/norma/tool"
 	"github.com/Autumn-27/norma/transcript"
 	"github.com/mkilijanek/artex/llmrec"
+	"github.com/mkilijanek/artex/useragent"
 )
 
 // Config describes the LLM backend resolved from the environment.
@@ -471,10 +474,13 @@ func (t quotaAwareTransport) RoundTrip(req *http.Request) (*http.Response, error
 			req.Header.Set(t.sessionHeaderKey, sid)
 		}
 	}
-	// Custom User-Agent: override only when configured, so an empty value keeps the
-	// underlying transport's default UA exactly as before.
+	// User-Agent: a profile's own value always wins; otherwise the ARTEX family value
+	// (resolved now, so a settings toggle reaches clients that already exist); otherwise
+	// the underlying transport's default UA is left alone.
 	if t.userAgent != "" {
-		req.Header.Set("User-Agent", t.userAgent)
+		req.Header.Set("User-Agent", useragent.HeaderValue(t.userAgent))
+	} else if ua := useragent.For("LLM"); ua != "" {
+		req.Header.Set("User-Agent", useragent.HeaderValue(ua))
 	}
 	// When LLM recording is on, the Recorder puts a Capture on the context so the
 	// raw wire bodies can be persisted. This is the only layer that still sees
@@ -550,25 +556,28 @@ func quotaAwareHTTPClient(proxy, sessionHeaderKey, userAgent string) (*http.Clie
 	return &http.Client{CheckRedirect: RefuseProviderRedirect, Transport: quotaAwareTransport{base: transport, sessionHeaderKey: strings.TrimSpace(sessionHeaderKey), userAgent: strings.TrimSpace(userAgent)}}, nil
 }
 
-// MaxUserAgentLen bounds a custom User-Agent value. Generous for real UA strings
+// MaxUserAgentLen bounds a custom User-Agent value, in characters (the same as its Latin-1 bytes). Generous for real UA strings
 // while keeping a pathological value out of every outbound request.
 const MaxUserAgentLen = 256
 
 // ValidateUserAgent trims a custom User-Agent and returns the cleaned value. An
 // empty/blank input is valid and means "no override" (keep the default UA). A
-// non-empty value is rejected when it exceeds MaxUserAgentLen or contains any
-// control character (including CR/LF, which would allow header injection).
+// non-empty value is rejected when it exceeds MaxUserAgentLen characters or contains anything
+// but printable characters of the 8-bit set (Latin-1, U+0000-U+00FF): U+0020-U+007E and
+// U+00A1-U+00FF without U+00AD. Control characters (CR/LF included, which would allow header
+// injection), NBSP and anything above U+00FF are refused. The value is stored as UTF-8 and sent
+// as Latin-1 bytes (useragent.HeaderValue).
 func ValidateUserAgent(raw string) (string, error) {
 	ua := strings.TrimSpace(raw)
 	if ua == "" {
 		return "", nil
 	}
-	if len(ua) > MaxUserAgentLen {
-		return "", fmt.Errorf("user agent too long: %d bytes (max %d)", len(ua), MaxUserAgentLen)
+	if n := utf8.RuneCountInString(ua); n > MaxUserAgentLen {
+		return "", fmt.Errorf("user agent too long: %d characters (max %d)", n, MaxUserAgentLen)
 	}
 	for _, r := range ua {
-		if r < 0x20 || r == 0x7f {
-			return "", fmt.Errorf("user agent contains a control character")
+		if r > 0xFF || !unicode.IsPrint(r) {
+			return "", fmt.Errorf("user agent may contain only printable Latin-1 characters (U+0020-U+007E and U+00A1-U+00FF, without U+00AD)")
 		}
 	}
 	return ua, nil
