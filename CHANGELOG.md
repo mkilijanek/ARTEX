@@ -6,6 +6,15 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
+- **ARTEX User-Agent family and a global "Hide ARTEX user agent" switch** (System settings, "Advanced settings"; keys
+  `user_agent_hidden`, `user_agent_custom`, `user_agent_components` on `/api/settings`). Default: hidden, so installs keep
+  sending no identifying header. When shown, LLM, Enrichment, MCP, Notify, Tools and API Recon requests carry
+  `Mozilla/5.0 (X11; Linux x86_64; rv:146.0) Gecko/20100101 ARTEX/<version> (+<component>)` or an optional custom value;
+  each component can be unchecked, and a User-Agent set on an LLM profile, MCP server, notify channel or custom tool
+  still wins. The page previews what each component sends. API Recon scripts read `ARTEX_USER_AGENT`, which is on the
+  tool environment allow-list and set only while a value applies. WebFetch and WebSearch still use the Norma library's
+  own User-Agent until Norma gets a parameter (shown greyed out).
+
 - **Tool isolation.** In the Docker image, every process an agent starts (Bash, background tasks, `Monitor`,
   interactive shells, MCP stdio servers, custom command and script tools, and the file tools `Read`, `Write`, `Edit`,
   `MultiEdit`, `LS`, `Glob`, `Grep`) runs as the unprivileged user `artex-tool` (uid/gid 30002; 30001, 30003 and 30004
@@ -135,6 +144,8 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Changed
 
+- **Enrichment no longer sends `artex-enrich/1.0`** while the User-Agent is hidden (the default): its HTTP probes use
+  Go's default User-Agent. With the switch off they send the ARTEX string for `Enrichment`.
 - **The bundled PostgreSQL has no network and listens on no TCP port.** `docker-compose.yml` gives it
   `network_mode: "none"` and `listen_addresses=`; `artex` reaches it through a Unix socket in the new volume `pgsock`,
   mounted under `/run/artex-private/postgres` (`:z` for SELinux hosts). New database volumes require scram-sha-256

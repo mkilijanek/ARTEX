@@ -23,6 +23,7 @@ import (
 	"github.com/mkilijanek/artex/intercept"
 	"github.com/mkilijanek/artex/sandbox"
 	"github.com/mkilijanek/artex/traffic"
+	"github.com/mkilijanek/artex/useragent"
 )
 
 // Task is one engagement: a description + goal + its own exploration store,
@@ -446,6 +447,12 @@ func NewManager(dir, proxyAddr, dsn string) (*Manager, error) {
 	m.trafficOn = pg.GetBool(settingTrafficCapture, false)
 	// LLM recording switch (off by default). The recorder reads this flag on every call.
 	m.llmRecOn = pg.GetBool(settingLLMRecord, false)
+	// User-Agent family (hidden by default); consulted by every outbound request when it is built.
+	if err := loadUserAgentSettings(pg); err != nil {
+		log.Printf("[useragent] settings not applied, keeping the hidden default: %v", err)
+		useragent.SetHidden(true)
+		syncToolUAEnv()
+	}
 	// Load persisted web-search config (default: off, ddgs).
 	m.webSearchOn = pg.GetBool(settingWebSearchOn, false)
 	if v, ok, _ := pg.GetSetting(settingWebSearchBackend); ok && v != "" {

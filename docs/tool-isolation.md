@@ -65,6 +65,7 @@ The `__` subcommands are internal stages of the `artex` binary. Do not call them
 | Database | the bundled PostgreSQL has no network and is reached only through a Unix socket under `/run/artex-private` (root 0700), which tools cannot traverse (check C6). The database password is not readable by tools |
 | Targets and the recording proxy | reachable, as before |
 | Global egress proxy (traffic capture off) | tools get a local forwarder, `http://127.0.0.1:8789`, in `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY` (both cases). The forwarder adds the proxy's credentials itself, so tools see neither the proxy address nor its credentials |
+| `ARTEX_USER_AGENT` | passed when the server has set it (only while the User-Agent switch resolves a value for API Recon); not a secret |
 | Proxy variables that contain `@` in the server's environment | dropped before a tool starts |
 | Workspaces (`<data>/tasks/<id>`, `<data>/sessions/<id>`) | owned by uid 30002, mode 0700 |
 | Other top-level directories of the data directory | `traffic`, `transcripts`, `evidence`, `archives`: root 0700. `spill`, `drafts`, `noa`, `tasks`, `sessions`: root 0711 (search only) |

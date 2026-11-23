@@ -27,6 +27,8 @@ var passEnv = []string{
 	// terminal and locale
 	"TERM", "LANG", "LC_ALL", "TZ", "COLUMNS", "LINES",
 	"PLAYWRIGHT_BROWSERS_PATH",
+	// the User-Agent for API Recon scripts; non-secret, set by the server only while shown
+	"ARTEX_USER_AGENT",
 }
 
 // proxyVars are the variables that name an egress proxy. A value with user information in it is

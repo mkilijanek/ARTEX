@@ -966,6 +966,13 @@ export interface Settings {
   notify_enabled?: boolean; // master push switch, on by default; one-click kill switch for maintenance windows
   notify_public_base_url?: string; // external base URL for vulnerability detail links; empty = messages carry no link
   notify_digest_interval_min?: number; // digest mode period (minutes), default 30
+  // ---- User-Agent family (Advanced settings) ----
+  user_agent_hidden?: boolean; // master switch, on by default: ARTEX sends no identifying User-Agent
+  user_agent_custom?: string; // optional custom value for all checked components; empty = ARTEX/<version> (+component)
+  user_agent_components?: string[]; // checked components (configurable ones only)
+  user_agent_locked?: string[]; // components controlled by the Norma library (read-only)
+  user_agent_version?: string; // build version used in the ARTEX string
+  user_agent_effective?: Record<string, string>; // what each component sends right now (server-computed)
 }
 
 // ---- Vulnerability IM push ----

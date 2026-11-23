@@ -26,6 +26,7 @@ import (
 	"github.com/mkilijanek/artex/agent"
 	"github.com/mkilijanek/artex/db"
 	"github.com/mkilijanek/artex/sandbox"
+	"github.com/mkilijanek/artex/useragent"
 )
 
 // This file implements the custom tool executor (docs/custom-tool-design.md). tools rows
@@ -563,6 +564,10 @@ func (s *Server) runHTTPTool(ctx context.Context, execRaw json.RawMessage, param
 	req, err := http.NewRequestWithContext(reqCtx, method, target.String(), bodyReader)
 	if err != nil {
 		return actool.Errorf("request failed: invalid request"), nil
+	}
+	// ARTEX User-Agent first (when the switch resolves one); a configured header of any case replaces it.
+	if ua := useragent.For("Tools"); ua != "" {
+		req.Header.Set("User-Agent", ua)
 	}
 	for k, v := range spec.Headers {
 		req.Header.Set(k, renderTemplate(v, params, identity))

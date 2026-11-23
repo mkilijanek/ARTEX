@@ -20,7 +20,7 @@ import sys, os, re, ssl, json, urllib.request, urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 
 CTX = ssl.create_default_context(); CTX.check_hostname = False; CTX.verify_mode = ssl.CERT_NONE
-UA = "Mozilla/5.0 (spa-api-recon)"
+UA = os.environ.get("ARTEX_USER_AGENT") or "Mozilla/5.0 (spa-api-recon)"  # ARTEX_USER_AGENT is set by the server only when the User-Agent switch shows one
 
 def fetch(url, binary=False):
     try:

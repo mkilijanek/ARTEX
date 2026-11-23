@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/mkilijanek/artex/useragent"
 )
 
 // serveUA spins up an httptest server that records the User-Agent of the request
@@ -87,5 +89,61 @@ func TestValidateUserAgentTrimsAndAllowsEmpty(t *testing.T) {
 	}
 	if ua, err := ValidateUserAgent("  my-app/1.0  "); err != nil || ua != "my-app/1.0" {
 		t.Fatalf("trim: got (%q, %v), want (\"my-app/1.0\", nil)", ua, err)
+	}
+}
+
+// shownUA turns the ARTEX User-Agent on for one test and restores the default after.
+func shownUA(t *testing.T) {
+	t.Helper()
+	useragent.SetVersion("9.9.9")
+	useragent.SetHidden(false)
+	t.Cleanup(func() {
+		useragent.SetHidden(true)
+		useragent.SetVersion("dev")
+	})
+}
+
+func TestUserAgentProfileWinsOverARTEX(t *testing.T) {
+	shownUA(t)
+	if got := serveUA(t, "profile/1"); got != "profile/1" {
+		t.Fatalf("User-Agent = %q, want the profile value", got)
+	}
+}
+
+func TestUserAgentShownUsesARTEXLLM(t *testing.T) {
+	shownUA(t)
+	got := serveUA(t, "")
+	if !strings.Contains(got, "ARTEX/9.9.9 (+LLM)") || strings.Contains(got, "Firefox/") {
+		t.Fatalf("User-Agent = %q, want the ARTEX LLM string", got)
+	}
+}
+
+// The value is resolved per request, so a toggle reaches an already built client.
+func TestUserAgentResolvedAtRequestTime(t *testing.T) {
+	got := make(chan string, 2)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { got <- r.Header.Get("User-Agent") }))
+	defer srv.Close()
+	client, err := quotaAwareHTTPClient("", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shownUA(t)
+	useragent.SetHidden(true)
+	resp, err := client.Get(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	useragent.SetHidden(false)
+	resp, err = client.Get(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if first := <-got; !strings.HasPrefix(first, "Go-http-client/") {
+		t.Fatalf("hidden request User-Agent = %q", first)
+	}
+	if second := <-got; !strings.Contains(second, "ARTEX/9.9.9 (+LLM)") {
+		t.Fatalf("shown request User-Agent = %q", second)
 	}
 }

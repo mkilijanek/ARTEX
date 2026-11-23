@@ -29,6 +29,7 @@ import (
 	actool "github.com/Autumn-27/norma/tool"
 	"github.com/Autumn-27/norma/transcript"
 	"github.com/mkilijanek/artex/llmrec"
+	"github.com/mkilijanek/artex/useragent"
 )
 
 // Config describes the LLM backend resolved from the environment.
@@ -471,10 +472,13 @@ func (t quotaAwareTransport) RoundTrip(req *http.Request) (*http.Response, error
 			req.Header.Set(t.sessionHeaderKey, sid)
 		}
 	}
-	// Custom User-Agent: override only when configured, so an empty value keeps the
-	// underlying transport's default UA exactly as before.
+	// User-Agent: a profile's own value always wins; otherwise the ARTEX family value
+	// (resolved now, so a settings toggle reaches clients that already exist); otherwise
+	// the underlying transport's default UA is left alone.
 	if t.userAgent != "" {
 		req.Header.Set("User-Agent", t.userAgent)
+	} else if ua := useragent.For("LLM"); ua != "" {
+		req.Header.Set("User-Agent", ua)
 	}
 	// When LLM recording is on, the Recorder puts a Capture on the context so the
 	// raw wire bodies can be persisted. This is the only layer that still sees

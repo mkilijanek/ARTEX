@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/mkilijanek/artex/useragent"
 )
 
 // This file covers doJSON's HTTP-layer error classification.
@@ -123,5 +125,34 @@ func TestDoJSONRejectsOversizedResponse(t *testing.T) {
 	}
 	if len(err.Error()) > 400 {
 		t.Errorf("oversized responses should be read length-capped and truncated, error message length %d", len(err.Error()))
+	}
+}
+
+func uaOf(t *testing.T, headers map[string]string) string {
+	t.Helper()
+	t.Setenv(AllowLocalTargetsEnv, "1")
+	got := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { got <- r.Header.Get("User-Agent") }))
+	defer srv.Close()
+	if _, err := doJSON(context.Background(), "GET", srv.URL, headers, nil); err != nil {
+		t.Fatal(err)
+	}
+	return <-got
+}
+
+func TestDoJSONUserAgent(t *testing.T) {
+	t.Cleanup(func() { useragent.SetHidden(true); useragent.SetVersion("dev") })
+	useragent.SetVersion("9.9.9")
+
+	useragent.SetHidden(true)
+	if got := uaOf(t, nil); !strings.HasPrefix(got, "Go-http-client/") {
+		t.Fatalf("hidden: User-Agent = %q", got)
+	}
+	useragent.SetHidden(false)
+	if got := uaOf(t, nil); !strings.Contains(got, "ARTEX/9.9.9 (+Notify)") {
+		t.Fatalf("shown: User-Agent = %q", got)
+	}
+	if got := uaOf(t, map[string]string{"user-agent": "channel/1"}); got != "channel/1" {
+		t.Fatalf("a configured header must win, got %q", got)
 	}
 }

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/mkilijanek/artex/db"
+	"github.com/mkilijanek/artex/useragent"
 
 	"github.com/miekg/dns"
 	"github.com/projectdiscovery/dnsx/libs/dnsx"
@@ -221,16 +222,28 @@ func (e *Engine) doDNS(id int64, host string) {
 
 var reTitle = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
 
+// probeRequest builds the probe GET. The User-Agent is resolved now: the ARTEX one while the
+// setting shows it for Enrichment, otherwise none (Go's default applies).
+func probeRequest(rawURL string) (*http.Request, error) {
+	req, err := http.NewRequest("GET", rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	if ua := useragent.For("Enrichment"); ua != "" {
+		req.Header.Set("User-Agent", ua)
+	}
+	return req, nil
+}
+
 func (e *Engine) doHTTP(id int64, rawURL string) {
 	host := hostOf(rawURL)
 	if host == "" {
 		return
 	}
-	req, err := http.NewRequest("GET", rawURL, nil)
+	req, err := probeRequest(rawURL)
 	if err != nil {
 		return
 	}
-	req.Header.Set("User-Agent", "artex-enrich/1.0")
 	resp, err := e.client.Do(req)
 	if err != nil {
 		return
