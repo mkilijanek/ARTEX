@@ -40,3 +40,12 @@ func TestProbeUserAgent(t *testing.T) {
 		t.Fatalf("shown: User-Agent = %q", got)
 	}
 }
+
+// A custom value with a Latin-1 character goes out as the single byte 0xE9.
+func TestProbeUserAgentLatin1Byte(t *testing.T) {
+	t.Cleanup(func() { useragent.Apply(true, "", useragent.Configurable()) })
+	useragent.Apply(false, "caf\u00e9/1", useragent.Configurable())
+	if got := probeUA(t); got != "caf\xe9/1" {
+		t.Fatalf("User-Agent bytes = %q", got)
+	}
+}

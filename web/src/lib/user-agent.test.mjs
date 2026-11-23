@@ -1,4 +1,4 @@
-import { effectiveUserAgent, resolveUserAgent } from "./user-agent.ts";
+import { effectiveUserAgent, resolveUserAgent, validateUserAgent } from "./user-agent.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -26,4 +26,36 @@ test("hidden and unchecked components resolve to the defaults", () => {
 test("the custom value is trimmed", () => {
   const c = { hidden: false, custom: "  X/1 ", components: all, version: "1" };
   assert.equal(resolveUserAgent(c, "Tools"), "X/1");
+});
+
+// Same cases as the Go tests of agent.ValidateUserAgent.
+test("validateUserAgent accepts printable Latin-1 up to 256 characters", () => {
+  for (const ok of [
+    "café/1",
+    "Ünïcödé-Agent",
+    "x".repeat(256),
+    "é".repeat(256),
+    "a\u00a1b",
+    "a\u00ffb",
+    "  trimmed/1  ",
+    "",
+  ]) {
+    assert.equal(validateUserAgent(ok), "", JSON.stringify(ok));
+  }
+});
+
+test("validateUserAgent rejects the rest and names the allowed set", () => {
+  for (const bad of [
+    "Skaner-ż/1",
+    "ua-\u{1F600}",
+    "a\u0085b",
+    "a\u00a0b",
+    "a\u00adb",
+    "x".repeat(257),
+    "a\r\nb",
+    "a\x7fb",
+    "a\tb",
+  ]) {
+    assert.match(validateUserAgent(bad), /printable Latin-1/, JSON.stringify(bad));
+  }
 });

@@ -2096,9 +2096,9 @@ func (s *Server) pgLLMPoolReset(w http.ResponseWriter, r *http.Request) {
 // the ARTEX one for LLM when the settings show it, else "" (Go's default).
 func listUserAgent(profileUA string) string {
 	if profileUA != "" {
-		return profileUA
+		return useragent.HeaderValue(profileUA)
 	}
-	return useragent.For("LLM")
+	return useragent.HeaderValue(useragent.For("LLM"))
 }
 
 func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {

@@ -66,3 +66,11 @@ func TestModelListingProfileUserAgentWins(t *testing.T) {
 		t.Fatalf("User-Agent = %q, want the profile value", got)
 	}
 }
+
+func TestModelListingUserAgentLatin1Byte(t *testing.T) {
+	t.Cleanup(func() { useragent.Apply(true, "", useragent.Configurable()) })
+	useragent.Apply(false, "caf\u00e9/1", useragent.Configurable())
+	if got := listModelsUA(t, &Server{}, nil); got != "caf\xe9/1" {
+		t.Fatalf("User-Agent bytes = %q", got)
+	}
+}

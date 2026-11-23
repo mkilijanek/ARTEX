@@ -230,7 +230,7 @@ func probeRequest(rawURL string) (*http.Request, error) {
 		return nil, err
 	}
 	if ua := useragent.For("Enrichment"); ua != "" {
-		req.Header.Set("User-Agent", ua)
+		req.Header.Set("User-Agent", useragent.HeaderValue(ua))
 	}
 	return req, nil
 }

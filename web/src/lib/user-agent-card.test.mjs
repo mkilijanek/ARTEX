@@ -17,3 +17,9 @@ test("WebFetch and WebSearch are locked, disabled and explained", () => {
 test("the master switch label is present", () => {
   assert.match(src, /Hide ARTEX user agent/);
 });
+
+test("the custom field shows an inline error and blocks Save", () => {
+  assert.match(src, /validateUserAgent\(custom\)/);
+  assert.match(src, /role="alert"/);
+  assert.match(src, /hidden \|\| customError !== ""/);
+});

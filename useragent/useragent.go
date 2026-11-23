@@ -155,3 +155,30 @@ func Effective() map[string]string {
 	out["WebSearch"] = WebSearchUA
 	return out
 }
+
+// HeaderValue turns a validated User-Agent into the bytes to put on the wire: every character of
+// the 8-bit set (U+0000-U+00FF) becomes its single Latin-1 byte, so "café" goes out as
+// 63 61 66 E9 and not as UTF-8 (C3 A9). Use it wherever a User-Agent comes from the settings,
+// a profile or For; not for headers an operator typed. A value with a character beyond U+00FF
+// (a profile saved before the 8-bit rule) cannot be turned into Latin-1 and is returned as it
+// is, which is what was sent before.
+func HeaderValue(s string) string {
+	ascii := true
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			ascii = false
+			break
+		}
+	}
+	if ascii {
+		return s
+	}
+	b := make([]byte, 0, len(s))
+	for _, r := range s {
+		if r > 0xFF {
+			return s
+		}
+		b = append(b, byte(r))
+	}
+	return string(b)
+}

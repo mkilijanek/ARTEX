@@ -567,7 +567,7 @@ func (s *Server) runHTTPTool(ctx context.Context, execRaw json.RawMessage, param
 	}
 	// ARTEX User-Agent first (when the switch resolves one); a configured header of any case replaces it.
 	if ua := useragent.For("Tools"); ua != "" {
-		req.Header.Set("User-Agent", ua)
+		req.Header.Set("User-Agent", useragent.HeaderValue(ua))
 	}
 	for k, v := range spec.Headers {
 		req.Header.Set(k, renderTemplate(v, params, identity))

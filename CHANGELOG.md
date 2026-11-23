@@ -13,9 +13,11 @@ All notable changes to this project are documented in this file. The format is b
   each component can be unchecked, and a User-Agent set on an LLM profile, MCP server, notify channel or custom tool
   still wins. The page previews what each component sends. API Recon scripts read `ARTEX_USER_AGENT`, which is on the
   tool environment allow-list and set only while a value applies. WebFetch and WebSearch still use the Norma library's
-  own User-Agent until Norma gets a parameter (shown greyed out). The custom value accepts printable ASCII only
-  (0x20-0x7e, up to 256 bytes); an LLM profile's own User-Agent now follows the same rule, so a value with other
-  characters is refused at save and test time. The model-listing request of the LLM page also sends the profile's
+  own User-Agent until Norma gets a parameter (shown greyed out). The custom value accepts printable characters of the 8-bit
+  set (Latin-1: U+0020-U+007E and U+00A1-U+00FF, without NBSP and the soft hyphen), at most 256 characters; it is
+  stored as UTF-8 and sent as Latin-1 bytes ("café" goes out as `63 61 66 E9`). Some servers and WAFs refuse non-ASCII
+  header bytes, so plain ASCII is the safest choice. An LLM profile's own User-Agent follows the same rule, so a value
+  with other characters is refused at save and test time. The model-listing request of the LLM page also sends the profile's
   or the ARTEX User-Agent. `ARTEX_USER_AGENT` is managed by the server and reaches every child process.
 
 - **Tool isolation.** In the Docker image, every process an agent starts (Bash, background tasks, `Monitor`,

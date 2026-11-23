@@ -175,7 +175,7 @@ func doJSON(ctx context.Context, method, url string, headers map[string]string, 
 	}
 	// ARTEX User-Agent first (when the switch resolves one); a configured header of any case replaces it.
 	if ua := useragent.For("Notify"); ua != "" {
-		req.Header.Set("User-Agent", ua)
+		req.Header.Set("User-Agent", useragent.HeaderValue(ua))
 	}
 	for k, v := range headers {
 		req.Header.Set(k, v)

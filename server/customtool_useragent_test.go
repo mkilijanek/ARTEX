@@ -36,3 +36,15 @@ func TestCustomHTTPUserAgent(t *testing.T) {
 		t.Fatalf("a configured header must win, got %q", got)
 	}
 }
+
+func TestCustomHTTPUserAgentLatin1Byte(t *testing.T) {
+	t.Cleanup(func() { useragent.Apply(true, "", useragent.Configurable()) })
+	useragent.Apply(false, "caf\u00e9/1", useragent.Configurable())
+	lab := newCredLab(t, "127.0.0.1:0", false)
+	setCredPolicy(t, credStaticRules(nil, nil), "1", nil)
+	requireRan(t, callHTTPTool(t, credRI, httpSpec(lab.URL()+"/echo", nil), nil))
+	hits := lab.Hits()
+	if len(hits) != 1 || hits[0].Header.Get("User-Agent") != "caf\xe9/1" {
+		t.Fatalf("hits = %+v", hits)
+	}
+}

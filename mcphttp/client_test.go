@@ -136,3 +136,17 @@ func TestMCPUserAgent(t *testing.T) {
 		}
 	}
 }
+
+func TestMCPUserAgentLatin1Byte(t *testing.T) {
+	t.Cleanup(func() { useragent.Apply(true, "", useragent.Configurable()) })
+	useragent.Apply(false, "caf\u00e9/1", useragent.Configurable())
+	seen := mcpUA(t, nil)
+	if len(seen) == 0 {
+		t.Fatal("no request reached the server")
+	}
+	for _, ua := range seen {
+		if ua != "caf\xe9/1" {
+			t.Fatalf("User-Agent bytes = %q", ua)
+		}
+	}
+}

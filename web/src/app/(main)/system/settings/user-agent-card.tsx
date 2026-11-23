@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
 import type { Settings } from "@/lib/types";
-import { effectiveUserAgent, UA_COMPONENTS, type UAComponent } from "@/lib/user-agent";
+import { effectiveUserAgent, UA_COMPONENTS, type UAComponent, validateUserAgent } from "@/lib/user-agent";
 
 // Library components whose User-Agent is fixed by Norma; shown greyed out, never sent or stored as active.
 const LOCKED_COMPONENTS = ["WebFetch", "WebSearch"] as const;
@@ -47,6 +47,7 @@ export function UserAgentCard({
     setComponents(settings.user_agent_components ?? [...UA_COMPONENTS]);
   }, [settings]);
 
+  const customError = validateUserAgent(custom);
   const version = settings?.user_agent_version ?? "dev";
   const inputs = { hidden, custom, components, version };
 
@@ -73,8 +74,10 @@ export function UserAgentCard({
   const toggleComponent = (name: string, on: boolean) =>
     setComponents((cur) => (on ? [...cur, name] : cur.filter((c) => c !== name)));
 
-  const saveDetails = () =>
+  const saveDetails = () => {
+    if (customError !== "") return;
     save({ user_agent_custom: custom.trim(), user_agent_components: components }, "User-Agent settings saved");
+  };
 
   return (
     <Card className="mb-4 break-inside-avoid md:mb-6">
@@ -110,8 +113,14 @@ export function UserAgentCard({
             placeholder="empty = ARTEX/<version> (+component)"
             value={custom}
             disabled={!loaded || saving || hidden}
+            aria-invalid={customError !== ""}
             onChange={(e) => setCustom(e.target.value)}
           />
+          {customError !== "" && (
+            <p className="text-destructive text-xs" role="alert">
+              {customError}
+            </p>
+          )}
         </div>
 
         <div className="flex flex-col gap-3">
@@ -149,7 +158,7 @@ export function UserAgentCard({
         </div>
 
         <div className="flex justify-end">
-          <Button onClick={saveDetails} disabled={!loaded || saving || hidden}>
+          <Button onClick={saveDetails} disabled={!loaded || saving || hidden || customError !== ""}>
             Save
           </Button>
         </div>

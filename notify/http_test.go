@@ -156,3 +156,15 @@ func TestDoJSONUserAgent(t *testing.T) {
 		t.Fatalf("a configured header must win, got %q", got)
 	}
 }
+
+func TestDoJSONUserAgentLatin1Byte(t *testing.T) {
+	t.Cleanup(func() { useragent.Apply(true, "", useragent.Configurable()) })
+	useragent.Apply(false, "caf\u00e9/1", useragent.Configurable())
+	if got := uaOf(t, nil); got != "caf\xe9/1" {
+		t.Fatalf("User-Agent bytes = %q", got)
+	}
+	// An operator-typed header keeps its current behaviour: the string is sent as typed.
+	if got := uaOf(t, map[string]string{"User-Agent": "caf\u00e9/2"}); got != "caf\u00e9/2" {
+		t.Fatalf("operator header changed: %q", got)
+	}
+}

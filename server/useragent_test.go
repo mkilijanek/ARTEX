@@ -177,3 +177,21 @@ func TestUserAgentConcurrentPatchesAreWhole(t *testing.T) {
 		t.Fatalf("final state is a mix: %+v", s)
 	}
 }
+
+// A Latin-1 custom value is accepted, stored as typed (UTF-8) and shown as typed.
+func TestUserAgentSettingsLatin1RoundTrip(t *testing.T) {
+	s, req := uaFixture(t)
+	code, body := req("PUT", "/api/settings", `{"user_agent_hidden":false,"user_agent_custom":"caf\u00e9/1"}`)
+	if code != 200 {
+		t.Fatal(code, body)
+	}
+	if got := s.settingsPayload()["user_agent_custom"]; got != "caf\u00e9/1" {
+		t.Fatalf("payload custom = %q", got)
+	}
+	if v, _, _ := s.m.pg.GetSetting(settingUACustom); v != "caf\u00e9/1" {
+		t.Fatalf("stored = %q, want the UTF-8 text", v)
+	}
+	if got := useragent.For("LLM"); got != "caf\u00e9/1" {
+		t.Fatalf("For = %q", got)
+	}
+}

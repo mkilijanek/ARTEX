@@ -2,6 +2,8 @@ package useragent
 
 import (
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"regexp"
 	"slices"
@@ -255,5 +257,57 @@ func TestHintFixtures(t *testing.T) {
 	}
 	if e["API Recon"] != "script default (Mozilla/5.0 (spa-api-recon) / Mozilla/5.0 (spa-api-recon spider))" {
 		t.Fatalf("API Recon hint = %q", e["API Recon"])
+	}
+}
+
+func TestHeaderValue(t *testing.T) {
+	for in, want := range map[string]string{
+		"":        "",
+		"plain/1": "plain/1",
+		"café/1":  "caf\xe9/1",
+		"Üÿ":      "\xdc\xff",
+		"a¡b":     "a\xa1b",
+	} {
+		if got := HeaderValue(in); got != want {
+			t.Errorf("HeaderValue(%q) = %q, want %q", in, got, want)
+		}
+	}
+	// A value outside the set (a profile saved before the 8-bit rule) is sent as it always was.
+	if got := HeaderValue("Skaner-ż/1"); got != "Skaner-ż/1" {
+		t.Errorf("out-of-set value changed: %q", got)
+	}
+}
+
+// net/http and HTTP/2 both carry the obs-text byte 0xE9 in a header value.
+func TestLatin1ByteOverHTTP1AndHTTP2(t *testing.T) {
+	for _, h2 := range []bool{false, true} {
+		got := make(chan string, 1)
+		srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			got <- r.Header.Get("User-Agent")
+		}))
+		srv.EnableHTTP2 = h2
+		srv.StartTLS()
+		req, err := http.NewRequest("GET", srv.URL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("User-Agent", HeaderValue("café/1"))
+		resp, err := srv.Client().Do(req)
+		if err != nil {
+			srv.Close()
+			t.Fatalf("h2=%v: %v", h2, err)
+		}
+		resp.Body.Close()
+		wantMajor := 1
+		if h2 {
+			wantMajor = 2
+		}
+		if resp.ProtoMajor != wantMajor {
+			t.Fatalf("h2=%v: negotiated HTTP/%d", h2, resp.ProtoMajor)
+		}
+		if ua := <-got; ua != "caf\xe9/1" {
+			t.Fatalf("h2=%v: server saw %q", h2, ua)
+		}
+		srv.Close()
 	}
 }

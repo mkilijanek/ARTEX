@@ -86,7 +86,7 @@ type Client struct {
 // before the configured headers are applied, so a User-Agent in them (any case) replaces it.
 func setUserAgent(req *http.Request) {
 	if ua := useragent.For("MCP"); ua != "" {
-		req.Header.Set("User-Agent", ua)
+		req.Header.Set("User-Agent", useragent.HeaderValue(ua))
 	}
 }
 
