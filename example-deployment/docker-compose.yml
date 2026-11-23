@@ -39,10 +39,10 @@ services:
     restart: unless-stopped
 
   artex:
-    # Pinned to a release: set ARTEX_VERSION in .env (for example v0.5.18m). There is no
+    # Pinned to a release: set ARTEX_VERSION in .env (for example v0.5.19m). There is no
     # default on purpose, so an upgrade is always a deliberate edit. For an immutable pin
     # by digest see docker-compose.digest.yml.
-    image: ${ARTEX_IMAGE:-ghcr.io/mkilijanek/artex}:${ARTEX_VERSION:?Set ARTEX_VERSION in .env, e.g. v0.5.18m}
+    image: ${ARTEX_IMAGE:-ghcr.io/mkilijanek/artex}:${ARTEX_VERSION:?Set ARTEX_VERSION in .env, e.g. v0.5.19m}
     # The release publishes linux/amd64 only. On an arm64 host Docker runs it under
     # emulation (if configured) or fails; there is no native arm64 image.
     platform: linux/amd64
