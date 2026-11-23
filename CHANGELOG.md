@@ -23,6 +23,27 @@ All notable changes to this project are documented in this file. The format is b
   `ghcr.io/mkilijanek/artex` pinned by `ARTEX_VERSION` (no build, no checkout), with the same socket-only PostgreSQL
   layout as `docker-compose.yml`, a named data volume, a `.env` template and opt-in override files for a digest pin,
   a host data directory, a host skills directory, LAN publishing and resource limits.
+- **Signal notification channel** (kind `signal`) through a self-hosted signal-cli REST bridge
+  (`bbernhard/signal-cli-rest-api`). Config keys `recipients` and `recipient_type`: one `group.<id>` (recommended, and
+  preselected in the UI, so ARTEX stores no personal phone numbers) or one or more E.164 numbers, never mixed;
+  duplicates are removed; usernames and UUIDs are not supported. Default rate 20 per minute, no secret keys. Plain text
+  only, at most 2000 bytes per message (the rest of a digest goes into the next message), no attachments, no link
+  previews. The sender and endpoint are server environment, read once at start: `ARTEX_SIGNAL_NUMBER` (E.164) and
+  `ARTEX_SIGNAL_API` (`unix:/absolute/path` only). Missing or invalid values make every Signal save, test and delivery
+  fail with an error naming the variable. Phone numbers and group ids are masked in errors, delivery history and logs.
+  A partial delivery is a permanent failure with per-recipient detail; the bridge's `400` answers are not retried
+  automatically (retry from the delivery records); delivery is at least once, so a timeout after the bridge sent can
+  produce a duplicate. Verified against the bridge API without a Signal account; delivery from a real account and the
+  2000-byte limit are not verified yet. README, "Signal notifications".
+- **Example deployment override `docker-compose.signal.yml`** with `signal-proxy.conf`: the bridge (pinned
+  `0.102` by tag and digest) and an nginx proxy (pinned `1.28-alpine`) that forwards only `POST /v2/send` (64 KiB) and
+  `GET /v1/about`. `ARTEX_SIGNAL_NUMBER` is required in `.env`; `artex` waits at start until the bridge is healthy.
+  `example-deployment/README.md`, "Signal notifications (optional)", covers account setup, group ids, the rate-limit
+  challenge, bridge upgrades, backup of the `signal-data` volume, rollback and the incident runbook for C12.
+- **Tool isolation check C12**, only when `ARTEX_SIGNAL_API` is set: the tool user must be refused by the Signal
+  bridge socket and must not be able to list its directory; an absent socket is `not verified: socket absent`. It
+  degrades the status. C12 is the only check that runs again after start: after the first successful Signal send and
+  on each Signal channel test. `docs/tool-isolation.md`.
 - **Tool isolation.** In the Docker image, every process an agent starts (Bash, background tasks, `Monitor`,
   interactive shells, MCP stdio servers, custom command and script tools, and the file tools `Read`, `Write`, `Edit`,
   `MultiEdit`, `LS`, `Glob`, `Grep`) runs as the unprivileged user `artex-tool` (uid/gid 30002; 30001, 30003 and 30004
@@ -397,6 +418,14 @@ All notable changes to this project are documented in this file. The format is b
   path by which agent tool processes in 0.5.17m and earlier read the server's secrets and reached its database.
   After upgrading, rotate the database password and the model provider API keys (and any LLM proxy credentials);
   see the advisory for the affected versions and the full list of post-upgrade actions.
+- **The Signal bridge is out of reach of agent tools.** The bridge has no authentication and can link new devices to
+  the Signal account, and agent tools share the server's network namespace. In `docker-compose.signal.yml`, `artex`
+  is on no network with the bridge; the server reaches it only through a root `0600` socket under the root `0700`
+  `/run/artex-private`, and the proxy behind it refuses (`403`) everything except a send and a status request. The
+  endpoint is operator environment, not channel config, so the UI cannot point Signal elsewhere, and the client ignores
+  proxy variables and does not follow redirects. Users on the Docker host can still reach the bridge's container
+  address (accepted). The layout relies on Docker's isolation between networks, which Podman and Docker with
+  `"iptables": false` do not enforce. `docs/adr/0007-signal-bridge-over-private-socket.md`.
 
 - **Destination checks for WebFetch and the custom http tool** (Phase D.1, #23, #7).
   WebFetch in every role (planner, worker, main agent, chat) and the custom http tool

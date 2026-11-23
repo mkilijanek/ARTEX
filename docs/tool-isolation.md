@@ -63,6 +63,7 @@ The `__` subcommands are internal stages of the `artex` binary. Do not call them
 |---|---|
 | The server's signing key, configuration file, process environment, the `traffic` directory, the variables directory | not readable by tools (check C3) |
 | Database | the bundled PostgreSQL has no network and is reached only through a Unix socket under `/run/artex-private` (root 0700), which tools cannot traverse (check C6). The database password is not readable by tools |
+| Signal bridge (only with `example-deployment/docker-compose.signal.yml`) | not reachable: `artex` shares no network with the bridge, and the server reaches it only through a Unix socket under `/run/artex-private` (root 0700), which tools cannot traverse (check C12). The socket itself is root 0600 and accepts only a send and a status request. See [Signal notifications](../example-deployment/README.md#signal-notifications-optional) |
 | Targets and the recording proxy | reachable, as before |
 | Global egress proxy (traffic capture off) | tools get a local forwarder, `http://127.0.0.1:8789`, in `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY` (both cases). The forwarder adds the proxy's credentials itself, so tools see neither the proxy address nor its credentials |
 | `ARTEX_USER_AGENT` | passed when the server has set it (only while the User-Agent switch resolves a value for API Recon); not a secret |
@@ -134,7 +135,7 @@ removed at the next server start.
 | `unavailable` | the platform cannot change users (P1-P4 below): binary installs, `cap_drop: ALL`, no `setpriv` | **the server's own user, with its access** |
 | `disabled` | `ARTEX_TOOL_ISOLATION=off` | **the server's own user, with its access** |
 
-Only the platform preconditions P1-P5 switch isolation off. A check that runs a tool process (C1-C11) can only move the
+Only the platform preconditions P1-P5 switch isolation off. A check that runs a tool process (C1-C12) can only move the
 status from `enforced` to `degraded`.
 
 **Sessions run in every status.** The status itself refuses nothing; it is reported instead (a session start still fails, with `[workspace] session start refused: ...`, when its workspace cannot be created or handed to the tool user, for example with a reduced capability set or a link where a workspace directory belongs):
@@ -153,7 +154,8 @@ status from `enforced` to `degraded`.
   does not carry the status.
 
 The self-check runs once, at start. After fixing the cause of a C1-C9, C11, S13 or E1 entry, **restart the server**
-(`docker compose restart artex`). Only C10 clears by itself.
+(`docker compose restart artex`). Two entries can change without a restart: C10 clears by itself, and C12 is re-run
+on its own after a Signal send or channel test (see C12 below).
 
 ## Checks and what to do
 
@@ -182,10 +184,25 @@ The self-check runs once, at start. After fixing the cause of a C1-C9, C11, S13 
 | C9 | the cloud metadata address `169.254.169.254:80` is reachable | warning; `degraded` if the probe could not run | block that address for containers in the host firewall |
 | C10 | tool processes are still running after the kill at start, or a cleanup of tool processes failed | `degraded`; cleared automatically once none are left | the server kills again every few seconds while no session needs tools. If it persists, restart the container |
 | C11 | `fs.protected_hardlinks` or `fs.protected_symlinks` is not `1` on the host, or cannot be read | `degraded` | on the host: `sudo sysctl -w fs.protected_hardlinks=1 fs.protected_symlinks=1`, and persist both in `/etc/sysctl.d/`. Most distributions already set them |
+| C12 | only when `ARTEX_SIGNAL_API` is set. The Signal bridge socket is absent or not a socket (`not verified: socket absent`); the tool user can connect to it (`tool user can connect to <path>`); the tool user can list the directory that holds it (`tool user can list <dir>, which holds <path>`); or the probe proved nothing (`... could not be verified`; this includes a socket file that refuses the connection because nothing listens on it) | `degraded` | "socket absent" at start: the bridge was not up yet; it clears at the next C12 re-run once the socket exists. Any other C12: follow the incident runbook, [Incident: isolation check C12 appeared](../example-deployment/README.md#incident-isolation-check-c12-appeared). Mount the socket volume only under `/run/artex-private`, as `docker-compose.signal.yml` does |
 
 C7-C9 are warnings when their probe ran and connected; the status stays `enforced` and the UI shows the yellow notice.
 When a probe cannot run (`python3`, `timeout` or `bash` missing) or gives no answer, the check degrades: it proved
 nothing.
+
+**C12 in detail.** The server (root) first looks at the path from `ARTEX_SIGNAL_API`; when no socket is there, C12 is
+`not verified: socket absent` and no tool shell runs. Otherwise a tool shell tries to connect to the socket and to list
+its directory. Passing means both were refused. C12 is the only check that runs again after start, alone:
+
+- after the first successful Signal send, in the background, for at most 2 minutes. When that re-run cannot take
+  place (for example it timed out waiting for the tool shell), the log shows
+  `[notify] signal: isolation recheck skipped: <error>` and the next successful send tries again;
+- on every test of a Signal channel (System, Notifications, "Send test message", or
+  `POST /api/notify/channels/{id}/test`), whatever the test's outcome, for at most 30 seconds.
+
+When the result of a re-run differs from the previous one, the server logs `[isolation] status=...` again (with the
+warning block when the status is not `enforced`). With the shipped override, `artex` waits at start for the bridge to
+be healthy, so `socket absent` normally appears only when the proxy was stopped or failed.
 
 ### Status entries raised after start
 
@@ -209,6 +226,8 @@ Both make the status `degraded` and stay until the server restarts.
 | `[isolation] idle sweep failed: ...; trying again every few seconds` | a failed cleanup (at most once a minute; C10) |
 | `[isolation] idle sweep skipped: N leases held for > 1 h` | sessions have held tool processes for more than an hour |
 | `[isolation] permissions: ...` | an entry the permission step could not close (see C3) |
+| `[isolation] C12 re-run skipped: ...` | a C12 re-run did not run: it could not take the lease that every tool process holds (see C12) |
+| `[notify] signal: isolation recheck skipped: ...` | a C12 re-run after a Signal send or test did not run; after a send, the next successful send tries again |
 | `[isolation] stop: no tool process left` | graceful stop |
 | `[toolfs] <tool>: <reason>` | a file tool failed in its helper |
 | `[mcp] refused server <name>: denied variable name <KEY>` | an MCP stdio row was not started |
@@ -267,6 +286,8 @@ volumes:
   self-check warns (C7). Tools cannot read the password.
 - **The skills mount** (`./skills:/app/skills`) must not be writable by uid 30002 (C5).
 - Do not mount the Docker socket (C8).
+- **Signal bridge:** mount its socket volume only under `/run/artex-private` (C12), and keep `artex` off every network
+  the bridge is on. Copy the layout of `example-deployment/docker-compose.signal.yml`.
 
 ## Running outside the official image
 
