@@ -10,6 +10,7 @@ export const KIND_LABEL: Record<string, string> = {
   wecom: "WeCom",
   webhook: "Generic Webhook",
   telegram: "Telegram",
+  signal: "Signal",
   email: "Email",
 };
 
@@ -97,6 +98,24 @@ export const CHANNEL_FIELDS: Record<string, FieldDef[]> = {
       help: "Leave empty for the official URL; fill in when proxying a self-hosted Bot API",
     },
   ],
+  signal: [
+    {
+      key: "recipient_type",
+      label: "Recipient type",
+      kind: "select",
+      help: "Recommended for team alerts: members are managed in Signal and ARTEX stores no personal phone numbers. Paste the id as group.<id> (see the deployment README)",
+      options: [
+        { value: "group", label: "Group (recommended)" },
+        { value: "numbers", label: "Phone numbers" },
+      ],
+    },
+    {
+      key: "recipients",
+      label: "Recipients",
+      kind: "list",
+      help: "For a group: exactly one group.<id>. For phone numbers: one or more numbers in international format, e.g. +15555550101.",
+    },
+  ],
   email: [
     { key: "host", label: "SMTP server", kind: "text", placeholder: "smtp.example.com" },
     {
@@ -137,13 +156,18 @@ export type ChannelForm = {
   onStatusChange: boolean;
 };
 
+// Per-kind starting config for a new form or a kind switch. Signal starts with
+// group recipients: the safer choice, since no personal phone numbers are stored.
+export const defaultConfig = (kind: string): Record<string, unknown> =>
+  kind === "signal" ? { recipient_type: "group" } : {};
+
 export const emptyForm = (kind: string): ChannelForm => ({
   name: "",
   kind,
   mode: "realtime",
   enabled: true,
   ratePerMin: "",
-  config: {},
+  config: defaultConfig(kind),
   minSeverity: "",
   includeText: "",
   excludeText: "",

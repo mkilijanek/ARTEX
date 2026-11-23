@@ -21,6 +21,7 @@ import type { NotificationChannel, NotificationFilter, NotificationMeta } from "
 import {
   CHANNEL_FIELDS,
   type ChannelForm,
+  defaultConfig,
   emptyForm,
   KIND_LABEL,
   parseIDs,
@@ -429,7 +430,7 @@ export default function NotifyPage() {
                   value={form.kind}
                   onValueChange={(v) => {
                     // Switching type means switching to a different set of credential fields; the old config cannot be merged in.
-                    setF({ kind: v, config: {} });
+                    setF({ kind: v, config: defaultConfig(v) });
                   }}
                   disabled={!!editing}
                 >
