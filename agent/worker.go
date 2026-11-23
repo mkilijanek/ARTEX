@@ -4,10 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
-	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Autumn-27/norma/agentcore"
@@ -168,14 +166,14 @@ func NewWorker(prov llm.Provider, model, workDir string, tx *transcript.Store, w
 	return &Worker{prov: prov, model: model, workDir: workDir, tx: tx, window: window, maxTurns: maxTurns, extraTools: extra}
 }
 
-// defaultToolsExcept returns actool.DefaultTools() minus the named tools (by
+// defaultToolsExcept returns defaultTools() minus the named tools (by
 // CoreTool.Name()). Used to trim SDK default tools an agent shouldn't have.
 func defaultToolsExcept(exclude ...string) []actool.CoreTool {
 	drop := make(map[string]bool, len(exclude))
 	for _, n := range exclude {
 		drop[n] = true
 	}
-	all := actool.DefaultTools()
+	all := defaultTools()
 	out := make([]actool.CoreTool, 0, len(all))
 	for _, t := range all {
 		if !drop[t.Name()] {
@@ -202,24 +200,50 @@ func (w *Worker) SetProxy(addr, caCert string) { w.proxyAddr, w.proxyCACert = ad
 // SetWebSearch selects the web_search backend for this worker (off by default).
 func (w *Worker) SetWebSearch(o WebSearchOpts) { w.webSearch = o }
 
-// proxyEnv builds the Bash-subprocess env that routes child-command HTTP through
-// the egress proxy (the recording MITM when capture is on, or the global proxy
-// directly when it is off) and, only when a MITM CA is present, makes the common
-// toolchain trust it — so tools need no manual -x/--proxy/-k. Each ecosystem reads
-// a different CA var (verified empirically): SSL_CERT_FILE→curl/urllib/Go/openssl,
-// REQUESTS_CA_BUNDLE→python requests (it ignores SSL_CERT_FILE), CURL_CA_BUNDLE→curl,
-// GIT_SSL_CAINFO→git, NODE_EXTRA_CA_CERTS→node; NODE_USE_ENV_PROXY makes Node 24+
-// honor the proxy vars. ALL_PROXY is set too so a socks5 egress proxy (which curl
-// only reads from ALL_PROXY, not HTTP(S)_PROXY) works in the capture-off path.
+// DefaultEgressForwarder is where the credential-free egress forwarder listens (the default of
+// the server's -egress flag, traffic.DefaultEgressAddr).
+const DefaultEgressForwarder = "http://127.0.0.1:8789"
+
+// egressForwarder is the forwarder address tools are pointed at; the server sets it at start.
+var egressForwarder atomic.Value // string
+
+// SetEgressForwarder records the forwarder's URL (http://host:port, no credentials).
+func SetEgressForwarder(u string) { egressForwarder.Store(u) }
+
+func egressForwarderURL() string {
+	if u, _ := egressForwarder.Load().(string); u != "" {
+		return u
+	}
+	return DefaultEgressForwarder
+}
+
+// toolEnv builds the Bash-subprocess env that routes child-command HTTP through
+// the egress proxy and, only when a MITM CA is present, makes the common
+// toolchain trust it — so tools need no manual -x/--proxy/-k. proxyAddr is what the
+// server itself would use: the recording MITM when capture is on, or the operator's
+// global proxy when it is off. The second is never handed to a tool: it can carry
+// user:pass, so with capture off a tool gets the credential-free local forwarder
+// (egressForwarderURL), which dials through the global proxy and adds the credentials
+// itself. Capture on is recognised by the CA: it is non-empty exactly then (see
+// Manager.ProxyCACert), and the MITM address carries no credentials.
+// Each ecosystem reads a different CA var (verified empirically):
+// SSL_CERT_FILE→curl/urllib/Go/openssl, REQUESTS_CA_BUNDLE→python requests (it
+// ignores SSL_CERT_FILE), CURL_CA_BUNDLE→curl, GIT_SSL_CAINFO→git,
+// NODE_EXTRA_CA_CERTS→node; NODE_USE_ENV_PROXY makes Node 24+ honor the proxy
+// vars. ALL_PROXY is set too: curl reads it for an http proxy as well, and it is
+// what the capture-off path relied on for a socks5 egress proxy.
 // Empty proxyAddr → nil (direct, unchanged env).
-func proxyEnv(proxyAddr, caCert string) []string {
+func toolEnv(proxyAddr, caCert string) []string {
 	if proxyAddr == "" {
 		return nil
+	}
+	if caCert == "" {
+		proxyAddr = egressForwarderURL()
 	}
 	env := []string{
 		"HTTP_PROXY=" + proxyAddr, "HTTPS_PROXY=" + proxyAddr,
 		"http_proxy=" + proxyAddr, "https_proxy=" + proxyAddr,
-		"ALL_PROXY=" + proxyAddr, "all_proxy=" + proxyAddr, // socks5 egress: curl reads only this
+		"ALL_PROXY=" + proxyAddr, "all_proxy=" + proxyAddr,
 		"NODE_USE_ENV_PROXY=1", // Node 24+: honor HTTP(S)_PROXY in built-in fetch/http
 	}
 	if caCert != "" {
@@ -295,28 +319,11 @@ func artifactSpec(dir string) string {
 }
 
 // workerArtifactSpec is the worker's section [C]: its per-intent run dir is
-// pre-created by the engine (ensureRunDir), so it just writes relative paths there
+// pre-created by the engine (prepareRunDir), so it just writes relative paths there
 // — no manual mkdir, no cross-worker name collisions.
 func workerArtifactSpec(runDir string) string {
 	return artifactRulesPrefix + "this intent's dedicated work directory " + runDir + "** (already created automatically; just write with relative paths there — no manual mkdir needed) — **do NOT write to /tmp, do NOT use other absolute paths**."
 }
-
-// ensureRunDir builds and creates an agent's working directory under base:
-// <base>/tasks/<taskID> for planner/main; <base>/tasks/<taskID>/i<intentID> for a
-// worker (intentID<=0 → task dir only). The "tasks/" segment groups per-task dirs
-// symmetrically with the chat agent's "sessions/<sessionID>". Best-effort mkdir — on
-// failure, writes fail the same way an unwritable CWD would.
-func ensureRunDir(base string, taskID, intentID int64) string {
-	dir := filepath.Join(base, "tasks", strconv.FormatInt(taskID, 10))
-	if intentID > 0 {
-		dir = filepath.Join(dir, "i"+strconv.FormatInt(intentID, 10))
-	}
-	_ = os.MkdirAll(dir, 0o755)
-	return dir
-}
-
-// cmdOutDir is the SDK large-tool-output spill dir under an agent's run dir.
-func cmdOutDir(dir string) string { return filepath.Join(dir, "cmd-output") }
 
 func workerSystem(proxyAddr, caCert, dataDir, runDir string) string {
 	body := renderSystem("worker", workerDefaultTmpl, WorkerVars{ProxyAddr: proxyAddr, DataDir: dataDir, Now: nowStr()})
@@ -471,7 +478,10 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// staleness, so compacting it away is harmless.
 	// This intent's dedicated work dir <workDir>/tasks/<taskID>/i<intentID> is created
 	// by the engine first.
-	runDir := ensureRunDir(w.workDir, taskID, intent.ID)
+	runDir, err := prepareRunDir(ctx, w.workDir, taskID, intent.ID)
+	if err != nil {
+		return ReasonSessionStart, tsx.Writes(), err
+	}
 	// The run-wide intent is not the current tool action. Do not forward it or
 	// inherit a parent run's background into the action reviewer.
 	ctx = intercept.WithReviewContext(ctx, runDir, intercept.ReviewBackground{})
@@ -581,7 +591,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		WebSearchProxy:        w.webSearch.Proxy,
 		// Bash subcommands' HTTP goes through the recording proxy + trusts its CA by
 		// default (tools need no -x/-k).
-		BashEnv:    proxyEnv(w.proxyAddr, w.proxyCACert),
+		BashEnv:    toolEnv(w.proxyAddr, w.proxyCACert),
 		WorkingDir: runDir,
 		MaxTurns:   w.maxTurns, // 0 = unlimited (configurable in agent management)
 		// Wall-clock budget, judged at turn boundaries without interrupting mid-flight;
@@ -595,28 +605,25 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		// deadline → task-timeout prompt; turns = the turn budget ran out inside the
 		// clamped window → fall back to the per-run prompt. Non-clamped stays pure per-run.
 		Settlement: settle,
-		// large tool output spills to cmd-output/ with a head + pointer (SDK tool.Capture);
-		// full output preserved on disk. The truncation cap uses the SDK default (30000
-		// chars).
-		ToolOutputDir: cmdOutDir(runDir),
-		Compaction:    compactionConfig(w.compactionWindow()), // long tool-heavy runs stay within the window
-		Todos:         actool.NewTodoStore(),                  // session-level scratch todos (TodoWrite), pure planning, discarded on exit
-		NonStreaming:  w.nonStreaming(),                       // when this profile selects non-streaming, use Provider.Complete
-		MaxTokens:     w.maxTokens(),                          // 0 = send no cap; the server default decides
+		// large tool output spills to <data>/spill/worker/<session> with a head + pointer (SDK
+		// tool.Capture, directory set below); full output preserved on disk. The truncation cap
+		// uses the SDK default (30000 chars).
+		Compaction:   compactionConfig(w.compactionWindow()), // long tool-heavy runs stay within the window
+		Todos:        actool.NewTodoStore(),                  // session-level scratch todos (TodoWrite), pure planning, discarded on exit
+		NonStreaming: w.nonStreaming(),                       // when this profile selects non-streaming, use Provider.Complete
+		MaxTokens:    w.maxTokens(),                          // 0 = send no cap; the server default decides
 	}
 	if hooks != nil { // typed-nil guard: only set when concrete (avoids harness panic)
 		opts.Hooks = hooks
 	}
 	opts.SessionID = WorkerSessionID(ts.ID(), intent.ID)
+	spillDir, err := sessionSpillDir(w.workDir, "worker", opts.SessionID)
+	if err != nil {
+		return ReasonSessionStart, tsx.Writes(), err
+	}
+	opts.ToolOutputDir = spillDir
 	if w.tx != nil { // persist raw LLM conversation; one file per worked intent
 		opts.Transcript = w.tx
-	}
-	intentID := intent.ID
-	emitWrap := func(r db.Activity) {
-		if emit != nil {
-			r.NodeID, r.Worker = &intentID, name
-			emit(r)
-		}
 	}
 	// The intent / launch instruction / intent-anchored assets were already delivered
 	// with the system prompt (see the sysBody assembly above). This launch user message
@@ -631,9 +638,22 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// Experimental: when on, noa takes over context compression (archives persist under <workDir>/noa/<SessionID>).
 	noaSession := WorkerSessionID(ts.ID(), intent.ID)
 	enableNoa(&opts, w.noaEnabledFn, w.workDir, noaSession, noaWarn(noaSession))
-	ctx = attachSideCapture(ctx, &opts)
-	s := agentcore.NewSession(opts)
-	defer s.Close() // release the session's background-task manager (temp dir + processes)
+	ctx, err = attachSideCapture(ctx, &opts)
+	if err != nil {
+		return ReasonSessionStart, tsx.Writes(), err
+	}
+	intentID := intent.ID
+	emitWrap := func(r db.Activity) {
+		if emit != nil {
+			r.NodeID, r.Worker = &intentID, name
+			emit(r)
+		}
+	}
+	s, closeSession, err := newSession(ctx, opts, SessionInfo{Kind: "worker", ID: opts.SessionID, Emit: emitWrap, NoaDir: noaSessionDir(w.workDir, noaSession)})
+	if err != nil {
+		return ReasonSessionStart, tsx.Writes(), err
+	}
+	defer closeSession() // release the session's background-task manager (temp dir + processes) and the lease
 
 	// Resume prior conversation if this intent was paused/blocked/exhausted and is
 	// being re-run. The transcript ID is deterministic per intent, so if a prior

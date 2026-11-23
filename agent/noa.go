@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"log"
 	"os"
 	"path/filepath"
@@ -24,6 +25,25 @@ func noaWarn(session string) func(string) {
 // agent injects, so switching only affects runs started afterwards — no need to rebuild
 // the agent.
 
+// noaSessionDir is the archive directory of one session under the data directory: where enableNoa
+// makes it and noa writes its archives.
+func noaSessionDir(dataDir, session string) string {
+	return filepath.Join(dataDir, "noa", session)
+}
+
+type noaDirKey struct{}
+
+// withNoaDir carries a session's noa directory to captureRun, which builds the session for the
+// planner and the goal decomposer.
+func withNoaDir(ctx context.Context, dir string) context.Context {
+	return context.WithValue(ctx, noaDirKey{}, dir)
+}
+
+func noaDirFrom(ctx context.Context) string {
+	d, _ := ctx.Value(noaDirKey{}).(string)
+	return d
+}
+
 // enableNoa wires noa into opts when the resolver reports enabled. archiveRoot is the
 // persistent base directory for compression originals (the global workDir; all agents
 // uniformly land under <workDir>/noa, not scattered across task/intent directories),
@@ -42,7 +62,9 @@ func enableNoa(opts *agentcore.Options, enabled func() bool, archiveRoot, sessio
 	}
 	// Norma creates its archive lazily; reject an unusable location before it
 	// replaces the built-in compactor and starts issuing compression calls.
-	if err := os.MkdirAll(filepath.Join(archiveRoot, "noa", sessionID), 0700); err != nil {
+	// 0755: tools read the archive the SDK points the model at; the directory is root's, so a tool
+	// cannot plant or replace anything in it.
+	if err := os.MkdirAll(noaSessionDir(archiveRoot, sessionID), 0o755); err != nil {
 		if onWarn != nil {
 			onWarn("failed to prepare noa archive, falling back to built-in compaction: " + err.Error())
 		}

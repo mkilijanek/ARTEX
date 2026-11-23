@@ -19,7 +19,7 @@ func TestNewManagerReturnsMigrationFailure(t *testing.T) {
 	tmp.Load(t, "empty ledger", `CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT, checksum TEXT, applied_at TIMESTAMPTZ DEFAULT now());`)
 	t.Setenv("ARTEX_PG_DSN", tmp.DSN)
 
-	m, err := NewManager(t.TempDir(), "")
+	m, err := NewManager(t.TempDir(), "", testDSN())
 	if err == nil {
 		t.Fatal("NewManager succeeded although the migration runner refuses the database")
 	}

@@ -17,7 +17,7 @@ func TestNOABudgetTerminalThroughCapture(t *testing.T) {
 		inner := captureUsageProvider{stream: func(_ context.Context, _ func(llm.StreamEvent, error) bool) { calls++ }}
 		provider := &noaBudgetProvider{Provider: inner, window: 1}
 		var activities []db.Activity
-		_, reason, err := captureRun(t.Context(), agentcore.Options{Provider: provider, NonStreaming: atomic, MaxTurns: 1}, "fixture", func(a db.Activity) { activities = append(activities, a) })
+		_, reason, err := captureRun(t.Context(), agentcore.Options{Provider: provider, Tools: noTools, NonStreaming: atomic, MaxTurns: 1}, "fixture", func(a db.Activity) { activities = append(activities, a) })
 		if reason != harness.ReasonBlockingLimit || !errors.Is(err, ErrNOAContextBudget) || calls != 0 {
 			t.Fatalf("atomic=%v reason=%s err=%v calls=%d", atomic, reason, err, calls)
 		}

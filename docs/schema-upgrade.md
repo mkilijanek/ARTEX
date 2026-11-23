@@ -42,6 +42,18 @@ ships the first real migration, upstream `0004` (the index `idx_llm_usage_ts`), 
    the table and is not bounded. For a large table, build the index beforehand (see "Pre-building the index").
 4. Read the release notes in the CHANGELOG for migrations that state `downgrade-safe: no`.
 
+**`psql` with the shipped Compose file.** From the release after 0.5.17m on, the bundled PostgreSQL has no network and
+is reached only through a Unix socket, so every command on this page goes through `docker compose exec`. A database
+volume created by that release requires the password for every connection, also inside the container (a volume
+created earlier keeps its `trust` lines until you change them; `.env.example` has the steps). Pass the password
+through the environment, never on the command line: prefix each `docker compose exec ... psql` command below with
+`PGPASSWORD="$POSTGRES_PASSWORD"` and add `-e PGPASSWORD` after `-T`, for example:
+
+```bash
+PGPASSWORD="$POSTGRES_PASSWORD" docker compose exec -T -e PGPASSWORD postgres \
+  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc 'SELECT version, name FROM schema_migrations ORDER BY version'
+```
+
 ### What the first start does
 
 On a database that an earlier release started (no ledger), the start does everything that earlier releases did

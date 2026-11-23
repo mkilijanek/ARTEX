@@ -10,7 +10,7 @@ import (
 )
 
 func TestSkillGapsReport(t *testing.T) {
-	m, err := NewManager(t.TempDir(), "")
+	m, err := NewManager(t.TempDir(), "", testDSN())
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}

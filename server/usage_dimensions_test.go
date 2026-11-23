@@ -8,7 +8,7 @@ import (
 )
 
 func TestUsageDimensionsHTTP(t *testing.T) {
-	m, err := NewManager(t.TempDir(), "")
+	m, err := NewManager(t.TempDir(), "", testDSN())
 	if err != nil {
 		t.Fatal(err)
 	}

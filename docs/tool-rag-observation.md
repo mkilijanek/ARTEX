@@ -177,7 +177,8 @@ data have not been looked at yet.
 Save it as `tool-rag-day14.sql`, then (with Docker Compose):
 
 ```bash
-docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 \
+PGPASSWORD="$POSTGRES_PASSWORD" docker compose exec -T -e PGPASSWORD postgres \
+  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 \
   -v t0='2026-11-20 00:00:00+00' < tool-rag-day14.sql
 ```
 
@@ -259,7 +260,8 @@ window is over, or at any time to look.
 `t0` is the start of the window, as for the day-14 SQL. With Docker Compose:
 
 ```bash
-docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 \
+PGPASSWORD="$POSTGRES_PASSWORD" docker compose exec -T -e PGPASSWORD postgres \
+  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 \
   -v t0='2026-11-20 00:00:00+00' < scripts/toolrag/report.sql > tool-rag-report.txt
 ```
 

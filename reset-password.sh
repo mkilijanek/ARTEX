@@ -10,7 +10,9 @@
 #   local (default) — host connects to the database directly with psql. Connection
 #                    info priority: args > --dsn/$ARTEX_PG_DSN > config.json database.*
 #   docker          — runs psql inside the postgres container via `docker compose
-#                    exec` (or `docker exec`) (compose does not expose 5432 by default).
+#                    exec` (or `docker exec`). The shipped compose database has no network
+#                    and listens on a Unix socket only, so local mode cannot reach it: use
+#                    docker mode (POSTGRES_PASSWORD from .env is passed as PGPASSWORD).
 #
 # Usage examples:
 #   ./reset-password.sh                          # local, auto-reads config.json/env, prompts for the new password
@@ -40,7 +42,7 @@ ASSUME_YES=0
 die() { echo "error: $*" >&2; exit 1; }
 info() { echo "· $*" >&2; }
 
-usage() { sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
+usage() { sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
 
 # ---- Argument parsing -------------------------------------------------------
 while [[ $# -gt 0 ]]; do

@@ -141,6 +141,8 @@ type Traffic struct {
 	wmu   sync.Mutex // serializes record() vs DeleteHost (incl. blob GC)
 	seq   atomic.Int64
 	proxy *mproxy.Proxy
+	// caPublic is the published copy of the CA certificate ("" until PublishCA succeeds).
+	caPublic atomic.Value
 	// fts reports whether the full-text index is available. False on a driver
 	// build without FTS5: recording and metadata search still work, body search
 	// degrades to unsupported rather than erroring.
@@ -351,7 +353,13 @@ func ValidateProxyURL(raw string) (*url.URL, error) {
 
 // CACertPath returns the PEM CA cert clients must trust to verify HTTPS through
 // the MITM proxy (go-mitmproxy writes it here on first start).
+//
+// Once PublishCA has copied the certificate to the data directory's public folder, that copy is
+// returned: the store itself is closed to the tool user, and the tools need to read the CA.
 func (t *Traffic) CACertPath() string {
+	if p, ok := t.caPublic.Load().(string); ok && p != "" {
+		return p
+	}
 	return filepath.Join(t.dir, "_ca", "mitmproxy-ca-cert.pem")
 }
 

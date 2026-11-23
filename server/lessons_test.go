@@ -21,7 +21,7 @@ func TestRSILessonsMode(t *testing.T) {
 }
 
 func TestTaskLessonsExtractionAndIdempotency(t *testing.T) {
-	m, err := NewManager(t.TempDir(), "")
+	m, err := NewManager(t.TempDir(), "", testDSN())
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
@@ -120,7 +120,7 @@ SELECT id,'completed','fixed','{}'::jsonb FROM findings WHERE task_id=$1 AND nam
 }
 
 func TestTerminalStatusExtractsLessons(t *testing.T) {
-	m, err := NewManager(t.TempDir(), "")
+	m, err := NewManager(t.TempDir(), "", testDSN())
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}

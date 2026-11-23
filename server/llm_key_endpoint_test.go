@@ -122,7 +122,7 @@ func TestLLMTestValidatesUserAgent(t *testing.T) {
 // A stored profile's key goes only to that profile's base URL, for both the
 // connection test and the model listing.
 func TestStoredProfileKeyOnlyForStoredEndpoint(t *testing.T) {
-	m, err := NewManager(t.TempDir(), "")
+	m, err := NewManager(t.TempDir(), "", testDSN())
 	if err != nil {
 		t.Skipf("postgres unavailable (%v)", err)
 	}

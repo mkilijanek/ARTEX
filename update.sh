@@ -36,14 +36,36 @@ update_docker(){
     || die "docker / docker compose not detected; install and deploy with ./install.sh first"
   [ -f .env ] || die ".env not found; run ./install.sh first to complete the initial deployment"
 
-  # Touch only artex: postgres is pinned to 16-alpine and does not need upgrading along
-  # (pulling it wastes bandwidth, and a major version bump risks compatibility). artex
-  # declares depends_on postgres, so an up with the service name starts pg if needed and leaves a running one untouched.
+  # Build only artex: postgres is pinned to 16-alpine (nothing to build or pull; a major
+  # version bump risks compatibility). Bring up ALL services: a release that changes the
+  # database service (socket only, no network) must re-create it, and `up -d artex`
+  # alone would leave the old postgres container, with its network, running. The data
+  # volume is kept.
   info "Building the image from this checkout (artex only)…"
   docker compose build artex
-  info "Recreating artex (schema migrates automatically on restart)…"
-  docker compose up -d artex
+  info "Recreating the services (schema migrates automatically on restart)…"
+  docker compose up -d
   ok "Update complete → http://localhost:8787"
+  # A database volume created by an older release keeps its pg_hba.conf, which
+  # trusts every local connection without a password. A new volume requires scram.
+  # `compose exec` also exits 1 when the service is not running, which would read as "no trust
+  # line": so the service is checked first, and the check is reported as skipped when it cannot run.
+  if ! running_services=$(docker compose ps --services --status running); then
+    warn "Could not list the running services; the pg_hba.conf trust check was SKIPPED. Check the authentication of this volume by hand."
+  elif ! printf '%s\n' "$running_services" | grep -qx postgres; then
+    warn "The postgres service is NOT running, so the pg_hba.conf trust check was SKIPPED: this volume may still trust local connections without a password."
+    warn "Start it (docker compose up -d postgres), then check the authentication of this volume by hand."
+  else
+    # grep exits 1 for "no such line" (fine) and 2 or more for a real failure.
+    hba_rc=0
+    docker compose exec -T postgres grep -Eq '^local[[:space:]]+all[[:space:]]+all[[:space:]]+trust' /var/lib/postgresql/data/pg_hba.conf || hba_rc=$?
+    case "$hba_rc" in
+      0) warn "This database volume still trusts local connections without a password (created by an older release)."
+         warn "New volumes require scram-sha-256. To move this one, follow the steps in .env.example (not done automatically)." ;;
+      1) ;;
+      *) warn "Could not read pg_hba.conf in the postgres container (exit $hba_rc); check the authentication of this volume by hand." ;;
+    esac
+  fi
   info "View logs: docker compose logs -f artex"
   info "Clean up old images (optional): docker image prune -f"
 }
@@ -65,6 +87,8 @@ update_local(){
     CGO_ENABLED=0 go build -o artex ./cmd/artex
   fi
   ok "Build complete → ./artex"
+  warn "This install runs agent tools as your login user: they can read this server's secrets, its database"
+  warn "and your home directory. Use the Docker install for protection (option 1 of ./install.sh)."
   warn "Restart the running artex process to take effect (schema migrates automatically on restart)"
 }
 

@@ -40,7 +40,7 @@ func TestCaptureRunKeepsCallerSessionIdentity(t *testing.T) {
 		}
 	}}
 	ctx := transcript.WithSessionID(t.Context(), "exp123-goals")
-	_, _, err := captureRun(ctx, agentcore.Options{Provider: p, MaxTurns: 1}, "fixture", nil)
+	_, _, err := captureRun(ctx, agentcore.Options{Provider: p, Tools: noTools, MaxTurns: 1}, "fixture", nil)
 	if err != nil || got != "exp123-goals" {
 		t.Fatalf("identity=%q err=%v", got, err)
 	}

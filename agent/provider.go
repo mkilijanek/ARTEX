@@ -26,6 +26,7 @@ import (
 	"github.com/Autumn-27/norma/compaction"
 	"github.com/Autumn-27/norma/llm"
 	acperm "github.com/Autumn-27/norma/permission"
+	actool "github.com/Autumn-27/norma/tool"
 	"github.com/Autumn-27/norma/transcript"
 	"github.com/mkilijanek/artex/llmrec"
 )
@@ -605,6 +606,23 @@ func clipBody(s string) string {
 	return s
 }
 
+// connectionTestOptions are the options of the provider connection test. The test runs no tools
+// at all. A malicious or compromised provider can answer it with any tool call, so the options
+// carry an explicit empty tool list and switch the SDK's background tools (which include Monitor,
+// a shell) off, and runOnce refuses anything else.
+func connectionTestOptions(prov llm.Provider, stream bool) agentcore.Options {
+	return agentcore.Options{
+		Provider:               prov,
+		SystemPrompt:           []string{"You are a connection test. Just output the two characters OK — no thinking, no explanation, nothing else."},
+		Tools:                  []actool.CoreTool{},
+		DisableBackgroundTasks: true,
+		PermissionMode:         acperm.ModeBypass,
+		MaxTurns:               1,
+		MaxTokens:              8192,
+		NonStreaming:           !stream, // use this profile's real send/receive mode for the connection test
+	}
+}
+
 // TestConnection makes a minimal real completion to verify the provider/model/
 // endpoint/key actually work. Returns the round-trip latency and the model's
 // reply text.
@@ -639,14 +657,7 @@ func TestConnection(ctx context.Context, c Config) (time.Duration, string, error
 	// budget to emit OK cleanly (finish=stop).
 	// EscalateMaxTokens stays false: don't raise the cap and retry on truncation, to
 	// avoid burning tokens in a resume loop.
-	reply, err := agentcore.Run(ctx, agentcore.Options{
-		Provider:       prov,
-		SystemPrompt:   []string{"You are a connection test. Just output the two characters OK — no thinking, no explanation, nothing else."},
-		PermissionMode: acperm.ModeBypass,
-		MaxTurns:       1,
-		MaxTokens:      8192,
-		NonStreaming:   !c.Stream, // use this profile's real send/receive mode for the connection test
-	}, "ping")
+	reply, err := runOnce(ctx, connectionTestOptions(prov, c.Stream), "ping")
 	lat := time.Since(start)
 	if err != nil {
 		return lat, "", err

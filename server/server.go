@@ -28,6 +28,7 @@ import (
 	"github.com/mkilijanek/artex/llmpool"
 	"github.com/mkilijanek/artex/llmrec"
 	"github.com/mkilijanek/artex/report"
+	"github.com/mkilijanek/artex/sandbox"
 	"github.com/mkilijanek/artex/traffic"
 )
 
@@ -46,11 +47,13 @@ type Server struct {
 	skillDir string // root directory for skill subdirectories
 	jwtKey   []byte // HS256 signing key loaded from / generated into dataDir/jwt.key
 
-	scrubSecrets bool // drop ARTEX_PG_DSN and the API keys from the environment once read (binary only)
+	// the provider config main read from the environment once, before the secrets were removed
+	envLLM   agent.Config
+	envLLMOK bool
 	// ARTEX's own addresses for the WebFetch egress policy (cmd/artex -addr / -proxy).
 	listenAddr, recordingProxyAddr string
 	tpMu                           sync.Mutex         // guards the captured database endpoint below
-	dbEndpoints                    []agent.DBEndpoint // every database endpoint from the DSN, captured once at startup
+	dbEndpoints                    []agent.DBEndpoint // every database endpoint from the DSN, handed over once by main
 	dbCaptured                     bool
 
 	setupMu    sync.Mutex
@@ -150,6 +153,15 @@ type triggeredRun struct {
 	mergeable bool   // true for finding/goal event triggers (merge by taskID)
 }
 
+// reportSkillSnapshot logs a failed skill snapshot set-up and raises the status warning (S13).
+func reportSkillSnapshot(err error) {
+	if err == nil {
+		return
+	}
+	log.Printf("[skills] WARNING: skills will not load: %v", err)
+	sandbox.Current().ReportFailure("S13", "skills will not load ("+err.Error()+")")
+}
+
 func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDir string, opts ...Option) *Server {
 	key, err := loadOrCreateJWTKey(keyDir, dataDir)
 	if err != nil {
@@ -164,7 +176,9 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	for _, o := range opts {
 		o(s)
 	}
-	s.registerTargetPolicy() // before the secret scrub below: it reads the database DSN
+	// Skills load only from a verified snapshot; when its directory is unusable no skill loads.
+	reportSkillSnapshot(sandbox.ConfigureSkillSnapshot(dataDir))
+	s.registerTargetPolicy()
 	s.initSetupToken()
 	s.initSideQuestions()
 	// Circuit-breaker thresholds/cooldowns are hot parameters on the failure path; push the global retry policy to the Registry once at startup,
@@ -258,7 +272,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		} else {
 			log.Printf("[engine] LLM configured from DB: %s / %s", cfg.Provider(), cfg.Model)
 		}
-	} else if cfg, ok := agent.FromEnv(); ok {
+	} else if cfg, ok := s.envLLM, s.envLLMOK; ok {
 		if err := s.applyLLM(cfg); err != nil {
 			log.Printf("[engine] env provider init failed — engine idle: %v", err)
 		} else {
@@ -266,13 +280,6 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		}
 	} else {
 		log.Printf("[engine] no LLM provider configured — engine idle until set via /api/llm or env")
-	}
-	// Both env readers have now run (NewManager for the DSN, FromEnv above for the
-	// keys). Drop the secrets before anything below can spawn a child process:
-	// restoring runtimes resumes workers that run shells, and MCP discovery starts
-	// stdio servers.
-	if s.scrubSecrets {
-		ScrubSecretEnv()
 	}
 	// Fill the tool cache for any enabled MCP that has none yet (notably the
 	// seeded browser MCP on first run). Async so it never blocks startup.
@@ -986,6 +993,9 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{}
 	out["engine_mode"] = "idle"              // spec enum; overridden below when a task is active
 	out["llm_configured"] = s.engine.Ready() // is an LLM provider installed at all
+	// Tool isolation status for the banner. Authenticated like the rest of /api/stats; /api/health
+	// says nothing about it.
+	out["tool_isolation"] = sandbox.Current().View()
 	if tr := s.m.Traffic(); tr != nil {
 		c, _ := tr.Count()
 		out["traffic"] = c

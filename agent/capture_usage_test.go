@@ -47,7 +47,7 @@ func TestCaptureRunPersistsUsageOnProviderFailure(t *testing.T) {
 	}}
 
 	var activities []db.Activity
-	_, _, err := captureRun(context.Background(), agentcore.Options{Provider: provider, MaxTurns: 1}, "test", func(a db.Activity) {
+	_, _, err := captureRun(context.Background(), agentcore.Options{Provider: provider, Tools: noTools, MaxTurns: 1}, "test", func(a db.Activity) {
 		activities = append(activities, a)
 	})
 	if !errors.Is(err, wantErr) {
@@ -78,7 +78,7 @@ func TestCaptureRunPersistsUsageOnCancellation(t *testing.T) {
 	var activities []db.Activity
 	done := make(chan error, 1)
 	go func() {
-		_, _, err := captureRun(ctx, agentcore.Options{Provider: provider, MaxTurns: 1}, "test", func(a db.Activity) {
+		_, _, err := captureRun(ctx, agentcore.Options{Provider: provider, Tools: noTools, MaxTurns: 1}, "test", func(a db.Activity) {
 			activities = append(activities, a)
 		})
 		done <- err

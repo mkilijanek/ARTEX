@@ -54,9 +54,10 @@ type ControlPlane struct {
 	ListenAddr         string // ARTEX listen address (cmd/artex -addr), e.g. ":8787"
 	RecordingProxyAddr string // recording proxy address (cmd/artex -proxy); empty when capture is off
 	// DBEndpoints lists every (host, port) the database driver may connect to, from the DSN as
-	// read at startup (see DatabaseEndpoint). The server captures them because it scrubs
-	// ARTEX_PG_DSN from the environment after startup. DBCaptured false means "read the DSN
-	// when a fetch starts"; true means DBEndpoints is final (it may be empty: a socket-only DSN).
+	// main read it once at startup (see DatabaseEndpoint); the environment no longer holds it.
+	// DBCaptured true means DBEndpoints is final (it may be empty: a socket-only DSN). False
+	// means the endpoints were never captured, and every fetch is refused: the policy cannot
+	// say what to protect.
 	DBEndpoints    []DBEndpoint
 	DBCaptured     bool
 	Resolver       func(ctx context.Context, host string) ([]netip.Addr, error)
@@ -247,20 +248,20 @@ func DatabaseEndpoint(dsn string) ([]DBEndpoint, error) {
 	return out, nil
 }
 
-// dsnEndpoints returns the database endpoints the denylist protects: the ones captured in
-// the control plane at startup, else the DSN as resolved now. An unset DSN yields
-// nothing (there is no database to protect).
 func isSocketHost(h string) bool { return strings.HasPrefix(h, "/") || strings.HasPrefix(h, "@") }
 
+// errDBEndpointsNotCaptured is what dsnEndpoints reports when startup never captured the
+// endpoints. There is no runtime fallback to the DSN: the environment no longer holds it, and
+// a read that finds nothing would silently drop the database from the denylist.
+var errDBEndpointsNotCaptured = errors.New("database endpoints were not captured at startup")
+
+// dsnEndpoints returns the database endpoints the denylist protects: the ones captured in the
+// control plane at startup. It fails when none were captured.
 func dsnEndpoints(cp ControlPlane) ([]DBEndpoint, error) {
-	if cp.DBCaptured {
-		return cp.DBEndpoints, nil
+	if !cp.DBCaptured {
+		return nil, errDBEndpointsNotCaptured
 	}
-	dsn, _, derr := db.DSN()
-	if derr != nil || strings.TrimSpace(dsn) == "" {
-		return nil, nil
-	}
-	return DatabaseEndpoint(dsn)
+	return cp.DBEndpoints, nil
 }
 
 func buildDenylist(ctx context.Context, cp ControlPlane, ri RunInfo) (*denylist, error) {
@@ -406,6 +407,9 @@ func (g *TargetGuard) Check(ctx context.Context, u *url.URL) (context.Context, e
 	}
 	deny, err := buildDenylist(ctx, pol.cp, ri)
 	if err != nil {
+		if errors.Is(err, errDBEndpointsNotCaptured) {
+			log.Printf("[webfetch-policy] refusing fetches: %v", err) // a constant text, no DSN part
+		}
 		// The detail may name hosts or DSN parts; the model gets a fixed reason.
 		return ctx, st.refuse(0, TargetUnavailable, "control-plane address list unavailable")
 	}
@@ -756,9 +760,16 @@ func (w *policyWebFetch) Call(ctx context.Context, input json.RawMessage, tc *ac
 // attachWebFetchPolicy replaces the SDK's WebFetch with a policy-checked, panic-guarded
 // one (design D1): it clears opts.EnableWebFetch and appends guardPanic(policyWebFetch).
 // The direct retry is switched off whenever a global egress proxy is configured (D6).
-func attachWebFetchPolicy(opts *agentcore.Options) {
+//
+// It never invents a tool list: with a nil list it returns errNilToolList, so each caller passes
+// its list explicitly. (It used to substitute the SDK's default tools, which put a shell and the
+// file tools into a session that never asked for them.)
+func attachWebFetchPolicy(opts *agentcore.Options) error {
 	if !opts.EnableWebFetch {
-		return
+		return nil
+	}
+	if opts.Tools == nil {
+		return errNilToolList
 	}
 	pol := currentTargetPolicy()
 	// The primary client consults the environment proxy only without Proxy/CACert/InsecureTLS;
@@ -773,10 +784,7 @@ func attachWebFetchPolicy(opts *agentcore.Options) {
 		DialContext:        guard.DialContext,
 		DisableDirectRetry: opts.WebFetchDisableDirectRetry || pol.globalProxy,
 	})
-	tools := opts.Tools
-	if tools == nil {
-		tools = actool.DefaultTools()
-	}
-	opts.Tools = append(append([]actool.CoreTool(nil), tools...), guardPanic(&policyWebFetch{CoreTool: inner, guard: guard}))
+	opts.Tools = append(append([]actool.CoreTool(nil), opts.Tools...), guardPanic(&policyWebFetch{CoreTool: inner, guard: guard}))
 	opts.EnableWebFetch = false
+	return nil
 }

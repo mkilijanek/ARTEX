@@ -3,32 +3,22 @@ package server
 import (
 	"context"
 	"errors"
-	"log"
 
 	"github.com/mkilijanek/artex/agent"
 	"github.com/mkilijanek/artex/db"
 )
 
 // registerTargetPolicy installs the WebFetch egress policy (design D1): the rule loader
-// backed by the asset intercept tables, ARTEX's own addresses, the database endpoint
-// from the DSN, and whether a global egress proxy is set (which disables WebFetch's
+// backed by the asset intercept tables, ARTEX's own addresses, the database endpoints
+// main captured from the DSN, and whether a global egress proxy is set (which disables WebFetch's
 // direct retry). Called from New and again whenever the global proxy changes; agents
 // pick the proxy flag up when they are rebuilt.
 func (s *Server) registerTargetPolicy() {
 	cp := agent.ControlPlane{ListenAddr: s.listenAddr, RecordingProxyAddr: s.recordingProxyAddr}
-	// The database endpoint is captured once, at startup: ScrubSecretEnv removes
-	// ARTEX_PG_DSN afterwards, so a later re-registration could not read it again.
+	// The database endpoints were handed over once by main (WithDatabaseEndpoints). There is no
+	// fallback to the DSN: the environment no longer holds it, and without a capture the policy
+	// refuses every fetch (agent.dsnEndpoints).
 	s.tpMu.Lock()
-	if !s.dbCaptured {
-		if dsn, _, err := db.DSN(); err == nil {
-			if eps, err := agent.DatabaseEndpoint(dsn); err != nil {
-				// Not fatal: the denylist then reads the DSN again when a fetch starts.
-				log.Printf("[webfetch-policy] database endpoint unavailable: %v", err)
-			} else {
-				s.dbEndpoints, s.dbCaptured = eps, true
-			}
-		}
-	}
 	cp.DBEndpoints, cp.DBCaptured = s.dbEndpoints, s.dbCaptured
 	s.tpMu.Unlock()
 	m := s.m

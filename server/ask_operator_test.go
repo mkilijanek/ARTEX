@@ -10,19 +10,23 @@ import (
 
 func TestStageAskOperatorImage(t *testing.T) {
 	dir := t.TempDir()
-	src := filepath.Join(dir, "shot.png")
+	task := filepath.Join(dir, "tasks", "7")
+	if err := os.MkdirAll(task, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(task, "shot.png")
 	if err := os.WriteFile(src, []byte("fakepng"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	// no image -> no attachment
-	att, err := stageAskOperatorImage(dir, "7", "")
+	att, err := stageAskOperatorImage(dir, "7", "", "")
 	if err != nil || att != nil {
 		t.Fatalf("empty src: att=%v err=%v", att, err)
 	}
 
 	// valid image -> copied under the task uploads, descriptor matches the chat format
-	att, err = stageAskOperatorImage(dir, "7", src)
+	att, err = stageAskOperatorImage(dir, "7", "", src)
 	if err != nil || len(att) != 1 {
 		t.Fatalf("valid src: att=%v err=%v", att, err)
 	}
@@ -34,16 +38,16 @@ func TestStageAskOperatorImage(t *testing.T) {
 	}
 
 	// wrong extension rejected
-	bad := filepath.Join(dir, "payload.exe")
+	bad := filepath.Join(task, "payload.exe")
 	if err := os.WriteFile(bad, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := stageAskOperatorImage(dir, "7", bad); err == nil || !strings.Contains(err.Error(), "png/jpg") {
+	if _, err := stageAskOperatorImage(dir, "7", "", bad); err == nil || !strings.Contains(err.Error(), "png/jpg") {
 		t.Fatalf("expected extension rejection, got %v", err)
 	}
 
 	// missing file rejected
-	if _, err := stageAskOperatorImage(dir, "7", filepath.Join(dir, "nope.png")); err == nil {
+	if _, err := stageAskOperatorImage(dir, "7", "", filepath.Join(task, "nope.png")); err == nil {
 		t.Fatal("expected missing-file rejection")
 	}
 }

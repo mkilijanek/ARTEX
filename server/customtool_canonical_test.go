@@ -62,7 +62,7 @@ func TestCustomHTTPCompatibilityHostSpellingIsBlocked(t *testing.T) {
 		px := newCredProxy(t)
 		res := newCredResolver(map[string][]string{})
 		setCredPolicy(t, credStaticRules(block, nil), "1", res)
-		agent.SetTargetPolicy(credStaticRules(block, nil), agent.ControlPlane{ // a global proxy is configured
+		agent.SetTargetPolicy(credStaticRules(block, nil), agent.ControlPlane{DBCaptured: true, // a global proxy is configured
 			ListenAddr:     ":1",
 			Resolver:       res.Resolve,
 			InterfaceAddrs: func() ([]netip.Addr, error) { return []netip.Addr{netip.MustParseAddr("10.77.0.5")}, nil },
@@ -177,7 +177,7 @@ func TestCustomHTTPNumericIPv4SpellingsAreCheckedAsAddresses(t *testing.T) {
 	px := newCredProxy(t)
 	res := newCredResolver(map[string][]string{})
 	setCredPolicy(t, credStaticRules(nil, nil), ctl.port, res)
-	agent.SetTargetPolicy(credStaticRules(nil, nil), agent.ControlPlane{ // a global proxy is configured
+	agent.SetTargetPolicy(credStaticRules(nil, nil), agent.ControlPlane{DBCaptured: true, // a global proxy is configured
 		ListenAddr:     ":" + ctl.port,
 		Resolver:       res.Resolve,
 		InterfaceAddrs: func() ([]netip.Addr, error) { return []netip.Addr{netip.MustParseAddr("10.77.0.5")}, nil },

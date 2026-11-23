@@ -16,11 +16,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/mkilijanek/artex/db"
 )
@@ -573,6 +575,32 @@ func (i *Interceptor) Log(ctx context.Context, convID int64, dec Decision, toolN
 	}
 }
 
+// logSafe keeps a model-chosen string (a tool name) from forging log lines: control characters
+// become '?' and the length is capped.
+func logSafe(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return '?'
+		}
+		return r
+	}, s)
+	if len(s) > 80 {
+		s = s[:80]
+	}
+	return s
+}
+
+// errClass names a failure for a log line without its text, which can echo row content.
+func errClass(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline exceeded"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	}
+	return fmt.Sprintf("%T", err)
+}
+
 // HandleAsk creates a pending approval record and blocks until the user decides
 // (via /api/intercept/pending/{id}/decide) or the per-rule timeout elapses.
 // Returns true if the user approved.
@@ -589,6 +617,8 @@ func (i *Interceptor) HandleAsk(ctx context.Context, convID int64, dec Decision,
 	audit := auditFor(ctx, dec, input, "pending")
 	pendingID, err := i.db.CreateInterceptPending(ruleID, convID, taskID, agentName, toolName, input, dec.Message, audit)
 	if err != nil {
+		// No row exists to mark: the call is denied, and the log is the only trace of why.
+		log.Printf("[intercept] approval request for tool %s could not be recorded (%s): denied", logSafe(toolName), errClass(err))
 		return false
 	}
 
@@ -651,10 +681,19 @@ func (i *Interceptor) HandleAsk(ctx context.Context, convID int64, dec Decision,
 		}
 		resolved, err := i.db.ResolveIntercept(pendingID, "timeout", action, "approval timed out, applying timeout policy")
 		if err != nil {
+			// The policy cannot be applied: deny, and try once to close the row as a denial so
+			// it does not stay pending for ever.
+			log.Printf("[intercept] timeout resolution failed for tool %s (%s): denied", logSafe(toolName), errClass(err))
+			if _, err2 := i.db.ResolveIntercept(pendingID, "timeout", "deny", "approval timed out, the timeout policy could not be applied"); err2 != nil {
+				log.Printf("[intercept] the pending row of tool %s could not be marked resolved (%s)", logSafe(toolName), errClass(err2))
+			}
 			return false
 		}
 		if !resolved {
 			detail, err := i.db.GetInterceptDetail(pendingID)
+			if err != nil {
+				log.Printf("[intercept] timeout of tool %s: the row was decided elsewhere and could not be read (%s): denied", logSafe(toolName), errClass(err))
+			}
 			return err == nil && detail != nil && (detail.Status == "allowed" || (detail.Audit != nil && detail.Audit.EffectiveAction == "allow"))
 		}
 		return allowed

@@ -94,9 +94,9 @@ print("stdin_target=" + a["target"])
 print("env_target=" + os.environ.get("TOOL_TARGET",""))
 print("port=" + str(a["port"]))
 `
-	out, err := execPython(context.Background(), interp, "test", code,
+	out, err := execPython(context.Background(), interp, code,
 		map[string]any{"target": "example.com", "port": float64(8080)},
-		t.TempDir(), nil, 10*time.Second)
+		t.TempDir(), t.TempDir(), nil, 10*time.Second)
 	if err != nil {
 		t.Fatalf("execPython error: %v", err)
 	}

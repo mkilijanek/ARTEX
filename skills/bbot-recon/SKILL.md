@@ -67,18 +67,18 @@ scan-time dependency check would run pip, which fails (or hangs) under a
 program's egress allowlist. One scan per intent, named after it
 (`passive-subdoms`, `takeover`, `params`).
 
-0. Sanity first: `bbot --version && bbot -l | head -40` (the table lists each
+0. Sanity first: `bbot --version && bbot -l --no-deps | head -40` (the table lists each
    module's Needs-API-Key and flags; trust it over memory).
 1. Passive subdomain sweep (P):
-   `bbot -s example.com -m crt,crt_db,certspotter,dnsdumpster,hackertarget,anubisdb,rapiddns,subdomaincenter,urlscan -n passive-subdoms`
-2. Archived URLs (P): `bbot -s example.com -m wayback -n wayback-urls`
-3. IP/ASN enrichment (P): `bbot -s 203.0.113.0/24 -m shodan_idb,ipneighbor,asn -n ip-enrich`
-4. Takeover pass (A): `bbot -t example.com -p baddns-heavy -n takeover`
+   `bbot -s example.com -m crt,crt_db,certspotter,dnsdumpster,hackertarget,anubisdb,rapiddns,subdomaincenter,urlscan -n passive-subdoms --no-deps`
+2. Archived URLs (P): `bbot -s example.com -m wayback -n wayback-urls --no-deps`
+3. IP/ASN enrichment (P): `bbot -s 203.0.113.0/24 -m shodan_idb,ipneighbor,asn -n ip-enrich --no-deps`
+4. Takeover pass (A): `bbot -t example.com -p baddns-heavy -n takeover --no-deps`
 5. Single-host deep look (A):
-   `bbot -t host.example.com -m sslcert,robots,securitytxt,oauth,graphql_introspection,iis_shortnames -n host-deep`
+   `bbot -t host.example.com -m sslcert,robots,securitytxt,oauth,graphql_introspection,iis_shortnames -n host-deep --no-deps`
 6. Param mining (loud):
-   `bbot -t https://host.example.com -m paramminer_getparams,paramminer_headers,paramminer_cookies -n params`
-7. Email perimeter (P): `bbot -s example.com -m dnscaa,dnstlsrpt,emailformat,pgp,skymem -n emails`
+   `bbot -t https://host.example.com -m paramminer_getparams,paramminer_headers,paramminer_cookies -n params --no-deps`
+7. Email perimeter (P): `bbot -s example.com -m dnscaa,dnstlsrpt,emailformat,pgp,skymem -n emails --no-deps`
 
 Rate control: fewer modules per scan; `--exclude-cdn` to skip CDN/WAF
 backends; identify yourself when the program asks for it

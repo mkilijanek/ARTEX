@@ -225,7 +225,7 @@ func setCredPolicy(t *testing.T, loader agent.TargetRuleLoader, ctlPort string, 
 	if res == nil {
 		res = newCredResolver(map[string][]string{"localhost": {"127.0.0.1"}, "api.vendor.test": {"203.0.113.10"}})
 	}
-	agent.SetTargetPolicy(loader, agent.ControlPlane{
+	agent.SetTargetPolicy(loader, agent.ControlPlane{DBCaptured: true,
 		ListenAddr:     ":" + ctlPort,
 		Resolver:       res.Resolve,
 		InterfaceAddrs: func() ([]netip.Addr, error) { return []netip.Addr{netip.MustParseAddr("10.77.0.5")}, nil },

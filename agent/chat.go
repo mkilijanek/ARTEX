@@ -2,8 +2,6 @@ package agent
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/Autumn-27/norma/agentcore"
@@ -115,14 +113,16 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 
 	// Per-session working directory: <workDir>/sessions/<sessionID>/
 	// Isolates file writes across conversations, mirroring how workers use i<intentID>/.
-	sessionWorkDir := filepath.Join(c.workDir, "sessions", sessionID)
-	_ = os.MkdirAll(sessionWorkDir, 0o755)
+	sessionWorkDir, err := prepareSessionDir(ctx, c.workDir, sessionID)
+	if err != nil {
+		return "", err
+	}
 	ctx = intercept.WithReviewWorkingDirectory(ctx, sessionWorkDir)
 
 	// Pure assistant: DefaultTools as the base; AugmentTools layers in the key's
 	// visible skills/MCP and lets the DB tools table filter/override. DefaultTools
 	// have no tools-table rows, so they always pass through.
-	base := actool.DefaultTools()
+	base := defaultTools()
 	ctx = WithRunInfo(ctx, RunInfo{SessionID: sessionID})
 	tools, def, cleanup := AugmentTools(ctx, agentKey, base)
 	defer cleanup()
@@ -149,15 +149,14 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 		DeepSeekSearchAPIKey:  ws.DeepSeekAPIKey,
 		DeepSeekSearchModel:   ws.DeepSeekModel,
 		WebSearchProxy:        ws.Proxy,
-		BashEnv:               proxyEnv(c.proxyAddr, c.proxyCACert), // Bash subcommands go through the proxy + trust the CA by default
+		BashEnv:               toolEnv(c.proxyAddr, c.proxyCACert), // Bash subcommands go through the proxy + trust the CA by default
 		WorkingDir:            sessionWorkDir,
 		MaxTurns:              maxTurns,
 		MaxDuration:           maxDuration,
 		Compaction:            compactionConfig(c.window),
 		Todos:                 actool.NewTodoStore(),
-		// large tool output spills to cmd-output/ under the session dir.
+		// large tool output spills under <data>/spill/chat/<session> (directory set below).
 		// the truncation cap uses the SDK default (30000 chars of tool.Capture).
-		ToolOutputDir: filepath.Join(sessionWorkDir, "cmd-output"),
 		// hitting the budget (steps) → the SDK runs wrap-up: output a one-line summary. The prompt and
 		// wrap-up rounds are editable in the backend per agent key
 		// (each custom agent gets its own copy; empty/0 uses the generic default: 10 rounds).
@@ -174,9 +173,25 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 	}
 	// experimental feature: when enabled, noa takes over context compression (archive centralized under <workDir>/noa/<SessionID>, persistent).
 	enableNoa(&opts, c.noaEnabledFn, c.workDir, "chat-"+sessionID, noaWarn("chat-"+sessionID))
-	ctx = attachSideCapture(ctx, &opts)
-	s := agentcore.NewSession(opts)
-	defer s.Close()
+	spillDir, err := sessionSpillDir(c.workDir, "chat", opts.SessionID)
+	if err != nil {
+		return "", err
+	}
+	opts.ToolOutputDir = spillDir
+	ctx, err = attachSideCapture(ctx, &opts)
+	if err != nil {
+		return "", err
+	}
+	s, closeSession, err := newSession(ctx, opts, SessionInfo{Kind: "chat", ID: sessionID, NoaDir: noaSessionDir(c.workDir, "chat-"+sessionID), Emit: func(r db.Activity) {
+		if emit != nil {
+			r.Worker = agentKey
+			emit(r)
+		}
+	}})
+	if err != nil {
+		return "", err
+	}
+	defer closeSession()
 	// reload prior conversation so the agent has context across turns (each Chat is
 	// a fresh session). First turn: no file yet → Resume loads nothing and proceeds.
 	if c.tx != nil {

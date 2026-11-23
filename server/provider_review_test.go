@@ -24,7 +24,7 @@ func TestModelListingRefusesRedirect(t *testing.T) {
 }
 func TestSaveProfileReadFailures(t *testing.T) {
 	for _, closed := range []bool{false, true} {
-		m, err := NewManager(t.TempDir(), "")
+		m, err := NewManager(t.TempDir(), "", testDSN())
 		if err != nil {
 			t.Fatal(err)
 		}

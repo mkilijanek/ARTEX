@@ -2,7 +2,11 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -10,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/mkilijanek/artex/db"
+	"github.com/mkilijanek/artex/sandbox"
 )
 
 // maxChatUpload caps a single chat-attachment upload request (memory + spill).
@@ -74,11 +79,12 @@ func (s *Server) chatUpload(w http.ResponseWriter, r *http.Request) {
 		}
 		defer s.engine.decInflight(id)
 	}
-	dir := filepath.Join(s.m.dir, sub, id, "uploads")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	up, err := s.openUploadDir(sub, id)
+	if err != nil {
 		writeErr(w, 500, "failed to create directory: "+err.Error())
 		return
 	}
+	defer up.Close()
 	r.Body = http.MaxBytesReader(w, r.Body, maxChatUpload)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		writeErr(w, 400, "failed to parse the upload or size limit exceeded: "+err.Error())
@@ -89,38 +95,96 @@ func (s *Server) chatUpload(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "missing upload file (form field file)")
 		return
 	}
+	handToTools := sub != "drafts" && sandbox.Current().On() && os.Geteuid() == 0
 	out := make([]chatAttachment, 0, len(files))
 	for _, hdr := range files {
 		name := filepath.Base(hdr.Filename) // strip any path component
 		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
 			continue
 		}
-		dest := uniqueUploadPath(dir, name)
-		if err := saveUpload(hdr, dest); err != nil {
+		base, err := saveUpload(hdr, up, name, handToTools)
+		if err != nil {
 			writeErr(w, 500, "Save failed: "+err.Error())
 			return
 		}
-		base := filepath.Base(dest)
-		out = append(out, chatAttachment{Name: base, Path: "uploads/" + base, Size: hdr.Size, Abs: dest})
+		out = append(out, chatAttachment{Name: base, Path: "uploads/" + base, Size: hdr.Size, Abs: filepath.Join(s.m.dir, sub, id, "uploads", base)})
 	}
 	writeJSON(w, 200, map[string]any{"attachments": out})
 }
 
-// uniqueUploadPath returns dir/name, or dir/name-1, dir/name-2… when it already exists,
-// so re-uploading the same filename never clobbers a prior attachment.
-func uniqueUploadPath(dir, name string) string {
-	dest := filepath.Join(dir, name)
-	if _, err := os.Stat(dest); os.IsNotExist(err) {
-		return dest
+// openUploadDir opens <data>/<sub>/<id>/uploads as a root, making what is missing without
+// following a link. A task or session directory is the tool user's workspace (0700, tool-owned
+// when isolation is on), so the tools can use what is uploaded. A draft directory is the server's
+// (0755, below a 0711 drafts directory): the model reads the files but cannot change, replace or
+// remove them.
+func (s *Server) openUploadDir(sub, id string) (*os.Root, error) {
+	if sub == "drafts" {
+		top, err := sandbox.OpenServerDir(s.m.dir, 0o711, sub)
+		if err != nil {
+			return nil, err
+		}
+		top.Close()
+		return sandbox.OpenServerDir(filepath.Join(s.m.dir, sub), 0o755, id, "uploads")
 	}
+	top, err := sandbox.OpenServerDir(s.m.dir, 0o711, sub)
+	if err != nil {
+		return nil, err
+	}
+	top.Close()
+	return sandbox.Current().OpenWorkspace(filepath.Join(s.m.dir, sub), id, "uploads")
+}
+
+// maxUploadNames bounds the search for a free name.
+const maxUploadNames = 10000
+
+// saveUpload writes one uploaded file into up under name, or name-1, name-2... when that exists,
+// so a re-upload never clobbers an earlier attachment. Every candidate is created exclusively, so
+// an existing entry of any kind, a link planted by a tool included, is skipped and never written
+// through. It returns the name used.
+func saveUpload(hdr *multipart.FileHeader, up *os.Root, name string, handToTools bool) (string, error) {
+	src, err := hdr.Open()
+	if err != nil {
+		return "", err
+	}
+	defer src.Close()
 	ext := filepath.Ext(name)
 	stem := strings.TrimSuffix(name, ext)
-	for i := 1; ; i++ {
-		cand := filepath.Join(dir, fmt.Sprintf("%s-%d%s", stem, i, ext))
-		if _, err := os.Stat(cand); os.IsNotExist(err) {
-			return cand
+	var out *os.File
+	used := name
+	for i := 0; ; i++ {
+		if i >= maxUploadNames {
+			return "", errors.New("no unused file name")
+		}
+		used = name
+		if i > 0 {
+			used = fmt.Sprintf("%s-%d%s", stem, i, ext)
+		}
+		out, err = createExcl(up, used)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return "", err
 		}
 	}
+	fail := func(err error) (string, error) {
+		out.Close()
+		_ = up.Remove(used)
+		return "", err
+	}
+	if _, err := io.Copy(out, src); err != nil {
+		return fail(err)
+	}
+	if handToTools {
+		if err := out.Chown(sandbox.ToolUID, sandbox.ToolGID); err != nil {
+			return fail(err)
+		}
+	}
+	if err := out.Close(); err != nil {
+		_ = up.Remove(used)
+		return "", err
+	}
+	return used, nil
 }
 
 // composeAgentMessage appends an attachment manifest to the user's message so the agent

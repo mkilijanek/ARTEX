@@ -1,3 +1,5 @@
+//go:build unix
+
 package agent
 
 import (
@@ -14,6 +16,10 @@ import (
 // agent test suite so cross-package DELETE cleanup races with db/server
 // packages are avoided when running `go test ./...`.
 func TestMain(m *testing.M) {
+	// The test binary also stands in for the `artex __toolfs` helper (see sandbox_tools_test.go).
+	if os.Getenv("ARTEX_TEST_TOOLFS") == "1" {
+		os.Exit(toolfsStandIn())
+	}
 	// Backlog B-1: with ARTEX_PG_DSN unset, db.DSN() would fall back to the config
 	// file, which names the operator's own database. Tests must never use it.
 	dbtest.MustIsolateFromConfigFile()

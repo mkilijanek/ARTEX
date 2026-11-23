@@ -2,10 +2,11 @@ package server
 
 import (
 	"context"
-	"os"
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/mkilijanek/artex/agent"
 )
 
 // A child process spawned after startup must not see the startup secrets, while
@@ -37,29 +38,48 @@ func TestScrubSecretEnvHidesSecretsFromChildren(t *testing.T) {
 	}
 }
 
-// New must apply the options it receives. An earlier version accepted
-// ...Option and never called them, so the binary kept the secrets in the
-// environment while the unit test above still passed.
-func TestNewAppliesSecretScrubOption(t *testing.T) {
-	// t.Setenv restores both after the test: the scrub unsets them for the rest
-	// of this process, and later tests still need the DSN.
-	if dsn := os.Getenv("ARTEX_PG_DSN"); dsn != "" {
-		t.Setenv("ARTEX_PG_DSN", dsn)
+// The scrub list names every credential main reads once at startup, and only those: the SDK
+// reads ARTEX_LLM_BASE_URL again, so removing it would silently send requests to the public
+// endpoint.
+func TestSecretEnvNamesCoverEveryStartupSecret(t *testing.T) {
+	got := SecretEnvNames()
+	have := map[string]bool{}
+	for _, k := range got {
+		have[k] = true
 	}
-	t.Setenv("ANTHROPIC_API_KEY", "scrub-probe")
-	t.Setenv("OPENAI_API_KEY", "scrub-probe")
+	for _, want := range []string{"ARTEX_PG_DSN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "ARTEX_LLM_PROXY"} {
+		if !have[want] {
+			t.Errorf("%s is not scrubbed", want)
+		}
+	}
+	if have["ARTEX_LLM_BASE_URL"] {
+		t.Error("ARTEX_LLM_BASE_URL must stay: the SDK's provider constructor reads it again")
+	}
+	got[0] = "changed"
+	if SecretEnvNames()[0] == "changed" {
+		t.Error("SecretEnvNames hands out the list itself")
+	}
+}
 
-	m, err := NewManager(t.TempDir(), "")
+// New no longer reads the environment: the provider config and the database endpoints come from
+// main, which read them once and removed the secrets before anything could start a process.
+func TestNewTakesEnvConfigFromOptionsOnly(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "", testDSN())
 	if err != nil {
 		t.Skipf("no manager: %v", err)
 	}
 	t.Cleanup(func() { m.Close() })
-
+	t.Setenv("ANTHROPIC_API_KEY", "must-not-be-read")
+	t.Setenv("OPENAI_API_KEY", "must-not-be-read")
+	t.Setenv("ARTEX_LLM_PROVIDER", "openai")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_ = New(ctx, m, t.TempDir(), t.TempDir(), t.TempDir(), WithSecretScrub())
-
-	if os.Getenv("ANTHROPIC_API_KEY") != "" || os.Getenv("OPENAI_API_KEY") != "" {
-		t.Fatal("New did not apply WithSecretScrub: the secrets are still in the environment")
+	s := New(ctx, m, t.TempDir(), t.TempDir(), t.TempDir())
+	t.Cleanup(func() { agent.SetTargetPolicy(nil, agent.ControlPlane{}, false) })
+	if s.envLLMOK {
+		t.Fatal("New picked up a provider config without being handed one")
+	}
+	if s.dbCaptured {
+		t.Fatal("New captured database endpoints without being handed them")
 	}
 }

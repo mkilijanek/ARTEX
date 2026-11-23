@@ -32,9 +32,14 @@ func captureRun(ctx context.Context, opts agentcore.Options, input string, emit 
 		opts.SessionID = transcript.SessionIDFrom(ctx)
 	}
 	opts.Provider = withContextView(ctx, opts.Provider)
-	attachModelMetrics(&opts)
-	s := agentcore.NewSession(opts)
-	defer s.Close() // release the session's background-task manager (temp dir + processes)
+	if err := attachModelMetrics(&opts); err != nil {
+		return "", ReasonSessionStart, err
+	}
+	s, closeSession, err := newSession(ctx, opts, SessionInfo{Kind: "run", ID: opts.SessionID, Emit: emit, NoaDir: noaDirFrom(ctx)})
+	if err != nil {
+		return "", ReasonSessionStart, err
+	}
+	defer closeSession() // release the session's background-task manager (temp dir + processes) and the lease
 	return captureRunSession(ctx, s, input, emit)
 }
 

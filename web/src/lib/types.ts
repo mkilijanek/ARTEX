@@ -1278,6 +1278,17 @@ export interface Stats {
   roe_enabled: boolean;
   findings_confirmed: number;
   active_task?: Partial<Task>;
+  // Absent on servers that predate the tool isolation status.
+  tool_isolation?: ToolIsolation;
+}
+
+// GET /api/stats tool_isolation. "inactive" only occurs in server tests; "unknown" is set by the page
+// itself when the status could not be refreshed.
+export type ToolIsolationStatus = "enforced" | "degraded" | "unavailable" | "disabled" | "inactive" | "unknown";
+export interface ToolIsolation {
+  status: ToolIsolationStatus;
+  reason: string;
+  warnings: string[];
 }
 
 // ---- Intercept Rules ----
