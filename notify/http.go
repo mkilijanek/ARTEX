@@ -153,6 +153,14 @@ const respBodyLimit = 8 << 10
 // failures and 5xx/408/429 are "retryable"; the remaining 4xx are "permanent
 // failures" — retrying a 403 just logs the same error 3 times.
 func doJSON(ctx context.Context, method, url string, headers map[string]string, payload any) ([]byte, error) {
+	return doJSONVia(ctx, httpClient, snippet, method, url, headers, payload)
+}
+
+// doJSONVia is doJSON with the client and the error-fragment function supplied
+// by the caller. scrub receives the raw peer body (already capped at
+// respBodyLimit) and returns the fragment put into the error text, so a caller
+// can mask secrets before any truncation happens.
+func doJSONVia(ctx context.Context, client *http.Client, scrub func([]byte) string, method, url string, headers map[string]string, payload any) ([]byte, error) {
 	var body io.Reader
 	if payload != nil {
 		raw, err := json.Marshal(payload)
@@ -180,7 +188,7 @@ func doJSON(ctx context.Context, method, url string, headers map[string]string, 
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := httpClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		// Connection refused, DNS failure, timeout — mostly transient, handed to
 		// backoff retries.
@@ -207,12 +215,12 @@ func doJSON(ctx context.Context, method, url string, headers map[string]string, 
 	// 429 (rate limit) and 408 (timeout) are worth retrying; the remaining 4xx
 	// are configuration or permission problems, and retrying is pointless.
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusRequestTimeout {
-		return nil, fmt.Errorf("peer rate limit or timeout (HTTP %d): %s", resp.StatusCode, snippet(raw))
+		return nil, fmt.Errorf("peer rate limit or timeout (HTTP %d): %s", resp.StatusCode, scrub(raw))
 	}
 	if resp.StatusCode >= 500 {
-		return nil, fmt.Errorf("peer server error (HTTP %d): %s", resp.StatusCode, snippet(raw))
+		return nil, fmt.Errorf("peer server error (HTTP %d): %s", resp.StatusCode, scrub(raw))
 	}
-	return nil, Permanent(fmt.Errorf("peer rejected the request (HTTP %d): %s", resp.StatusCode, snippet(raw)))
+	return nil, Permanent(fmt.Errorf("peer rejected the request (HTTP %d): %s", resp.StatusCode, scrub(raw)))
 }
 
 // snippet compresses a response body into a one-line short text for error
