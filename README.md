@@ -118,6 +118,8 @@ Legacy SSE servers usually establish the event stream with `GET /sse`, then rece
 `/message?sessionId=...` returned by the server; when configuring, set the URL to `/sse` and the request header as
 `Authorization=Bearer <token>`.
 
+**Published image, no checkout:** [example-deployment/](example-deployment/) is a Docker Compose deployment that runs the pinned release image from GHCR, with optional overrides (digest pin, host data and skills directories, LAN publishing, resource limits).
+
 ### Option 3: download prebuilt binaries (Releases)
 
 Download the zip for your platform from [Releases](https://github.com/BaaRai/ARTEX/releases); after extracting you get `artex` + `start.sh` (`start.bat` on Windows) + `skills/` + `config.example.json`:

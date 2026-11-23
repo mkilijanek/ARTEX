@@ -1,0 +1,18 @@
+# Override: publish the web UI on all network interfaces (or on ARTEX_BIND_ADDR).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.lan.yml up -d
+#
+# WARNING: the UI is plain HTTP and is then reachable from every machine that can reach
+# this host. Only the first-run setup token protects the initial admin claim, and the
+# login has throttling but no TLS. Do this only on a trusted network, behind a firewall,
+# or put a TLS reverse proxy in front (README.md, "Reverse proxy deployment") and keep
+# the default loopback binding instead.
+#
+# ARTEX_BIND_ADDR in .env selects one address (for example a LAN IP); unset means 0.0.0.0.
+# The traffic-capture proxy port 8788 stays on 127.0.0.1.
+services:
+  artex:
+    # !override replaces the base list (otherwise both 8787 mappings would be merged).
+    ports: !override
+      - "${ARTEX_BIND_ADDR:-0.0.0.0}:8787:8787"
+      - "127.0.0.1:8788:8788"

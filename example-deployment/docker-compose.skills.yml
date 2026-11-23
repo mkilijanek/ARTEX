@@ -1,0 +1,25 @@
+# Override: use your own skills directory instead of the skills built into the image.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.skills.yml up -d
+#
+# Directory: ARTEX_SKILLS_DIR (default ./skills next to this file).
+#
+# The mount hides the image's /app/skills completely. An empty or missing directory means
+# NO skills, so seed it first with the built-in ones from the image you run:
+#   mkdir -p skills && docker create --name artex-skills-copy "$ARTEX_IMAGE:$ARTEX_VERSION" \
+#     && docker cp artex-skills-copy:/app/skills/. ./skills && docker rm artex-skills-copy
+#   (use the values from your .env; or copy the skills/ directory of the repository)
+#
+# Why it is NOT read-only: the web UI and the platform tools create and edit skills
+# (POST /api/skills, PUT /api/skills/{name}/files/...), which write into this directory
+# as the server user (root). A :ro mount would make those calls fail. The server loads
+# skills from a snapshot it copies at start, so edits on the host need a restart.
+#
+# Required permission (tool isolation check C5, docs/tool-isolation.md): the directory
+# must NOT be writable by uid 30002 (the agent tool user). Own it by your host user with
+# mode 0755; otherwise the isolation status drops to `degraded`. With SELinux enforcing,
+# the :z label is set below.
+services:
+  artex:
+    volumes:
+      - ${ARTEX_SKILLS_DIR:-./skills}:/app/skills:z

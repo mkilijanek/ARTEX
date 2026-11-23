@@ -1,0 +1,14 @@
+# Override: example CPU and memory limits. The numbers are starting points, not
+# measured requirements: adjust them to your host and workload.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.resources.yml up -d
+#
+# A memory limit that is too low gets the process OOM-killed (artex restarts through
+# start.sh with a backoff); watch `docker compose ps` and `docker stats`.
+services:
+  artex:
+    cpus: 2.0
+    mem_limit: 4g
+  postgres:
+    cpus: 1.0
+    mem_limit: 1g
