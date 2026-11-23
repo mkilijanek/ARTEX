@@ -111,8 +111,11 @@ ARTEX can send finding notifications to one Signal group or to Signal phone numb
 [signal-cli REST bridge](https://github.com/bbernhard/signal-cli-rest-api). `docker-compose.signal.yml` runs it.
 The repository's root `docker-compose.yml` has no Signal support; use this directory.
 
-Delivery has been verified against the bridge API without a Signal account. Delivery from a real account and the
-2000-byte message limit have not been verified yet.
+The Signal channel has been verified against the bridge API without a Signal account. Delivery from a real account
+and the 2000-byte message limit have not been verified yet. The bridge's own endpoints used in this section through
+`docker compose exec signal-cli curl ...` (register, verify, PIN, QR link, group list, rate-limit challenge, device
+list and unlink) were checked against the bridge's source, not run with a real account; the bridge's API
+documentation is authoritative for the version you run.
 
 ### Layout and why
 

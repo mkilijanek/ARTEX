@@ -356,7 +356,7 @@ Notification channels (System, Notifications) include **Signal**, through a self
 
 An invalid value logs `[notify] signal: <VARIABLE> is invalid ...` at start (a number masked to its last 4 digits). While either variable is unset or invalid, saving, testing and delivering a Signal channel fail with an error naming it (`ARTEX_SIGNAL_NUMBER` first when both are missing); deliveries are marked failed, not dropped. Requests to the bridge carry the User-Agent of the `Notify` component.
 
-The bridge must not be reachable by agent tools: its API can link devices to the Signal account. **The repository's root `docker-compose.yml` does not support Signal.** Use [example-deployment/](example-deployment/README.md#signal-notifications-optional) with `docker-compose.signal.yml`, which reaches the bridge only through a socket under `/run/artex-private` and is checked by isolation check C12 ([docs/tool-isolation.md](docs/tool-isolation.md)). Delivery has been verified against the bridge API without a Signal account; delivery from a real account and the 2000-byte limit are not verified yet.
+The bridge must not be reachable by agent tools: its API can link devices to the Signal account. **The repository's root `docker-compose.yml` does not support Signal.** Use [example-deployment/](example-deployment/README.md#signal-notifications-optional) with `docker-compose.signal.yml`, which reaches the bridge only through a socket under `/run/artex-private` and is checked by isolation check C12 ([docs/tool-isolation.md](docs/tool-isolation.md)). The Signal channel has been verified against the bridge API without a Signal account; delivery from a real account and the 2000-byte limit are not verified yet.
 
 ---
 
