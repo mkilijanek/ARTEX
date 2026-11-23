@@ -5,12 +5,15 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	actool "github.com/Autumn-27/norma/tool"
@@ -33,6 +36,9 @@ type SelfCheckInput struct {
 	Sockets    []string // database socket files
 	TCP        []string // database endpoints reached over TCP, host:port
 
+	// SignalSocket is the Signal bridge socket file (ARTEX_SIGNAL_API). Empty: no C12 probe.
+	SignalSocket string
+
 	// WorkDirParent is where the check creates its own workspace, a fresh tool-owned directory.
 	WorkDirParent string
 	// FallbackDir is where the shell runs when that workspace cannot be created (a full disk):
@@ -49,11 +55,8 @@ const metadataHost, metadataPort = "169.254.169.254", "80"
 // shq quotes a string for a POSIX shell.
 func shq(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
-// SelfCheckScript builds the shell script the check runs as the tool user. It prints facts as
-// key=value lines and always exits 0; EvaluateSelfCheck decides what they mean.
-func SelfCheckScript(in SelfCheckInput) string {
-	var b strings.Builder
-	w := func(format string, a ...any) { fmt.Fprintf(&b, format+"\n", a...) }
+// writeProbeHelpers writes the shell functions every probe uses.
+func writeProbeHelpers(w func(format string, a ...any)) {
 	w(`can_read() { head -c1 "$1" >/dev/null 2>&1; }`)
 	w(`can_list() { ls "$1" >/dev/null 2>&1; }`)
 	w(`probe_read() { if can_read "$2"; then echo "$1=readable"; else echo "$1=denied"; fi; }`)
@@ -65,11 +68,35 @@ func SelfCheckScript(in SelfCheckInput) string {
 	w(`  if ! command -v python3 >/dev/null 2>&1; then echo "$1=unknown"; return; fi`)
 	w(`  if python3 -I -S -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.settimeout(2); s.connect(sys.argv[1])' "$2" >/dev/null 2>&1; then echo "$1=connected"; else echo "$1=refused"; fi`)
 	w(`}`)
+	// C12 only: unlike probe_unix, "refused" means the tool user was kept away from the socket
+	// (PermissionError, FileNotFoundError). The server already saw a socket file there, so a
+	// refused connection (nobody listens), a timeout or any other error means the tool user got
+	// as far as the socket: unknown, which degrades C12.
+	w(`probe_unix_strict() {`)
+	w(`  if ! command -v python3 >/dev/null 2>&1; then echo "$1=unknown"; return; fi`)
+	w(`  r=$(python3 -I -S -c 'import socket,sys`)
+	w(`s=socket.socket(socket.AF_UNIX); s.settimeout(2)`)
+	w(`try:`)
+	w(`    s.connect(sys.argv[1]); print("connected")`)
+	w(`except (PermissionError, FileNotFoundError):`)
+	w(`    print("refused")`)
+	w(`except Exception:`)
+	w(`    print("unknown")' "$2" 2>/dev/null)`)
+	w(`  case "$r" in connected|refused) echo "$1=$r";; *) echo "$1=unknown";; esac`)
+	w(`}`)
 	// connect over TCP with bash; unknown when timeout or bash is missing
 	w(`probe_tcp() {`)
 	w(`  if ! command -v timeout >/dev/null 2>&1 || ! command -v bash >/dev/null 2>&1; then echo "$1=unknown"; return; fi`)
 	w(`  if timeout 2 bash -c 'exec 3<>/dev/tcp/$0/$1' "$2" "$3" >/dev/null 2>&1; then echo "$1=open"; else echo "$1=closed"; fi`)
 	w(`}`)
+}
+
+// SelfCheckScript builds the shell script the check runs as the tool user. It prints facts as
+// key=value lines and always exits 0; EvaluateSelfCheck decides what they mean.
+func SelfCheckScript(in SelfCheckInput) string {
+	var b strings.Builder
+	w := func(format string, a ...any) { fmt.Fprintf(&b, format+"\n", a...) }
+	writeProbeHelpers(w)
 	w(`echo "uid=$(id -u)"`)
 	w(`echo "gid=$(id -g)"`)
 	w(`echo "groups=$(id -G)"`)
@@ -100,8 +127,74 @@ func SelfCheckScript(in SelfCheckInput) string {
 	}
 	w(`if [ -S %s ]; then probe_unix c8.0 %s; else echo c8.0=refused; fi`, shq(dockerSocket), shq(dockerSocket))
 	w(`probe_tcp c9.meta %s %s`, shq(metadataHost), shq(metadataPort))
+	writeC12Probes(w, in)
 	w(`exit 0`)
 	return b.String()
+}
+
+// writeC12Probes writes the C12 probes: none without a Signal socket, and none while the server's
+// own pre-check says the socket is absent (EvaluateSelfCheck reports that without the tool shell).
+func writeC12Probes(w func(format string, a ...any), in SelfCheckInput) {
+	if in.SignalSocket == "" || c12Precheck(in.SignalSocket) != "" {
+		return
+	}
+	w(`probe_unix_strict c12.sock %s`, shq(in.SignalSocket))
+	w(`probe_list c12.dir %s`, shq(filepath.Dir(in.SignalSocket)))
+}
+
+// c12Precheck is the root-side half of C12. probe_unix_strict maps only ENOENT and EACCES to "refused", so
+// the server, which can see the path, first says whether a socket is there at all. It returns the
+// detail of a "not verified" C12, or "" when the path is a socket and the tool user may be probed.
+func c12Precheck(path string) string {
+	fi, err := os.Lstat(path)
+	switch {
+	case err == nil && fi.Mode().Type() == os.ModeSocket:
+		return ""
+	case err == nil, errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ENOTDIR):
+		return "not verified: socket absent"
+	default:
+		return "not verified: " + err.Error()
+	}
+}
+
+// evaluateC12 turns the answers of the C12 probes into a failed check. A tool user that is refused
+// and cannot list the parent directory is the pass (ok false). Anything else degrades: it can
+// connect, it can list the directory holding the socket, or the probe proved nothing.
+func evaluateC12(kv map[string]string, path string) (CheckResult, bool) {
+	if p := c12Precheck(path); p != "" {
+		return CheckResult{ID: "C12", Detail: p, Degrades: true}, true
+	}
+	var bad []string
+	switch kv["c12.sock"] {
+	case "refused":
+	case "connected":
+		bad = append(bad, "tool user can connect to "+path)
+	default: // unknown, or no answer
+		bad = append(bad, "the tool user's access to "+path+" could not be verified")
+	}
+	dir := filepath.Dir(path)
+	switch kv["c12.dir"] {
+	case "denied":
+	case "readable":
+		bad = append(bad, "tool user can list "+dir+", which holds "+path)
+	default:
+		bad = append(bad, "the tool user's access to "+dir+", which holds "+path+", could not be verified")
+	}
+	if len(bad) == 0 {
+		return CheckResult{}, false
+	}
+	return CheckResult{ID: "C12", Detail: strings.Join(bad, "; "), Degrades: true}, true
+}
+
+// parseProbeOutput reads the script's key=value lines.
+func parseProbeOutput(out string) map[string]string {
+	kv := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		if k, v, ok := strings.Cut(strings.TrimRight(line, "\r"), "="); ok {
+			kv[k] = v
+		}
+	}
+	return kv
 }
 
 func splitEndpoint(ep string) (host, port string) {
@@ -120,12 +213,7 @@ var fixedEnvNames = []string{"HOME", "USER", "LOGNAME", "PATH", "TMPDIR", "SHELL
 // with no answer counts as failed. A probe that could not be run (unknown) or gave no answer
 // degrades the status even for the checks that otherwise only warn (C7-C9): it proves nothing.
 func EvaluateSelfCheck(out string, in SelfCheckInput) []CheckResult {
-	kv := map[string]string{}
-	for _, line := range strings.Split(out, "\n") {
-		if k, v, ok := strings.Cut(strings.TrimRight(line, "\r"), "="); ok {
-			kv[k] = v
-		}
-	}
+	kv := parseProbeOutput(out)
 	var failed []CheckResult
 	add := func(id, detail string, degrades bool) {
 		failed = append(failed, CheckResult{ID: id, Detail: detail, Degrades: degrades})
@@ -256,6 +344,13 @@ func EvaluateSelfCheck(out string, in SelfCheckInput) []CheckResult {
 	case v != "closed":
 		add("C9", "the cloud metadata address is reachable", false)
 	}
+
+	// C12: the Signal bridge socket cannot be reached, or is not there to be verified.
+	if in.SignalSocket != "" {
+		if c, bad := evaluateC12(kv, in.SignalSocket); bad {
+			failed = append(failed, c)
+		}
+	}
 	return failed
 }
 
@@ -336,6 +431,50 @@ func RunSelfCheck(ctx context.Context, run ScriptRunner, in SelfCheckInput) []Ch
 		sort.SliceStable(failed, func(a, b int) bool { return failed[a].ID < failed[b].ID })
 	}
 	return failed
+}
+
+// c12Script is the script of a C12 re-run: the helpers and the two C12 probes only.
+func c12Script(in SelfCheckInput) string {
+	var b strings.Builder
+	w := func(format string, a ...any) { fmt.Fprintf(&b, format+"\n", a...) }
+	writeProbeHelpers(w)
+	writeC12Probes(w, in)
+	w(`exit 0`)
+	return b.String()
+}
+
+// RunSignalCheck runs C12 alone and returns it when it failed (nil when it passed or when there is
+// no Signal socket). The root-side pre-check comes first and skips the tool shell when the socket is
+// absent. Like RunSelfCheck it never reports anything worse than degraded.
+func RunSignalCheck(ctx context.Context, run ScriptRunner, in SelfCheckInput) []CheckResult {
+	if in.SignalSocket == "" {
+		return nil
+	}
+	if p := c12Precheck(in.SignalSocket); p != "" {
+		return []CheckResult{{ID: "C12", Detail: p, Degrades: true}}
+	}
+	if in.WorkDirParent == "" {
+		in.WorkDirParent = filepath.Join(in.DataDir, "tasks")
+	}
+	dir, err := makeCheckDir(in.WorkDirParent)
+	if err != nil {
+		if in.FallbackDir == "" {
+			return []CheckResult{{ID: "C12", Detail: "the tool shell could not be started for the check: " + err.Error(), Degrades: true}}
+		}
+		dir = in.FallbackDir
+	} else {
+		defer os.RemoveAll(dir)
+	}
+	cctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	out, err := run(cctx, dir, c12Script(in))
+	if err != nil {
+		return []CheckResult{{ID: "C12", Detail: "the tool shell failed to run: " + err.Error(), Degrades: true}}
+	}
+	if c, bad := evaluateC12(parseProbeOutput(out), in.SignalSocket); bad {
+		return []CheckResult{c}
+	}
+	return nil
 }
 
 // makeCheckDir creates a fresh directory under parent, owned by the tool user, mode 0700.

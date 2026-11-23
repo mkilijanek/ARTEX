@@ -375,6 +375,14 @@ func TestDestinationKeysDeclaredForEveryKind(t *testing.T) {
 	// Same as SecretKeys: if a channel forgets to declare its destination keys,
 	// PrepareConfigUpdate cannot protect it.
 	for kind, ch := range registry {
+		if kind == KindSignal {
+			// Signal holds no credential and no address in the channel config: the
+			// endpoint and the sender are operator settings. Both lists must stay empty.
+			if len(ch.DestinationKeys()) != 0 || len(ch.SecretKeys()) != 0 {
+				t.Errorf("channel %s must declare no destination or credential keys", kind)
+			}
+			continue
+		}
 		if len(ch.DestinationKeys()) == 0 {
 			t.Errorf("channel %s declares no destination keys; the protection against address changes carrying credentials is ineffective for it", kind)
 		}
@@ -392,10 +400,18 @@ func TestSecretKeysDeclaredForEveryKind(t *testing.T) {
 	expect := map[string]bool{
 		KindDingTalk: true, KindFeishu: true, KindWeCom: true,
 		KindWebhook: true, KindTelegram: true, KindEmail: true,
+		KindSignal: false, // no credential in the channel config (operator env only)
 	}
 	for kind, ch := range registry {
-		if !expect[kind] {
+		hasSecrets, ok := expect[kind]
+		if !ok {
 			t.Errorf("channel %s is not registered with a masking expectation in the test", kind)
+			continue
+		}
+		if !hasSecrets {
+			if len(ch.SecretKeys()) != 0 {
+				t.Errorf("channel %s is expected to hold no credential fields", kind)
+			}
 			continue
 		}
 		if len(ch.SecretKeys()) == 0 {

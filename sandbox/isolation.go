@@ -28,6 +28,9 @@ type Config struct {
 	DBSockets  []string // database socket files, from the DSN
 	DBTCP      []string // database host:port endpoints reached over TCP, from the DSN
 
+	// SignalSocket is the Signal bridge socket file, from ARTEX_SIGNAL_API. Empty: no C12.
+	SignalSocket string
+
 	// SecretNames are the variables main read once and removed. Activation refuses to go on
 	// while one is still set.
 	SecretNames []string
@@ -52,6 +55,14 @@ type Isolation struct {
 
 	permsIn   PermsInput
 	permsSeen string // the problems of the last pass, to log a change only
+
+	// What a C12 re-run needs, set at activation when the drop chain is on and a Signal socket
+	// is configured. c12lock (a 1-buffered channel, so a waiter can give up with its context) keeps
+	// two re-runs from overlapping; the result goes through setCheck and clearCheck, which take mu.
+	c12in   SelfCheckInput
+	runner  ScriptRunner
+	c12lock chan struct{}
+	c12once sync.Once
 
 	mu       sync.Mutex
 	pre      Preconditions
@@ -286,13 +297,14 @@ func Activate(ctx context.Context, cfg Config) (*Isolation, error) {
 			ServerUID: os.Geteuid(), ServerPID: os.Getpid(),
 			Key: filepath.Join(cfg.KeyDir, "jwt.key"), ConfigPath: cfg.ConfigPath, Config: fileExists(cfg.ConfigPath),
 			DataDir: cfg.DataDir, VarsDir: l.VarsDir, SkillsDir: cfg.SkillDir, Skills: dirExists(cfg.SkillDir),
-			Symlinks: rep.Symlinks, Sockets: cfg.DBSockets, TCP: cfg.DBTCP,
+			Symlinks: rep.Symlinks, Sockets: cfg.DBSockets, TCP: cfg.DBTCP, SignalSocket: cfg.SignalSocket,
 			WorkDirParent: filepath.Join(cfg.DataDir, "tasks"), FallbackDir: l.ToolHome,
 		}
 		run := cfg.Runner
 		if run == nil {
 			run = SDKRunner
 		}
+		iso.c12in, iso.runner = in, run
 		lease, lerr := iso.leases.Acquire(ctx)
 		if lerr != nil {
 			return nil, lerr
@@ -424,6 +436,70 @@ func (i *Isolation) ReapplyPermissions() {
 	for _, p := range rep.Problems {
 		i.logf("[isolation] permissions: %s", p)
 	}
+}
+
+// RecheckSignal runs check C12 alone again and publishes the result like any other check: a
+// "not verified" that was set because the bridge socket was not there yet clears once the socket
+// exists and the tool user is kept out of it, and a socket that turns out reachable degrades the
+// status. The self-check has no periodic loop (it runs once, at start), so the server calls this
+// after the first successful Signal send and on each Signal channel test. It does nothing (nil)
+// when the drop chain is off or no Signal socket is configured, and is safe to call concurrently.
+//
+// The result is nil only when the check ran and its result was published. It is an error when ctx
+// ended while waiting for another re-run or for the lease, when the lease could not be taken, or
+// when the tool shell failed to run (C12 is still published as degraded in that last case).
+func (i *Isolation) RecheckSignal(ctx context.Context) error {
+	if i == nil || !i.on || i.c12in.SignalSocket == "" || i.runner == nil {
+		return nil
+	}
+	i.c12once.Do(func() { i.c12lock = make(chan struct{}, 1) })
+	select {
+	case i.c12lock <- struct{}{}:
+		defer func() { <-i.c12lock }()
+	case <-ctx.Done():
+		return fmt.Errorf("C12 re-run: waiting for another re-run: %w", ctx.Err())
+	}
+	lease, err := i.leases.Acquire(ctx)
+	if err != nil {
+		i.logf("[isolation] C12 re-run skipped: %v", err)
+		return fmt.Errorf("C12 re-run: %w", err)
+	}
+	var runErr error
+	run := func(rctx context.Context, dir, script string) (string, error) {
+		out, err := i.runner(rctx, dir, script)
+		if err != nil {
+			runErr = err
+		}
+		return out, err
+	}
+	failed := RunSignalCheck(ctx, run, i.c12in)
+	lease.Release()
+
+	before := i.checkDetail("C12")
+	if len(failed) == 0 {
+		i.clearCheck("C12")
+	} else {
+		i.setCheck(failed[0])
+	}
+	if after := i.checkDetail("C12"); after != before {
+		i.logStatus()
+	}
+	if runErr != nil {
+		return fmt.Errorf("C12 re-run: the tool shell failed to run: %w", runErr)
+	}
+	return nil
+}
+
+// checkDetail is the detail of the failed check id, or "" when it has not failed.
+func (i *Isolation) checkDetail(id string) string {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	for _, c := range i.failed {
+		if c.ID == id {
+			return c.Detail
+		}
+	}
+	return ""
 }
 
 // Run starts the sweeper, repeats the permission step every five minutes and the warning block

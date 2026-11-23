@@ -22,6 +22,7 @@ import (
 	"github.com/mkilijanek/artex/agent"
 	"github.com/mkilijanek/artex/config"
 	"github.com/mkilijanek/artex/db"
+	"github.com/mkilijanek/artex/notify"
 	"github.com/mkilijanek/artex/sandbox"
 	"github.com/mkilijanek/artex/server"
 	"github.com/mkilijanek/artex/traffic"
@@ -78,6 +79,7 @@ func run() int {
 	// capture backend logs into the in-memory sink (still to stderr) so the /logs
 	// page can show a live log stream. Do this first, to catch startup logs too.
 	server.StartLogCapture()
+	notify.LogSignalConfig() // the Signal settings are parsed in init, before the sink existed
 
 	// surface which config file the binary reads (absolute, so `go run`'s relative
 	// "config.json" — resolved against the CWD — is unambiguous).
@@ -131,12 +133,14 @@ func run() int {
 	iso, err := sandbox.Activate(ctx, sandbox.Config{
 		Layout: sandbox.DefaultLayout(), DataDir: absData, KeyDir: config.BaseDir(), ConfigPath: config.Path(), SkillDir: skillDir,
 		DBSockets: databaseSockets(dbEndpoints), DBTCP: databaseTCP(dbEndpoints), SecretNames: server.SecretEnvNames(),
+		SignalSocket: notify.SignalSocketPath(),
 	})
 	if err != nil {
 		log.Printf("[isolation] start-up failed: %v", err)
 		return 1
 	}
 	sandbox.Set(iso)
+	notify.SetSignalRecheck(iso.RecheckSignal) // the self-check runs once: C12 is re-run after a Signal send or test
 	go iso.Run(ctx)
 	agent.SweepSpill(absData) // old spill directories, before any session runs
 

@@ -51,7 +51,7 @@ func (p Preconditions) DropPossible() bool { return p.P1 && p.P2 && p.P3 && p.P4
 type CheckResult struct {
 	ID       string
 	Detail   string
-	Degrades bool // C1-C6, C10 and C11 degrade the status; C7-C9 only warn unless unverifiable
+	Degrades bool // C1-C6, C10, C11 and C12 degrade the status; C7-C9 only warn unless unverifiable
 }
 
 // View is what the API and the banner show.

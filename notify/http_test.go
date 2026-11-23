@@ -168,3 +168,51 @@ func TestDoJSONUserAgentLatin1Byte(t *testing.T) {
 		t.Fatalf("operator header changed: %q", got)
 	}
 }
+
+// roundTripCounter is a Transport that counts requests and delegates to the
+// default one.
+type roundTripCounter struct{ n int }
+
+func (c *roundTripCounter) RoundTrip(r *http.Request) (*http.Response, error) {
+	c.n++
+	return http.DefaultTransport.RoundTrip(r)
+}
+
+func TestDoJSONViaScrubReplacesSnippet(t *testing.T) {
+	t.Setenv(AllowLocalTargetsEnv, "1")
+	srv := replyServer(t, 400, `{"error":"bad SECRET-123"}`)
+	scrub := func([]byte) string { return "scrubbed" }
+	_, err := doJSONVia(context.Background(), httpClient, scrub, http.MethodPost, srv.URL, nil, map[string]string{"a": "b"})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "scrubbed") || strings.Contains(err.Error(), "SECRET-123") {
+		t.Fatalf("error = %q", err)
+	}
+}
+
+func TestDoJSONViaScrubSeesFullBody(t *testing.T) {
+	t.Setenv(AllowLocalTargetsEnv, "1")
+	srv := replyServer(t, 500, strings.Repeat("x", 300))
+	seen := -1
+	scrub := func(b []byte) string { seen = len(b); return "ok" }
+	if _, err := doJSONVia(context.Background(), httpClient, scrub, http.MethodGet, srv.URL, nil, nil); err == nil {
+		t.Fatal("expected an error")
+	}
+	if seen != 300 {
+		t.Fatalf("scrub saw %d bytes, want 300", seen)
+	}
+}
+
+func TestDoJSONViaUsesPassedClient(t *testing.T) {
+	t.Setenv(AllowLocalTargetsEnv, "1")
+	srv := replyServer(t, 200, `{}`)
+	c := &roundTripCounter{}
+	client := &http.Client{Transport: c}
+	if _, err := doJSONVia(context.Background(), client, snippet, http.MethodGet, srv.URL, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if c.n != 1 {
+		t.Fatalf("round trips = %d, want 1", c.n)
+	}
+}
