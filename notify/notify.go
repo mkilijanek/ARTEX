@@ -26,6 +26,7 @@ const (
 	KindWebhook  = "webhook"  // Generic webhook: custom method/headers/JSON template
 	KindTelegram = "telegram" // Telegram Bot API
 	KindEmail    = "email"    // SMTP email
+	KindSignal   = "signal"   // Signal via a self-hosted signal-cli-rest-api bridge
 )
 
 // Event kinds, corresponding to notification_events.kind.

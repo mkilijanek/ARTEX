@@ -69,6 +69,16 @@ var credentialCases = []struct {
 		cfg:    map[string]any{"webhook": "http://127.0.0.1:1/robot/send", "secret": leakProbeToken},
 		secret: leakProbeToken,
 	},
+	// Signal has no credential; the values that must stay out of errors are the
+	// recipients (PII). Without the operator environment the send fails before
+	// the network, so the full-strength probe with a configured sender and a
+	// dead socket is TestSignalChannelErrorsNeverLeakRecipients.
+	{
+		name:   "Signal recipient",
+		ch:     signalChannel{},
+		cfg:    map[string]any{"recipients": []any{"+15555550101"}},
+		secret: "+15555550101",
+	},
 }
 
 // leakProbeToken is a sentinel value that can never be a real credential, used

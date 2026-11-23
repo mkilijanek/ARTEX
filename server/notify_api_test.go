@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -667,7 +670,9 @@ func TestNotifyMetaAndSettingsRoundTrip(t *testing.T) {
 		t.Fatalf("meta should list all %d channels, got %d", len(notify.Kinds()), len(meta.Kinds))
 	}
 	for _, k := range meta.Kinds {
-		if len(k.SecretKeys) == 0 {
+		// Signal has no credential in its channel config (plan D2); the sender and
+		// the endpoint are operator environment.
+		if len(k.SecretKeys) == 0 && k.Kind != notify.KindSignal {
 			t.Errorf("channel %s did not report credential fields", k.Kind)
 		}
 	}
@@ -1006,5 +1011,246 @@ func TestNotifyTickBudgetFitsWithinLease(t *testing.T) {
 			" (notifyMaxSendsPerChannelPerTick=%d × notifySendTimeout=%v) — "+
 			"changing any of these three constants requires checking the other two",
 			worst, notifyLease, notifyMaxSendsPerChannelPerTick, notifySendTimeout)
+	}
+}
+
+// ---- Signal channel ----
+
+const (
+	testSignalSender = "+15555550100"
+	testSignalNumber = "+15555550101"
+	// group id of the bridge's own format: base64(base64(bytes 0..31)).
+	testSignalGroupID = "QUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOD0="
+	testSignalGroup   = "group." + testSignalGroupID
+	testSignalInner   = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
+)
+
+// useSignalEnv points the Signal channel at sock with the given sender. The
+// setting is process-wide, so it is restored when the test ends.
+func useSignalEnv(t *testing.T, sock, number string) {
+	t.Helper()
+	env := map[string]string{notify.SignalAPIEnv: "unix:" + sock, notify.SignalNumberEnv: number}
+	notify.LoadSignalEnv(func(k string) string { return env[k] })
+	t.Cleanup(func() { notify.LoadSignalEnv(os.Getenv) })
+}
+
+// fakeSignalBridge answers every request on a Unix socket with a fixed response
+// and counts them.
+type fakeSignalBridge struct {
+	sock string
+	mu   sync.Mutex
+	n    int
+}
+
+func (b *fakeSignalBridge) count() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.n
+}
+
+func newFakeSignalBridge(t *testing.T, status int, body string) *fakeSignalBridge {
+	t.Helper()
+	// t.TempDir() can exceed the 108-byte unix socket path limit.
+	dir, err := os.MkdirTemp("", "sig")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	b := &fakeSignalBridge{sock: filepath.Join(dir, "api.sock")}
+	l, err := net.Listen("unix", b.sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		b.mu.Lock()
+		b.n++
+		b.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, body)
+	}))
+	srv.Listener.Close()
+	srv.Listener = l
+	srv.Start()
+	t.Cleanup(srv.Close)
+	return b
+}
+
+func signalGroupChannel() map[string]any {
+	return map[string]any{
+		"name": "signal group", "kind": notify.KindSignal,
+		"config": map[string]any{"recipient_type": "group", "recipients": []any{testSignalGroup}},
+	}
+}
+
+// AC1: the meta lists Signal with its default rate and no secret keys.
+func TestNotifyMetaListsSignal(t *testing.T) {
+	f := newNotifyFixture(t)
+	r := f.request("GET", "/api/notify/meta", "")
+	if r.Code != 200 {
+		t.Fatalf("meta failed: %s", r.Body)
+	}
+	var meta struct {
+		Kinds []map[string]json.RawMessage `json:"kinds"`
+	}
+	if err := json.Unmarshal(r.Body.Bytes(), &meta); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range meta.Kinds {
+		if string(k["kind"]) != `"signal"` {
+			continue
+		}
+		if string(k["default_rate_per_min"]) != "20" || string(k["secret_keys"]) != "[]" {
+			t.Fatalf("signal meta entry = %v", k)
+		}
+		return
+	}
+	t.Fatalf("meta has no signal entry: %s", r.Body)
+}
+
+// AC2/AC3: create-time validation over the API, and the 400 names the variable
+// when the operator settings are missing.
+func TestNotifySignalChannelAPICreateValidation(t *testing.T) {
+	f := newNotifyFixture(t)
+	br := newFakeSignalBridge(t, 201, `[{"timestamp":"1"}]`)
+	useSignalEnv(t, br.sock, testSignalSender)
+
+	// Primary (group) and secondary (numbers) are accepted.
+	f.createChannel(t, signalGroupChannel())
+	f.createChannel(t, map[string]any{"name": "signal numbers", "kind": notify.KindSignal,
+		"config": map[string]any{"recipient_type": "numbers", "recipients": []any{testSignalNumber, "+15555550102"}}})
+
+	bad := []struct {
+		name    string
+		config  map[string]any
+		wantSub string
+	}{
+		{"empty recipients", map[string]any{"recipients": []any{}}, "recipients"},
+		{"not a number or group", map[string]any{"recipients": []any{"alice.01"}}, "recipients[0]"},
+		{"numbers mixed with group", map[string]any{"recipients": []any{testSignalGroup, testSignalNumber}}, "recipients"},
+		{"bad group id", map[string]any{"recipients": []any{"group.bm90LWEtZ3JvdXA="}}, "recipients[0]"},
+		{"bad recipient_type", map[string]any{"recipient_type": "usernames", "recipients": []any{testSignalNumber}}, "recipient_type"},
+		{"group type with a number", map[string]any{"recipient_type": "group", "recipients": []any{testSignalNumber}}, "recipient_type"},
+	}
+	for _, tc := range bad {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, _ := json.Marshal(map[string]any{"name": "x", "kind": notify.KindSignal, "config": tc.config})
+			r := f.request("POST", "/api/notify/channels", string(raw))
+			if r.Code != 400 || !strings.Contains(r.Body.String(), tc.wantSub) {
+				t.Fatalf("want 400 naming %q, got %d: %s", tc.wantSub, r.Code, r.Body)
+			}
+		})
+	}
+
+	// No sender: create and test both return 400 naming the variable.
+	chID := f.createChannel(t, signalGroupChannel())
+	env := map[string]string{notify.SignalAPIEnv: "unix:" + br.sock}
+	notify.LoadSignalEnv(func(k string) string { return env[k] })
+	raw, _ := json.Marshal(signalGroupChannel())
+	r := f.request("POST", "/api/notify/channels", string(raw))
+	if r.Code != 400 || !strings.Contains(r.Body.String(), "Signal sender is not configured: set ARTEX_SIGNAL_NUMBER") {
+		t.Fatalf("create without sender: %d %s", r.Code, r.Body)
+	}
+	r = f.request("POST", fmt.Sprintf("/api/notify/channels/%d/test", chID), "")
+	if r.Code != 400 || !strings.Contains(r.Body.String(), "Signal sender is not configured: set ARTEX_SIGNAL_NUMBER") {
+		t.Fatalf("test without sender: %d %s", r.Code, r.Body)
+	}
+	// No bridge endpoint: same, naming ARTEX_SIGNAL_API.
+	env = map[string]string{notify.SignalNumberEnv: testSignalSender}
+	notify.LoadSignalEnv(func(k string) string { return env[k] })
+	r = f.request("POST", fmt.Sprintf("/api/notify/channels/%d/test", chID), "")
+	if r.Code != 400 || !strings.Contains(r.Body.String(), "ARTEX_SIGNAL_API") {
+		t.Fatalf("test without bridge endpoint: %d %s", r.Code, r.Body)
+	}
+	if br.count() != 0 {
+		t.Fatalf("nothing may be sent without a complete configuration, got %d requests", br.count())
+	}
+}
+
+// AC7: the 502 body of a test send carries the bridge's reason but no number and
+// no group id, and no socket-level detail.
+func TestNotifySignalTestSend502IsRedacted(t *testing.T) {
+	f := newNotifyFixture(t)
+	body, _ := json.Marshal(map[string]any{"error": "Invalid identifier " + testSignalGroup + " from " + testSignalSender +
+		" to " + testSignalNumber + " inner " + testSignalInner})
+	br := newFakeSignalBridge(t, 400, string(body))
+	useSignalEnv(t, br.sock, testSignalSender)
+
+	chID := f.createChannel(t, signalGroupChannel())
+	r := f.request("POST", fmt.Sprintf("/api/notify/channels/%d/test", chID), "")
+	if r.Code != 502 {
+		t.Fatalf("want 502, got %d: %s", r.Code, r.Body)
+	}
+	text := r.Body.String()
+	if !strings.Contains(text, "HTTP 400") || !strings.Contains(text, "Invalid identifier") {
+		t.Fatalf("the bridge reason should reach the operator: %s", text)
+	}
+	for _, leak := range []string{testSignalSender, testSignalNumber, testSignalGroupID, testSignalInner, "5555550100", "5555550101", "+1555"} {
+		if strings.Contains(text, leak) {
+			t.Fatalf("502 body leaks %q: %s", leak, text)
+		}
+	}
+	if br.count() != 1 {
+		t.Fatalf("expected one request to the bridge, got %d", br.count())
+	}
+
+	// Socket gone: retryable text, no socket detail.
+	useSignalEnv(t, filepath.Join(filepath.Dir(br.sock), "absent.sock"), testSignalSender)
+	r = f.request("POST", fmt.Sprintf("/api/notify/channels/%d/test", chID), "")
+	if r.Code != 502 || !strings.Contains(r.Body.String(), "Signal bridge socket unreachable (is docker-compose.signal.yml up?)") {
+		t.Fatalf("socket missing: %d %s", r.Code, r.Body)
+	}
+	for _, leak := range []string{"connect:", "no such file", "absent.sock"} {
+		if strings.Contains(r.Body.String(), leak) {
+			t.Fatalf("502 body leaks %q: %s", leak, r.Body)
+		}
+	}
+}
+
+// AC3/AC7: with the sender missing the notifier marks the delivery failed with
+// the variable name (never dropped, never retried); a bridge 400 is stored
+// without any number.
+func TestNotifySignalDeliveryFailuresAreVisibleAndRedacted(t *testing.T) {
+	f := newNotifyFixture(t)
+	br := newFakeSignalBridge(t, 400, `{"error":"Specified account does not exist: `+testSignalSender+` / `+testSignalNumber+`"}`)
+	useSignalEnv(t, br.sock, testSignalSender)
+	chID := f.createChannel(t, map[string]any{"name": "signal numbers", "kind": notify.KindSignal,
+		"config": map[string]any{"recipient_type": "numbers", "recipients": []any{testSignalNumber}}})
+	f.record(t, "signal delivery", "high")
+	f.deliver(t, chID, "")
+
+	lastError := func() (state, msg string, attempts int) {
+		t.Helper()
+		if err := f.pg.QueryRow(`SELECT state, COALESCE(last_error,''), attempts FROM notification_deliveries WHERE channel_id=$1`, chID).
+			Scan(&state, &msg, &attempts); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	state, msg, _ := lastError()
+	if state != db.NotifyStateFailed || !strings.Contains(msg, "Specified account does not exist") {
+		t.Fatalf("a bridge 400 must fail the delivery with its reason, got %s: %q", state, msg)
+	}
+	for _, leak := range []string{testSignalSender, testSignalNumber, "5555550100", "5555550101"} {
+		if strings.Contains(msg, leak) {
+			t.Fatalf("last_error leaks %q: %s", leak, msg)
+		}
+	}
+
+	// Operator settings missing: resend and expect a permanent failure naming the variable.
+	if _, err := f.pg.Exec(`UPDATE notification_deliveries SET state=$2, attempts=0, last_error='', next_attempt_at = now() - interval '1 minute' WHERE channel_id=$1`, chID, db.NotifyStatePending); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{notify.SignalAPIEnv: "unix:" + br.sock}
+	notify.LoadSignalEnv(func(k string) string { return env[k] })
+	before := br.count()
+	f.deliver(t, chID, "")
+	state, msg, _ = lastError()
+	if state != db.NotifyStateFailed || !strings.Contains(msg, "ARTEX_SIGNAL_NUMBER") {
+		t.Fatalf("without a sender the delivery must fail naming the variable, got %s: %q", state, msg)
+	}
+	if br.count() != before {
+		t.Fatal("nothing may be sent without a sender")
 	}
 }
