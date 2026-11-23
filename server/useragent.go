@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"sync"
 
 	"github.com/mkilijanek/artex/agent"
 	"github.com/mkilijanek/artex/db"
@@ -24,33 +25,57 @@ const (
 // processes get (the allow-list in sandbox/env.go passes it through).
 const toolUAEnv = "ARTEX_USER_AGENT"
 
-// loadUserAgentSettings reads the three settings and applies them. A stored value that no longer
-// validates is an error, not a silent reset.
-func loadUserAgentSettings(pg *db.DB) error {
-	useragent.SetVersion(BuildVersion)
-	useragent.SetHidden(pg.GetBool(settingUAHidden, true))
-	custom, _, err := pg.GetSetting(settingUACustom)
+// uaMu serializes everything that stores, reloads and publishes the User-Agent settings (the
+// whole PATCH path and the startup load), so two concurrent updates cannot interleave.
+var uaMu sync.Mutex
+
+// readUserAgentSettings reads and validates all three settings before anything is published. A
+// stored value that no longer validates is an error, not a silent reset.
+func readUserAgentSettings(pg *db.DB) (hidden bool, custom string, comps []string, err error) {
+	hidden = pg.GetBool(settingUAHidden, true)
+	custom, _, err = pg.GetSetting(settingUACustom)
 	if err != nil {
-		return fmt.Errorf("read %s: %w", settingUACustom, err)
+		return false, "", nil, fmt.Errorf("read %s: %w", settingUACustom, err)
 	}
 	custom, err = agent.ValidateUserAgent(custom)
 	if err != nil {
-		return fmt.Errorf("stored %s: %w", settingUACustom, err)
+		return false, "", nil, fmt.Errorf("stored %s: %w", settingUACustom, err)
 	}
-	useragent.SetCustom(custom)
-	comps := useragent.Configurable()
+	comps = useragent.Configurable()
 	raw, ok, err := pg.GetSetting(settingUAComponents)
 	if err != nil {
-		return fmt.Errorf("read %s: %w", settingUAComponents, err)
+		return false, "", nil, fmt.Errorf("read %s: %w", settingUAComponents, err)
 	}
 	if ok {
 		if err := json.Unmarshal([]byte(raw), &comps); err != nil {
-			return fmt.Errorf("stored %s: %w", settingUAComponents, err)
+			return false, "", nil, fmt.Errorf("stored %s: %w", settingUAComponents, err)
 		}
 	}
-	useragent.SetComponents(comps)
+	return hidden, custom, comps, nil
+}
+
+// publishUserAgentLocked reads the settings and publishes them in one atomic store. When they
+// cannot be read or validated it publishes hidden=true (keeping the other parts), syncs the tool
+// environment and returns the error. The caller holds uaMu.
+func publishUserAgentLocked(pg *db.DB) error {
+	useragent.SetVersion(BuildVersion)
+	hidden, custom, comps, err := readUserAgentSettings(pg)
+	if err != nil {
+		snap := useragent.Snapshot()
+		useragent.Apply(true, snap.Custom, snap.Components)
+		syncToolUAEnv()
+		return err
+	}
+	useragent.Apply(hidden, custom, comps)
 	syncToolUAEnv()
 	return nil
+}
+
+// loadUserAgentSettings applies the stored settings at startup and in tests.
+func loadUserAgentSettings(pg *db.DB) error {
+	uaMu.Lock()
+	defer uaMu.Unlock()
+	return publishUserAgentLocked(pg)
 }
 
 // syncToolUAEnv puts the API Recon User-Agent into this process's environment, or removes it.
@@ -77,57 +102,75 @@ func (p userAgentPatch) any() bool { return p.Hidden != nil || p.Custom != nil |
 // applyUserAgentPatch validates the whole patch first and stores nothing when any part is
 // invalid; the error text is for a 400. A store failure is returned as the second value.
 func (s *Server) applyUserAgentPatch(p userAgentPatch) (invalid error, failed error) {
-	var custom string
-	if p.Custom != nil {
-		c, err := agent.ValidateUserAgent(*p.Custom)
-		if err != nil {
-			return err, nil
-		}
-		custom = c
+	invalid = validateUserAgentPatch(p)
+	if invalid != nil {
+		return invalid, nil
 	}
-	var comps []string
+	uaMu.Lock()
+	defer uaMu.Unlock()
+	return nil, s.storeUserAgentPatchLocked(p)
+}
+
+// validateUserAgentPatch checks every part of the patch without storing anything.
+func validateUserAgentPatch(p userAgentPatch) error {
+	if p.Custom != nil {
+		if _, err := agent.ValidateUserAgent(*p.Custom); err != nil {
+			return err
+		}
+	}
 	if p.Components != nil {
 		for _, c := range *p.Components {
 			if !slices.Contains(useragent.Configurable(), c) {
-				return fmt.Errorf("user agent component %q is not configurable", c), nil
+				return fmt.Errorf("user agent component %q is not configurable", c)
 			}
+		}
+	}
+	return nil
+}
+
+// storeUserAgentPatchLocked stores the validated patch, then reloads and publishes everything
+// at once. The caller holds uaMu.
+func (s *Server) storeUserAgentPatchLocked(p userAgentPatch) error {
+	pg := s.m.pg
+	if p.Hidden != nil {
+		if err := pg.SetBool(settingUAHidden, *p.Hidden); err != nil {
+			return err
+		}
+	}
+	if p.Custom != nil {
+		custom, err := agent.ValidateUserAgent(*p.Custom)
+		if err != nil {
+			return err
+		}
+		if err := pg.SetSetting(settingUACustom, custom); err != nil {
+			return err
+		}
+	}
+	if p.Components != nil {
+		var comps []string
+		for _, c := range *p.Components {
 			if !slices.Contains(comps, c) {
 				comps = append(comps, c)
 			}
 		}
-	}
-	pg := s.m.pg
-	if p.Hidden != nil {
-		if err := pg.SetBool(settingUAHidden, *p.Hidden); err != nil {
-			return nil, err
-		}
-	}
-	if p.Custom != nil {
-		if err := pg.SetSetting(settingUACustom, custom); err != nil {
-			return nil, err
-		}
-	}
-	if p.Components != nil {
 		b, err := json.Marshal(comps)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if err := pg.SetSetting(settingUAComponents, string(b)); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	if err := loadUserAgentSettings(pg); err != nil {
-		return nil, err
-	}
-	return nil, nil
+	return publishUserAgentLocked(pg)
 }
 
 // userAgentPayload is the User-Agent part of the settings GET.
 func userAgentPayload() map[string]any {
+	snap := useragent.Snapshot()
 	return map[string]any{
-		"user_agent_hidden":     useragent.Hidden(),
-		"user_agent_custom":     useragent.Custom(),
-		"user_agent_components": useragent.Components(),
+		"user_agent_hidden":     snap.Hidden,
+		"user_agent_custom":     snap.Custom,
+		"user_agent_components": snap.Components,
 		"user_agent_locked":     useragent.Locked(),
 		"user_agent_version":    useragent.Version(),
 		"user_agent_effective":  useragent.Effective(),

@@ -2,7 +2,9 @@
 
 Run: python3 -m unittest skills/api-recon/scripts/test_user_agent.py
 """
+import contextlib
 import importlib.util
+import io
 import os
 import pathlib
 import unittest
@@ -35,6 +37,15 @@ class UserAgentEnv(unittest.TestCase):
         for name, want in DEFAULTS.items():
             self.assertEqual(load_ua(name, None), want)
             self.assertEqual(load_ua(name, ""), want)
+
+
+    def test_unencodable_value_is_reported_and_default_kept(self):
+        for name, want in DEFAULTS.items():
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                ua = load_ua(name, "Skaner-\u017c/1")
+            self.assertEqual(ua, want)
+            self.assertIn("ARTEX_USER_AGENT cannot be sent", err.getvalue())
 
 
 if __name__ == "__main__":

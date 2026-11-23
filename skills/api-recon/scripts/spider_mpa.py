@@ -19,7 +19,14 @@ from html.parser import HTMLParser
 from collections import deque
 
 CTX = ssl.create_default_context(); CTX.check_hostname = False; CTX.verify_mode = ssl.CERT_NONE
-UA = os.environ.get("ARTEX_USER_AGENT") or "Mozilla/5.0 (spa-api-recon spider)"  # ARTEX_USER_AGENT is set by the server only when the User-Agent switch shows one
+UA = "Mozilla/5.0 (spa-api-recon spider)"
+_env_ua = os.environ.get("ARTEX_USER_AGENT")
+if _env_ua:  # set by the server only when the User-Agent switch shows one
+    try:
+        _env_ua.encode("latin-1")  # urllib sends headers as latin-1
+        UA = _env_ua
+    except UnicodeEncodeError:
+        print("ARTEX_USER_AGENT cannot be sent in an HTTP header (non-Latin-1 characters); using the built-in User-Agent", file=sys.stderr)
 SKIP_EXT = re.compile(r'\.(css|png|jpe?g|gif|svg|ico|woff2?|ttf|pdf|zip|mp4|webp|js)(\?|$)', re.I)
 API_HINT = re.compile(r'/(?:api|rest|service|ajax|action|do|rpc|graphql|v\d|admin|backend)\b', re.I)
 

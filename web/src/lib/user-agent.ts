@@ -5,7 +5,7 @@
 export const UA_COMPONENTS = ["LLM", "Enrichment", "MCP", "Notify", "Tools", "API Recon"] as const;
 export type UAComponent = (typeof UA_COMPONENTS)[number];
 
-export const UA_GO_DEFAULT = "Go default (Go-http-client/1.1)";
+export const UA_GO_DEFAULT = "Go default (Go-http-client/1.1 or /2.0)";
 export const UA_API_RECON_DEFAULT = "script default (Mozilla/5.0 (spa-api-recon) / Mozilla/5.0 (spa-api-recon spider))";
 
 export interface UAInputs {

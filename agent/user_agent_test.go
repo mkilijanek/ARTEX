@@ -147,3 +147,18 @@ func TestUserAgentResolvedAtRequestTime(t *testing.T) {
 		t.Fatalf("shown request User-Agent = %q", second)
 	}
 }
+
+// Only printable ASCII goes on the wire: urllib (the API Recon scripts) cannot encode anything
+// else in a header, and a non-ASCII byte in a header value is not portable.
+func TestValidateUserAgentRejectsNonASCII(t *testing.T) {
+	for name, in := range map[string]string{
+		"latin letter outside Latin-1": "Skaner-\u017c/1",
+		"latin-1 letter":               "caf\u00e9/1",
+		"raw high byte":                "good/1.0\x80",
+		"emoji":                        "ua-\U0001F600",
+	} {
+		if _, err := ValidateUserAgent(in); err == nil {
+			t.Errorf("%s: expected %q to be rejected", name, in)
+		}
+	}
+}

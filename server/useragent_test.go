@@ -3,7 +3,9 @@ package server
 import (
 	"encoding/json"
 	"os"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/mkilijanek/artex/useragent"
@@ -108,6 +110,7 @@ func TestUserAgentSettingsInvalidStoresNothing(t *testing.T) {
 	s, req := uaFixture(t)
 	for _, body := range []string{
 		`{"user_agent_hidden":false,"user_agent_custom":"bad\u0000ua"}`,
+		`{"user_agent_hidden":false,"user_agent_custom":"Skaner-\u017c/1"}`,
 		`{"user_agent_hidden":false,"user_agent_custom":"` + strings.Repeat("a", 257) + `"}`,
 		`{"user_agent_hidden":false,"user_agent_components":["LLM","WebFetch"]}`,
 		`{"user_agent_hidden":false,"user_agent_components":["WebSearch"]}`,
@@ -124,5 +127,53 @@ func TestUserAgentSettingsInvalidStoresNothing(t *testing.T) {
 	}
 	if !useragent.Hidden() {
 		t.Fatal("a refused request changed the runtime flag")
+	}
+}
+
+// A stored value that no longer validates must not leave the previous (shown) state in force:
+// the update reports the error and the User-Agent is published hidden.
+func TestUserAgentReloadFailurePublishesHidden(t *testing.T) {
+	s, req := uaFixture(t)
+	if code, body := req("PUT", "/api/settings", `{"user_agent_hidden":false}`); code != 200 {
+		t.Fatal(code, body)
+	}
+	if useragent.Hidden() {
+		t.Fatal("precondition: shown")
+	}
+	if err := s.m.pg.SetSetting(settingUACustom, "bad\x7fua"); err != nil {
+		t.Fatal(err)
+	}
+	code, body := req("PUT", "/api/settings", `{"user_agent_hidden":false}`)
+	if code != 500 || !strings.Contains(body, "stored "+settingUACustom) {
+		t.Fatalf("code %d body %s, want 500 naming the stored value", code, body)
+	}
+	if !useragent.Hidden() || useragent.For("LLM") != "" || os.Getenv(toolUAEnv) != "" {
+		t.Fatalf("after a failed reload the User-Agent must be hidden; hidden=%v env=%q", useragent.Hidden(), os.Getenv(toolUAEnv))
+	}
+}
+
+// Concurrent PATCHes publish whole states only.
+func TestUserAgentConcurrentPatchesAreWhole(t *testing.T) {
+	_, req := uaFixture(t)
+	var wg sync.WaitGroup
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			body := `{"user_agent_hidden":false,"user_agent_custom":"A/1","user_agent_components":["LLM"]}`
+			if i%2 == 1 {
+				body = `{"user_agent_hidden":true,"user_agent_custom":"","user_agent_components":["MCP","Tools"]}`
+			}
+			if code, resp := req("PUT", "/api/settings", body); code != 200 {
+				t.Errorf("code %d %s", code, resp)
+			}
+		}(i)
+	}
+	wg.Wait()
+	s := useragent.Snapshot()
+	a := !s.Hidden && s.Custom == "A/1" && slices.Equal(s.Components, []string{"LLM"})
+	b := s.Hidden && s.Custom == "" && slices.Equal(s.Components, []string{"MCP", "Tools"})
+	if !a && !b {
+		t.Fatalf("final state is a mix: %+v", s)
 	}
 }

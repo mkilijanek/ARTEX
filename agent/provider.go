@@ -560,8 +560,8 @@ const MaxUserAgentLen = 256
 
 // ValidateUserAgent trims a custom User-Agent and returns the cleaned value. An
 // empty/blank input is valid and means "no override" (keep the default UA). A
-// non-empty value is rejected when it exceeds MaxUserAgentLen or contains any
-// control character (including CR/LF, which would allow header injection).
+// non-empty value is rejected when it exceeds MaxUserAgentLen or contains anything but
+// printable ASCII (0x20-0x7e; control characters, CR/LF included, would allow header injection).
 func ValidateUserAgent(raw string) (string, error) {
 	ua := strings.TrimSpace(raw)
 	if ua == "" {
@@ -570,9 +570,11 @@ func ValidateUserAgent(raw string) (string, error) {
 	if len(ua) > MaxUserAgentLen {
 		return "", fmt.Errorf("user agent too long: %d bytes (max %d)", len(ua), MaxUserAgentLen)
 	}
-	for _, r := range ua {
-		if r < 0x20 || r == 0x7f {
-			return "", fmt.Errorf("user agent contains a control character")
+	// Printable ASCII only: the header is one printable token, and clients such as Python's
+	// urllib cannot encode anything else (the API Recon scripts read this value).
+	for i := 0; i < len(ua); i++ {
+		if c := ua[i]; c < 0x20 || c > 0x7e {
+			return "", fmt.Errorf("user agent may contain only printable ASCII characters")
 		}
 	}
 	return ua, nil

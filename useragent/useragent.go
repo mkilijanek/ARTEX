@@ -48,6 +48,27 @@ func update(f func(s *state)) {
 	}
 }
 
+// normalize keeps the configurable component names, in their fixed order.
+func normalize(names []string) []string {
+	keep := make([]string, 0, len(names))
+	for _, n := range Configurable() {
+		if slices.Contains(names, n) {
+			keep = append(keep, n)
+		}
+	}
+	return keep
+}
+
+// Apply publishes all three settings at once with a single atomic store of an immutable state,
+// so no request or reader can see a mix of an old and a new update. Names that are not
+// configurable (unknown ones and the locked Norma components) are dropped.
+func Apply(hidden bool, custom string, components []string) {
+	cur.Store(&state{hidden: hidden, custom: custom, components: normalize(components)})
+}
+
+// SetHidden, SetCustom and SetComponents change one part each (each is atomic on its own). The
+// server publishes with Apply; these are for callers that really mean to change a single part.
+//
 // SetHidden sets the master switch. While hidden, For returns "" for every component.
 func SetHidden(h bool) { update(func(s *state) { s.hidden = h }) }
 
@@ -57,13 +78,22 @@ func SetCustom(c string) { update(func(s *state) { s.custom = c }) }
 // SetComponents sets the checked components. Names that are not configurable (unknown ones and
 // the locked Norma components) are dropped.
 func SetComponents(names []string) {
-	keep := make([]string, 0, len(names))
-	for _, n := range Configurable() {
-		if slices.Contains(names, n) {
-			keep = append(keep, n)
-		}
-	}
+	keep := normalize(names)
 	update(func(s *state) { s.components = keep })
+}
+
+// State is one consistent view of the settings.
+type State struct {
+	Hidden     bool
+	Custom     string
+	Components []string
+}
+
+// Snapshot returns the master switch, the custom value and the checked components from a single
+// atomic load, so a reader never sees the parts of two different updates.
+func Snapshot() State {
+	s := cur.Load()
+	return State{Hidden: s.hidden, Custom: s.custom, Components: slices.Clone(s.components)}
 }
 
 // Hidden reports the master switch.
@@ -103,7 +133,7 @@ const (
 // What goes out when For returns "": the Go HTTP client's own value, or, for API Recon, the
 // strings the skill scripts carry (skills/api-recon/scripts/harvest_static.py and spider_mpa.py).
 const (
-	goDefault        = "Go default (Go-http-client/1.1)"
+	goDefault        = "Go default (Go-http-client/1.1 or /2.0)"
 	apiReconDefaults = "script default (Mozilla/5.0 (spa-api-recon) / Mozilla/5.0 (spa-api-recon spider))"
 )
 

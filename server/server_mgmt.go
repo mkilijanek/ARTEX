@@ -28,6 +28,7 @@ import (
 	"github.com/mkilijanek/artex/agent"
 	"github.com/mkilijanek/artex/db"
 	"github.com/mkilijanek/artex/sandbox"
+	"github.com/mkilijanek/artex/useragent"
 )
 
 // validSkillName checks the agentskills.io name constraints, widened so a skill can
@@ -2091,6 +2092,15 @@ func (s *Server) pgLLMPoolReset(w http.ResponseWriter, r *http.Request) {
 // Ollama (keyless OpenAI-compatible GET /v1/models on the local server); for
 // Anthropic-compatible third parties (e.g. DeepSeek) whose model list lives only on
 // the OpenAI path, it falls back to the OpenAI endpoint at the stripped root.
+// listUserAgent picks the User-Agent of a model-listing request: the profile's own value, else
+// the ARTEX one for LLM when the settings show it, else "" (Go's default).
+func listUserAgent(profileUA string) string {
+	if profileUA != "" {
+		return profileUA
+	}
+	return useragent.For("LLM")
+}
+
 func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Provider     string `json:"provider"` // "openai" | "anthropic" | "ollama"
@@ -2112,13 +2122,21 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 	// sent to the endpoint it was saved for, since base_url comes from the form.
 	apiKey := strings.TrimSpace(req.APIKey)
 	withheld := false
-	if apiKey == "" && req.ProfileID != nil {
+	// The profile's own User-Agent is not a secret, so it applies whatever the endpoint is; it
+	// wins over the ARTEX one exactly as on the provider transport.
+	var profileUA string
+	var stored *db.LLMProfile
+	if req.ProfileID != nil {
 		if p, err := s.m.pg.ProfileByID(*req.ProfileID); err == nil && p != nil {
-			if p.EndpointMode != agent.EndpointFixed && sameLLMEndpoint(req.Provider, req.BaseURL, p.Format, p.BaseURL, req.Proxy, p.Proxy) {
-				apiKey = p.APIKey
-			} else {
-				withheld = p.APIKey != ""
-			}
+			stored = p
+			profileUA = strings.TrimSpace(p.UserAgent)
+		}
+	}
+	if apiKey == "" && stored != nil {
+		if stored.EndpointMode != agent.EndpointFixed && sameLLMEndpoint(req.Provider, req.BaseURL, stored.Format, stored.BaseURL, req.Proxy, stored.Proxy) {
+			apiKey = stored.APIKey
+		} else {
+			withheld = stored.APIKey != ""
 		}
 	}
 	provider := strings.TrimSpace(req.Provider)
@@ -2215,6 +2233,9 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		httpReq.Header = c.hdr
+		if ua := listUserAgent(profileUA); ua != "" {
+			httpReq.Header.Set("User-Agent", ua)
+		}
 		resp, err := client.Do(httpReq)
 		if err != nil {
 			lastErr = "request failed: " + err.Error()

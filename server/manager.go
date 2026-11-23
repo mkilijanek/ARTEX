@@ -23,7 +23,6 @@ import (
 	"github.com/mkilijanek/artex/intercept"
 	"github.com/mkilijanek/artex/sandbox"
 	"github.com/mkilijanek/artex/traffic"
-	"github.com/mkilijanek/artex/useragent"
 )
 
 // Task is one engagement: a description + goal + its own exploration store,
@@ -449,9 +448,7 @@ func NewManager(dir, proxyAddr, dsn string) (*Manager, error) {
 	m.llmRecOn = pg.GetBool(settingLLMRecord, false)
 	// User-Agent family (hidden by default); consulted by every outbound request when it is built.
 	if err := loadUserAgentSettings(pg); err != nil {
-		log.Printf("[useragent] settings not applied, keeping the hidden default: %v", err)
-		useragent.SetHidden(true)
-		syncToolUAEnv()
+		log.Printf("[useragent] settings not applied, the User-Agent stays hidden: %v", err)
 	}
 	// Load persisted web-search config (default: off, ddgs).
 	m.webSearchOn = pg.GetBool(settingWebSearchOn, false)

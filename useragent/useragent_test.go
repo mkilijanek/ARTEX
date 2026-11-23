@@ -1,9 +1,13 @@
 package useragent
 
 import (
+	"fmt"
 	"os"
+	"regexp"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -102,14 +106,14 @@ func TestEffective(t *testing.T) {
 	}
 	SetComponents([]string{"LLM"})
 	e = Effective()
-	if e["Notify"] != "Go default (Go-http-client/1.1)" {
+	if e["Notify"] != "Go default (Go-http-client/1.1 or /2.0)" {
 		t.Fatalf("Notify = %q", e["Notify"])
 	}
 	if !strings.Contains(e["API Recon"], "spa-api-recon") {
 		t.Fatalf("API Recon = %q", e["API Recon"])
 	}
 	SetHidden(true)
-	if Effective()["LLM"] != "Go default (Go-http-client/1.1)" {
+	if Effective()["LLM"] != "Go default (Go-http-client/1.1 or /2.0)" {
 		t.Fatal("hidden must show the Go default")
 	}
 }
@@ -124,18 +128,132 @@ func TestShownFormatFixture(t *testing.T) {
 	}
 }
 
-// The values shown for the Norma components are copies; fail when the library changes them.
+var (
+	// any Set of a user-agent header, whatever the value expression is
+	normaUASet = regexp.MustCompile(`(?i)\.Set\(\s*"user-agent"\s*,`)
+	// the one form the constants mirror: a string literal value
+	normaUALit = regexp.MustCompile(`(?i)\.Header\.Set\(\s*"user-agent"\s*,\s*"([^"]*)"\s*\)`)
+)
+
+// checkNormaUA requires exactly n user-agent Set lines in src, each a Header.Set with a string
+// literal equal to want.
+func checkNormaUA(src, want string, n int) error {
+	if got := len(normaUASet.FindAllString(src, -1)); got != n {
+		return fmt.Errorf("found %d User-Agent Set lines, want exactly %d", got, n)
+	}
+	lits := normaUALit.FindAllStringSubmatch(src, -1)
+	if len(lits) != n {
+		return fmt.Errorf("%d of the %d User-Agent Set lines are no longer Header.Set with a string literal", n-len(lits), n)
+	}
+	for _, m := range lits {
+		if m[1] != want {
+			return fmt.Errorf("User-Agent is %q, the constant is %q", m[1], want)
+		}
+	}
+	return nil
+}
+
+func TestCheckNormaUA(t *testing.T) {
+	ok := "req.Header.Set(\"user-agent\", \"norma/0.4\")\n"
+	if err := checkNormaUA(ok, "norma/0.4", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkNormaUA(strings.Replace(ok, "0.4", "0.5", 1), "norma/0.4", 1); err == nil {
+		t.Fatal("a changed value must fail")
+	}
+	if err := checkNormaUA(ok+"req.Header.Set(\"User-Agent\", \"other\")\n", "norma/0.4", 1); err == nil {
+		t.Fatal("a second User-Agent Set must fail")
+	}
+	if err := checkNormaUA("req.Header.Set(\"User-Agent\", ua)\n", "norma/0.4", 1); err == nil {
+		t.Fatal("a non-literal value must fail")
+	}
+	if err := checkNormaUA("// no header here\n", "norma/0.4", 1); err == nil {
+		t.Fatal("a missing Set must fail")
+	}
+	two := ok + "r2.Header.Set(\"user-agent\", \"norma/0.4\")\n"
+	if err := checkNormaUA(two, "norma/0.4", 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkNormaUA(two, "norma/0.4", 1); err == nil {
+		t.Fatal("an extra Set line must fail")
+	}
+}
+
+// The values shown for the Norma components are copies; fail when the library changes them
+// (third_party/norma/tool/webfetch.go:236, websearch.go:226).
 func TestNormaConstantsMatchSources(t *testing.T) {
-	for file, want := range map[string]string{
-		"../third_party/norma/tool/webfetch.go":  WebFetchUA,
-		"../third_party/norma/tool/websearch.go": WebSearchUA,
+	// WebFetch sets it twice: on the request and on the direct retry after a proxy failure.
+	for _, c := range []struct {
+		file, want string
+		n          int
+	}{
+		{"../third_party/norma/tool/webfetch.go", WebFetchUA, 2},
+		{"../third_party/norma/tool/websearch.go", WebSearchUA, 1},
 	} {
-		b, err := os.ReadFile(file)
+		b, err := os.ReadFile(c.file)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(b), `"`+want+`"`) {
-			t.Fatalf("%s no longer contains the User-Agent %q; update useragent.WebFetchUA/WebSearchUA", file, want)
+		if err := checkNormaUA(string(b), c.want, c.n); err != nil {
+			t.Fatalf("%s: %v; update useragent.WebFetchUA/WebSearchUA", c.file, err)
 		}
+	}
+}
+
+// Regression: readers must only ever see one of two complete states while Apply alternates between
+// them. Publishing the parts with separate setters shows a mix of both (hidden=false with the old
+// component set, and so on).
+func TestApplyIsAtomic(t *testing.T) {
+	reset(t)
+	a := State{Hidden: true, Custom: "", Components: Configurable()}
+	b := State{Hidden: false, Custom: "B/1", Components: []string{"LLM"}}
+	same := func(x, y State) bool {
+		return x.Hidden == y.Hidden && x.Custom == y.Custom && slices.Equal(x.Components, y.Components)
+	}
+	Apply(a.Hidden, a.Custom, a.Components) // readers start from a complete state
+	var stop atomic.Bool
+	var torn atomic.Int64
+	var wg sync.WaitGroup
+	for r := 0; r < 4; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for !stop.Load() {
+				if s := Snapshot(); !same(s, a) && !same(s, b) {
+					torn.Add(1)
+				}
+			}
+		}()
+	}
+	for i := 0; i < 100000; i++ {
+		s := a
+		if i%2 == 1 {
+			s = b
+		}
+		Apply(s.Hidden, s.Custom, s.Components)
+	}
+	stop.Store(true)
+	wg.Wait()
+	if n := torn.Load(); n != 0 {
+		t.Fatalf("readers observed %d torn states", n)
+	}
+	// A final Apply is fully visible, with non-configurable names dropped.
+	Apply(false, "C/1", []string{"WebFetch", "Notify", "bogus"})
+	if s := Snapshot(); s.Hidden || s.Custom != "C/1" || !slices.Equal(s.Components, []string{"Notify"}) {
+		t.Fatalf("Snapshot = %+v", s)
+	}
+}
+
+// The hint texts are mirrored in web/src/lib/user-agent.ts (UA_GO_DEFAULT, UA_API_RECON_DEFAULT)
+// and asserted there against the same literals.
+func TestHintFixtures(t *testing.T) {
+	reset(t)
+	SetHidden(true)
+	e := Effective()
+	if e["LLM"] != "Go default (Go-http-client/1.1 or /2.0)" {
+		t.Fatalf("Go default hint = %q", e["LLM"])
+	}
+	if e["API Recon"] != "script default (Mozilla/5.0 (spa-api-recon) / Mozilla/5.0 (spa-api-recon spider))" {
+		t.Fatalf("API Recon hint = %q", e["API Recon"])
 	}
 }

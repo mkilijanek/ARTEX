@@ -16,11 +16,11 @@ test("shown format equals the server's", () => {
 test("hidden and unchecked components resolve to the defaults", () => {
   const c = { hidden: true, custom: "X/1", components: all, version: "1" };
   assert.equal(resolveUserAgent(c, "LLM"), "");
-  assert.equal(effectiveUserAgent(c, "LLM"), "Go default (Go-http-client/1.1)");
+  assert.equal(effectiveUserAgent(c, "LLM"), "Go default (Go-http-client/1.1 or /2.0)");
   assert.match(effectiveUserAgent(c, "API Recon"), /spa-api-recon/);
   const u = { hidden: false, custom: "X/1", components: ["LLM"], version: "1" };
   assert.equal(effectiveUserAgent(u, "LLM"), "X/1");
-  assert.equal(effectiveUserAgent(u, "MCP"), "Go default (Go-http-client/1.1)");
+  assert.equal(effectiveUserAgent(u, "MCP"), "Go default (Go-http-client/1.1 or /2.0)");
 });
 
 test("the custom value is trimmed", () => {
