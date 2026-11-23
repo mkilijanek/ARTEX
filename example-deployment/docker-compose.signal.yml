@@ -2,6 +2,7 @@
 #
 #   docker compose -f docker-compose.yml -f docker-compose.signal.yml up -d
 #
+# Needs ARTEX 0.5.19m or later (set ARTEX_VERSION accordingly); older images have no Signal channel.
 # Required in .env: ARTEX_SIGNAL_NUMBER, the E.164 number the messages are sent from
 # (for example +15555550100). The account itself is registered or linked once with the
 # bridge's own API; see README.md, "Signal notifications".

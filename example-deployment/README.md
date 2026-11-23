@@ -109,6 +109,8 @@ docker compose -f docker-compose.yml -f docker-compose.lan.yml config
 
 ARTEX can send finding notifications to one Signal group or to Signal phone numbers through a self-hosted
 [signal-cli REST bridge](https://github.com/bbernhard/signal-cli-rest-api). `docker-compose.signal.yml` runs it.
+It needs ARTEX 0.5.19m or later: set `ARTEX_VERSION=v0.5.19m` (or newer) in `.env`, since older images have no
+Signal channel.
 The repository's root `docker-compose.yml` has no Signal support; use this directory.
 
 The Signal channel has been verified against the bridge API without a Signal account. Delivery from a real account
