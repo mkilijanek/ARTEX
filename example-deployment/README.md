@@ -10,12 +10,15 @@ capture proxy is published, both on `127.0.0.1` by default, and no capabilities 
 (tool isolation needs Docker's default set; see [../docs/tool-isolation.md](../docs/tool-isolation.md)).
 Do not add `cap_drop: ALL` or `privileged`.
 
-Requirements: Docker with the Compose plugin (v2.24 or newer, the overrides use `!override`), a
+Requirements: Docker with the Compose plugin (a recent version: the overrides use `!override`, added in v2.24; tested with v5.8.0), a
 `linux/amd64` host. The release publishes `linux/amd64` images only; there is no native arm64 image.
 
 **Versions older than 0.5.18m use a different compose layout (TCP PostgreSQL, different volumes)
 and must not be used with this file.** Upgrade such an installation to 0.5.18m first by following
 [../README.md](../README.md#updating-and-upgrading) and [../docs/schema-upgrade.md](../docs/schema-upgrade.md).
+When you upgrade from 0.5.17m or earlier, rotate the database password and the model provider API
+keys afterwards and follow the other post-upgrade actions in
+[GHSA-x67q-r3xq-3ghq](https://github.com/mkilijanek/ARTEX/security/advisories/GHSA-x67q-r3xq-3ghq). A fresh install needs none of this.
 
 ## Quick start
 
@@ -108,7 +111,7 @@ Migrations run automatically when the new version starts (`[migrate]` lines in
 
 ## Rollback
 
-Set the previous version in `.env` and run `docker compose pull && docker compose up -d`. If the
+To roll back to an older release that still uses this layout (0.5.18m or later), set that version in `.env` and run `docker compose pull && docker compose up -d`. If the
 newer version applied a schema migration, the older binary refuses to start with
 `unknown migration applied`. To keep the service up while you prepare the right release or restore
 the pre-upgrade dump, set `ARTEX_SCHEMA_ALLOW_NEWER` in `.env` to the four-digit version of the
@@ -116,7 +119,8 @@ newest migration the newer release added, for example `5003` when rolling back f
 0.5.17m. This is a stopgap with real risks and it expires when a still newer migration exists;
 restoring the pre-upgrade backup is the safer path. Read
 [../docs/schema-upgrade.md](../docs/schema-upgrade.md) ("The override `ARTEX_SCHEMA_ALLOW_NEWER`")
-first, and remove the setting afterwards. Note that going below 0.5.18m means a different compose layout (see above).
+first, and remove the setting afterwards. To go below 0.5.18m (for example to 0.5.17m, which needs
+`ARTEX_SCHEMA_ALLOW_NEWER=5003`), use that release's own compose file from the repository, not this one.
 
 ## Backups
 
