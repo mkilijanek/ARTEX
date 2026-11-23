@@ -1,0 +1,102 @@
+# Override: send notifications through Signal (signal-cli REST bridge).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.signal.yml up -d
+#
+# Required in .env: ARTEX_SIGNAL_NUMBER, the E.164 number the messages are sent from
+# (for example +15555550100). The account itself is registered or linked once with the
+# bridge's own API; see README.md, "Signal notifications".
+#
+# Layout: artex has NO network path to the bridge. It reaches it only through a Unix
+# socket (signalsock volume, under /run/artex-private so that agent tools, which run as
+# uid 30002, cannot open it). An nginx sidecar owns the socket and forwards exactly two
+# requests to the bridge: POST /v2/send (64 KiB at most) and GET /v1/about. Everything
+# else, such as device linking, registration or group listing, gets 403 and never
+# reaches the bridge. signal-internal is `internal: true` (no Internet route) and holds
+# only the proxy and the bridge; signal-egress gives the bridge, and only the bridge,
+# access to the Signal servers. Nothing is published on the host.
+#
+# The bridge keeps the account keys in the signal-data volume: whoever can read it can
+# send as that number. Back it up like a secret and do not delete it casually.
+# On a host with SELinux enforcing the shared socket volume needs the :z label (set below).
+services:
+  signal-cli:
+    image: ${SIGNAL_CLI_IMAGE:-bbernhard/signal-cli-rest-api:0.102@sha256:6b35b3527459aec9c459398de33f4f229239b3f17b0989d4bceb5191ad71fca9}
+    environment:
+      MODE: json-rpc
+    volumes:
+      - signal-data:/home/.local/share/signal-cli:z
+    # The image is s6-overlay and runs as uid 1000. It exits at start (s6 "cannot create
+    # /run/test: Permission denied", or "/run noexec") unless /run is writable by that
+    # user and allows exec, so give it a tmpfs with exactly those properties.
+    tmpfs:
+      - /run:exec,uid=1000,gid=1000,mode=0755
+    networks:
+      - signal-internal
+      - signal-egress
+    restart: unless-stopped
+
+  signal-proxy:
+    image: ${SIGNAL_PROXY_IMAGE:-nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236}
+    read_only: true
+    # nginx temp paths and the pid file live in /tmp (see signal-proxy.conf).
+    tmpfs:
+      - /tmp
+    # nginx creates the socket world-writable (0666). The script clears a stale socket
+    # from an earlier run, starts nginx, and once the socket exists sets it to 0600 (root,
+    # which is the ARTEX server's user) as a second layer behind the /run/artex-private
+    # directory. trap forwards stop signals to nginx so `docker compose stop` is quick.
+    # ($$ is Compose's escape for a literal $.)
+    command:
+      - sh
+      - -c
+      - |
+        rm -f /sock/api.sock
+        nginx -g 'daemon off;' &
+        pid=$$!
+        trap 'kill -TERM $$pid' TERM
+        trap 'kill -QUIT $$pid' QUIT
+        while [ ! -S /sock/api.sock ]; do
+          kill -0 $$pid || exit 1
+          sleep 0.1
+        done
+        chmod 0600 /sock/api.sock
+        while kill -0 $$pid 2>/dev/null; do wait $$pid; s=$$?; done
+        exit $${s:-1}
+    volumes:
+      - ./signal-proxy.conf:/etc/nginx/nginx.conf:ro,z
+      - signalsock:/sock:z
+    networks:
+      - signal-internal
+    depends_on:
+      signal-cli:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "test -S /sock/api.sock && curl -fsS --max-time 5 --unix-socket /sock/api.sock http://localhost/v1/about >/dev/null"]
+      interval: 10s
+      timeout: 8s
+      retries: 6
+      start_period: 5s
+    restart: unless-stopped
+
+  artex:
+    environment:
+      ARTEX_SIGNAL_API: unix:/run/artex-private/signal/api.sock
+      ARTEX_SIGNAL_NUMBER: ${ARTEX_SIGNAL_NUMBER:?Set ARTEX_SIGNAL_NUMBER in .env, e.g. +15555550100}
+    volumes:
+      - signalsock:/run/artex-private/signal:z
+    # Merged with the base file's postgres dependency. Start waits for the bridge (its JVM
+    # takes tens of seconds) so that the socket exists when the isolation self-check runs.
+    depends_on:
+      signal-proxy:
+        condition: service_healthy
+
+networks:
+  # No route out: only the proxy and the bridge are members.
+  signal-internal:
+    internal: true
+  # Internet access for the bridge only.
+  signal-egress: {}
+
+volumes:
+  signal-data:
+  signalsock:
