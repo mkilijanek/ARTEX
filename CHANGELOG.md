@@ -18,7 +18,7 @@ All notable changes to this project are documented in this file. The format is b
   stored as UTF-8 and sent as Latin-1 bytes ("café" goes out as `63 61 66 E9`). Some servers and WAFs refuse non-ASCII
   header bytes, so plain ASCII is the safest choice. An LLM profile's own User-Agent follows the same rule, so a value
   with other characters is refused at save and test time. The model-listing request of the LLM page also sends the profile's
-  or the ARTEX User-Agent. `ARTEX_USER_AGENT` is managed by the server and reaches every child process.
+  or the ARTEX User-Agent. `ARTEX_USER_AGENT` is managed by the server and also reaches other child processes (MCP stdio servers, custom command tools). An unreadable or invalid stored value forces hidden and is logged.
 
 - **Tool isolation.** In the Docker image, every process an agent starts (Bash, background tasks, `Monitor`,
   interactive shells, MCP stdio servers, custom command and script tools, and the file tools `Read`, `Write`, `Edit`,
