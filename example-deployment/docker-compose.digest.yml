@@ -4,7 +4,7 @@
 #
 # Set ARTEX_IMAGE_DIGEST in .env to the sha256 digest of the release you want:
 #   - the release workflow prints it in its run summary ("Digest: sha256:..."), or
-#   - docker buildx imagetools inspect ghcr.io/mkilijanek/artex:v0.5.19m
+#   - docker buildx imagetools inspect ghcr.io/mkilijanek/artex:v0.6.0m
 #     (the line "Digest:" of the top-level manifest list).
 # ARTEX_VERSION is still required by the base file but is then only a label; keep it equal
 # to the release the digest belongs to.
