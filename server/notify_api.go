@@ -451,7 +451,12 @@ func (s *Server) notifyTestChannel(w http.ResponseWriter, r *http.Request) {
 	// The test message is a single entry, so the delivered count is not needed
 	// here (for a single message the channel length limit falls back to
 	// truncation; no segmentation is involved).
-	if _, err := channel.Send(r.Context(), cfg, msg); err != nil {
+	_, err = channel.Send(r.Context(), cfg, msg)
+	if ch.Kind == notify.KindSignal {
+		// Whatever the outcome, the bridge socket may exist now: re-run the isolation check C12.
+		notify.RecheckSignal(r.Context())
+	}
+	if err != nil {
 		// Return the channel's raw error to the user as-is — it is their only clue
 		// when debugging the configuration.
 		writeErr(w, 502, err.Error())

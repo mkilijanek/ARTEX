@@ -1,9 +1,14 @@
 package sandbox
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
+	"net"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -137,11 +142,11 @@ func TestIsolationOverrideValues(t *testing.T) {
 }
 
 // AC22(g): `unavailable` appears exactly when P1-P4 fail, `disabled` exactly when the
-// operator turned it off, and no combination of C1-C11 failures ever changes that. A
+// operator turned it off, and no combination of C1-C12 failures ever changes that. A
 // failure a tool can cause (every C check) leaves isolation on.
 func TestStatusFollowsPreconditionsOnly(t *testing.T) {
-	checkIDs := []string{"C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11"}
-	degrading := map[string]bool{"C1": true, "C2": true, "C3": true, "C4": true, "C5": true, "C6": true, "C10": true, "C11": true}
+	checkIDs := []string{"C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C12"}
+	degrading := map[string]bool{"C1": true, "C2": true, "C3": true, "C4": true, "C5": true, "C6": true, "C10": true, "C11": true, "C12": true}
 	for p := 0; p < 32; p++ {
 		pre := Preconditions{P1: p&1 != 0, P2: p&2 != 0, P3: p&4 != 0, P4: p&8 != 0, P5: p&16 != 0}
 		pHold := pre.P1 && pre.P2 && pre.P3 && pre.P4
@@ -210,3 +215,130 @@ func TestComputeStatusReasonsAndWarnings(t *testing.T) {
 }
 
 func sprintf(f string, a ...any) string { return fmt.Sprintf(f, a...) }
+
+// ---- C12 on the published status (plan AC10) ----
+
+// c12Iso is an enforced isolation with a Signal socket configured, built without Activate so
+// that it needs no root: the check workspace falls back to a directory the test owns.
+func c12Iso(t *testing.T, socket string, run ScriptRunner) *Isolation {
+	t.Helper()
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "file-in-the-way")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	iso := &Isolation{
+		on: true, logf: func(string, ...any) {},
+		pre:    Preconditions{P1: true, P2: true, P3: true, P4: true, P5: true},
+		c12in:  SelfCheckInput{SignalSocket: socket, WorkDirParent: blocker, FallbackDir: dir},
+		runner: run,
+	}
+	iso.mu.Lock()
+	iso.recompute()
+	iso.mu.Unlock()
+	return iso
+}
+
+// shortSockDir is a temp directory with a path short enough for a unix socket.
+func shortSockDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "c12")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
+}
+
+func listenAt(t *testing.T, path string) {
+	t.Helper()
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+}
+
+// Re-run: "not verified" (the socket was not there at start) clears once the socket exists and the
+// tool user is kept out, the published status follows, and a reachable socket degrades again.
+func TestRecheckSignalClearsNotVerifiedOnceTheSocketExists(t *testing.T) {
+	sock := filepath.Join(shortSockDir(t), "api.sock")
+	answer := "c12.sock=refused\nc12.dir=denied\n"
+	runs := 0
+	iso := c12Iso(t, sock, func(ctx context.Context, d, s string) (string, error) { runs++; return answer, nil })
+
+	iso.RecheckSignal(t.Context()) // the bridge has not created the socket yet
+	v := iso.View()
+	if v.Status != Degraded || !strings.Contains(v.Reason, "C12: not verified: socket absent") {
+		t.Fatalf("absent: %+v", v)
+	}
+	if runs != 0 {
+		t.Fatalf("the tool shell ran %d times for an absent socket", runs)
+	}
+
+	listenAt(t, sock)
+	iso.RecheckSignal(t.Context())
+	if v := iso.View(); v.Status != Enforced || v.Reason != "" || len(v.Warnings) != 0 || runs != 1 {
+		t.Fatalf("socket present and closed to tools: %+v, %d runs", v, runs)
+	}
+
+	answer = "c12.sock=connected\nc12.dir=denied\n"
+	iso.RecheckSignal(t.Context())
+	v = iso.View()
+	if v.Status != Degraded || !strings.Contains(v.Reason, "tool user can connect to "+sock) {
+		t.Fatalf("connected: %+v", v)
+	}
+}
+
+// A re-run changes only C12: other failed checks stay, and with no Signal socket, or the drop chain
+// off, it does nothing.
+func TestRecheckSignalTouchesC12Only(t *testing.T) {
+	sock := filepath.Join(shortSockDir(t), "absent.sock")
+	iso := c12Iso(t, sock, func(context.Context, string, string) (string, error) { return "", nil })
+	iso.setCheck(CheckResult{ID: "C6", Detail: "kept", Degrades: true})
+	iso.RecheckSignal(t.Context())
+	if got := failedIDs(iso.failed); got != "C6,C12" {
+		t.Fatalf("failed %q, want C6,C12", got)
+	}
+	iso.RecheckSignal(t.Context()) // repeat: replaced, not added twice
+	if got := failedIDs(iso.failed); got != "C6,C12" {
+		t.Fatalf("after a repeat: %q", got)
+	}
+
+	off := c12Iso(t, sock, nil)
+	off.on = false
+	for name, i := range map[string]*Isolation{
+		"no socket":    c12Iso(t, "", nil),
+		"chain off":    off,
+		"nil receiver": nil,
+	} {
+		i.RecheckSignal(t.Context())
+		if i != nil && len(i.failed) != 0 {
+			t.Errorf("%s: %+v", name, i.failed)
+		}
+	}
+}
+
+// Re-runs, status reads and other checks at the same time (run with -race).
+func TestRecheckSignalIsSafeConcurrently(t *testing.T) {
+	sock := filepath.Join(shortSockDir(t), "api.sock")
+	listenAt(t, sock)
+	iso := c12Iso(t, sock, func(context.Context, string, string) (string, error) {
+		return "c12.sock=refused\nc12.dir=denied\n", nil
+	})
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(3)
+		go func() { defer wg.Done(); iso.RecheckSignal(t.Context()) }()
+		go func() { defer wg.Done(); _ = iso.View(); _ = iso.Status(); _ = iso.SessionWarning() }()
+		go func() {
+			defer wg.Done()
+			iso.setCheck(CheckResult{ID: "E1", Detail: "x", Degrades: true})
+			iso.clearCheck("E1")
+		}()
+	}
+	wg.Wait()
+	if v := iso.View(); v.Status != Enforced {
+		t.Fatalf("%+v", v)
+	}
+}

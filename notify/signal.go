@@ -111,6 +111,30 @@ func LoadSignalEnv(getenv func(string) string) {
 // is unset or invalid.
 func SignalSocketPath() string { return signalState.Load().socket }
 
+// signalRecheck is the hook main installs to re-run the isolation self-check C12 (the bridge socket
+// is not reachable by tools). It is a hook, not an import of the sandbox package, so notify stays
+// independent of it. signalSentOnce makes the send path call it once, after the first success.
+var (
+	signalRecheck  atomic.Pointer[func(context.Context)]
+	signalSentOnce atomic.Bool
+)
+
+// SetSignalRecheck installs the C12 re-run hook; nil removes it.
+func SetSignalRecheck(f func(context.Context)) {
+	if f == nil {
+		signalRecheck.Store(nil)
+		return
+	}
+	signalRecheck.Store(&f)
+}
+
+// RecheckSignal calls the C12 re-run hook when one is installed, and waits for it.
+func RecheckSignal(ctx context.Context) {
+	if f := signalRecheck.Load(); f != nil {
+		(*f)(ctx)
+	}
+}
+
 // newSignalClient builds the bridge client. It differs from the shared
 // httpClient on purpose:
 //   - the Transport dials the socket path and nothing else, whatever host the
@@ -325,6 +349,11 @@ func (c signalChannel) Send(ctx context.Context, cfg map[string]any, m Message) 
 	}
 	if err := signalCheckDelivery(raw, recipients, scrub); err != nil {
 		return 0, scrub.err(err)
+	}
+	// The first delivery proves the socket exists now: let the isolation check C12 look again
+	// (in the background, so the delivery is not held up by the tool shell).
+	if signalSentOnce.CompareAndSwap(false, true) {
+		go RecheckSignal(context.WithoutCancel(ctx))
 	}
 	return kept, nil
 }

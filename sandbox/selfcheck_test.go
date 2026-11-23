@@ -346,3 +346,206 @@ func TestRunSelfCheckWithoutAWorkspaceStillRunsTheShell(t *testing.T) {
 		t.Errorf("failed %q", ids)
 	}
 }
+
+// ---- C12: the Signal bridge socket (plan AC10) ----
+
+// c12Sock listens on a unix socket in a short temp directory (a socket path is limited to 108
+// bytes) and returns its path and the directory holding it. The listener is closed with the test.
+func c12Sock(t *testing.T) (path, dir string) {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "c12")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	path = filepath.Join(dir, "api.sock")
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	return path, dir
+}
+
+// The probe lines exist only when the path is set, and only while the server's own pre-check finds
+// a socket there (an absent socket is reported without the tool shell).
+func TestSelfCheckScriptHasC12ProbesOnlyWhenTheSocketPathIsSet(t *testing.T) {
+	sock, dir := c12Sock(t)
+	in := checkInput()
+
+	if s := SelfCheckScript(in); strings.Contains(s, "c12") {
+		t.Errorf("no Signal path, yet the script has C12 lines:\n%s", s)
+	}
+	in.SignalSocket = sock
+	s := SelfCheckScript(in)
+	for _, want := range []string{"probe_unix c12.sock " + shq(sock), "probe_list c12.dir " + shq(dir)} {
+		if !strings.Contains(s, want) {
+			t.Errorf("script lacks %q", want)
+		}
+	}
+	in.SignalSocket = filepath.Join(dir, "absent.sock")
+	if s := SelfCheckScript(in); strings.Contains(s, "c12") {
+		t.Errorf("the socket is absent, yet the script probes it:\n%s", s)
+	}
+}
+
+// The probes run in a real shell and print both keys (here as the test's own user, so the answers
+// are "connected" and "readable").
+func TestSelfCheckScriptC12ProbesAnswer(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("no bash")
+	}
+	sock, _ := c12Sock(t)
+	in := checkInput()
+	in.SignalSocket = sock
+	out, err := exec.Command(bash, "-c", SelfCheckScript(in)).CombinedOutput()
+	if err != nil {
+		t.Fatalf("script failed: %v\n%s", err, out)
+	}
+	kv := parseProbeOutput(string(out))
+	if kv["c12.dir"] != "readable" {
+		t.Errorf("c12.dir=%q, want readable:\n%s", kv["c12.dir"], out)
+	}
+	switch _, perr := exec.LookPath("python3"); {
+	case perr == nil && kv["c12.sock"] != "connected":
+		t.Errorf("c12.sock=%q, want connected:\n%s", kv["c12.sock"], out)
+	case perr != nil && kv["c12.sock"] != "unknown":
+		t.Errorf("no python3: c12.sock=%q, want unknown:\n%s", kv["c12.sock"], out)
+	}
+}
+
+// C12 in the evaluation: every way to fail is degraded and never worse; the pass is a refused
+// connection with the parent directory denied.
+func TestEvaluateC12(t *testing.T) {
+	sock, dir := c12Sock(t)
+	regular := filepath.Join(dir, "regular")
+	if err := os.WriteFile(regular, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	asLink := filepath.Join(dir, "link.sock")
+	if err := os.Symlink(sock, asLink); err != nil {
+		t.Fatal(err)
+	}
+	const refused, none = "c12.sock=refused\nc12.dir=denied\n", ""
+	for _, tc := range []struct {
+		name    string
+		path    string
+		answers string // appended to a good output
+		want    string // "" = no C12; else a substring of the detail
+	}{
+		{"absent", filepath.Join(dir, "absent.sock"), refused, "not verified: socket absent"},
+		{"absent, no answers", filepath.Join(dir, "absent.sock"), none, "not verified: socket absent"},
+		{"a regular file at the path", regular, refused, "not verified: socket absent"},
+		{"a symbolic link to the socket is not the socket", asLink, refused, "not verified: socket absent"},
+		{"parent is not a directory", filepath.Join(regular, "x.sock"), refused, "not verified: socket absent"},
+		{"connected", sock, "c12.sock=connected\nc12.dir=denied\n", "tool user can connect to " + sock},
+		{"unknown", sock, "c12.sock=unknown\nc12.dir=denied\n", "could not be verified"},
+		{"no socket answer", sock, "c12.dir=denied\n", "could not be verified"},
+		{"directory readable", sock, "c12.sock=refused\nc12.dir=readable\n", sock},
+		{"no directory answer", sock, "c12.sock=refused\n", "could not be verified"},
+		{"connected and listable", sock, "c12.sock=connected\nc12.dir=readable\n", "tool user can connect to " + sock},
+		{"refused, directory denied", sock, refused, ""},
+	} {
+		in := checkInput()
+		in.SignalSocket = tc.path
+		got := EvaluateSelfCheck(goodOutput+tc.answers, in)
+		if tc.want == "" {
+			if len(got) != 0 {
+				t.Errorf("%s: failed %+v, want no C12", tc.name, got)
+			}
+			continue
+		}
+		if failedIDs(got) != "C12" {
+			t.Errorf("%s: failed %q, want C12", tc.name, failedIDs(got))
+			continue
+		}
+		if !got[0].Degrades {
+			t.Errorf("%s: C12 must degrade", tc.name)
+		}
+		if !strings.Contains(got[0].Detail, tc.want) {
+			t.Errorf("%s: detail %q lacks %q", tc.name, got[0].Detail, tc.want)
+		}
+	}
+
+	// without a Signal socket the probe keys, if any, mean nothing: no C12 line at all
+	in := checkInput()
+	if got := EvaluateSelfCheck(goodOutput+"c12.sock=connected\nc12.dir=readable\n", in); len(got) != 0 {
+		t.Errorf("no Signal path, yet %+v", got)
+	}
+}
+
+// The re-run on its own: absent is "not verified" without starting the tool shell; once the
+// socket exists the shell runs and C12 passes or fails on its answers.
+func TestRunSignalCheck(t *testing.T) {
+	sock, dir := c12Sock(t)
+	// a workspace parent that cannot be created, so the fallback directory is used and no root
+	// is needed to hand a directory to the tool user
+	blocker := filepath.Join(dir, "file-in-the-way")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	in := SelfCheckInput{WorkDirParent: blocker, FallbackDir: dir}
+
+	runs := 0
+	var script string
+	answer := ""
+	run := func(ctx context.Context, d, s string) (string, error) { runs++; script = s; return answer, nil }
+
+	if got := RunSignalCheck(t.Context(), run, in); got != nil || runs != 0 {
+		t.Fatalf("no Signal path: %+v, %d runs", got, runs)
+	}
+	in.SignalSocket = filepath.Join(dir, "absent.sock")
+	got := RunSignalCheck(t.Context(), run, in)
+	if failedIDs(got) != "C12" || !strings.Contains(got[0].Detail, "not verified") || runs != 0 {
+		t.Fatalf("absent: %+v, %d runs", got, runs)
+	}
+
+	in.SignalSocket = sock
+	answer = "c12.sock=refused\nc12.dir=denied\n"
+	if got := RunSignalCheck(t.Context(), run, in); got != nil || runs != 1 {
+		t.Fatalf("present and closed to tools: %+v, %d runs", got, runs)
+	}
+	if !strings.Contains(script, "probe_unix c12.sock") || !strings.Contains(script, "probe_list c12.dir") || strings.Contains(script, "c3.") {
+		t.Errorf("the re-run script is not the two C12 probes:\n%s", script)
+	}
+	answer = "c12.sock=connected\nc12.dir=denied\n"
+	if got := RunSignalCheck(t.Context(), run, in); failedIDs(got) != "C12" || !got[0].Degrades {
+		t.Fatalf("connected: %+v", got)
+	}
+	failing := func(ctx context.Context, d, s string) (string, error) { return "", os.ErrPermission }
+	if got := RunSignalCheck(t.Context(), failing, in); failedIDs(got) != "C12" || !got[0].Degrades {
+		t.Fatalf("runner failure: %+v", got)
+	}
+}
+
+// Through Activate: the self-check at start finds the socket absent (C12 "not verified", degraded),
+// and the re-run after the socket exists clears it. Without a Signal socket there is no C12 at all.
+func TestActivateC12ThenRecheck(t *testing.T) {
+	needRootForOwnership(t)
+	sock := filepath.Join(shortSockDir(t), "api.sock")
+	e := newActEnv(t)
+	e.cfg.SignalSocket = sock
+	e.out = goodOutput + "c12.sock=refused\nc12.dir=denied\n"
+	iso, err := Activate(t.Context(), e.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := iso.View(); v.Status != Degraded || !strings.Contains(v.Reason, "C12: not verified: socket absent") {
+		t.Fatalf("at start: %+v", v)
+	}
+	listenAt(t, sock)
+	iso.RecheckSignal(t.Context())
+	if v := iso.View(); v.Status != Enforced {
+		t.Fatalf("after the socket exists: %+v", v)
+	}
+
+	e2 := newActEnv(t)
+	iso2, err := Activate(t.Context(), e2.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := iso2.View(); strings.Contains(v.Reason, "C12") || len(v.Warnings) != 0 {
+		t.Fatalf("no Signal socket, yet %+v", v)
+	}
+}
