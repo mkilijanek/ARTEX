@@ -84,6 +84,7 @@ func indexOf(steps []string, s string) int {
 // AC30 (order): secrets are gone before the kill, before the check and before any tool
 // process can exist; the fixed order of the activation steps holds.
 func TestActivateStepOrder(t *testing.T) {
+	needRootForOwnership(t)
 	e := newActEnv(t)
 	iso, err := Activate(t.Context(), e.cfg)
 	if err != nil {
@@ -235,6 +236,7 @@ func TestActivateToolCausedFailuresKeepIsolation(t *testing.T) {
 
 // The warnings-only checks leave the status enforced.
 func TestActivateWarningsOnlyStaysEnforced(t *testing.T) {
+	needRootForOwnership(t)
 	e := newActEnv(t)
 	e.out = strings.Replace(goodOutput, "c9.meta=closed", "c9.meta=open", 1)
 	iso, err := Activate(t.Context(), e.cfg)
@@ -254,6 +256,7 @@ func TestActivateWarningsOnlyStaysEnforced(t *testing.T) {
 // own file operations in shared directories to other files, so the status is degraded (isolation
 // stays on), whichever of the two is off or unreadable.
 func TestActivateLinkProtectionOffDegrades(t *testing.T) {
+	needRootForOwnership(t)
 	for name, c := range map[string]struct{ file, value string }{ // value "": the file is missing
 		"hard links off":   {"protected_hardlinks", "0\n"},
 		"symlinks off":     {"protected_symlinks", "0\n"},
@@ -292,6 +295,7 @@ func TestActivateLinkProtectionOffDegrades(t *testing.T) {
 
 // C10: leftovers keep being killed in the background and the reason clears when they are gone.
 func TestActivateLeftoversClearWhenTheyAreGone(t *testing.T) {
+	needRootForOwnership(t)
 	e := newActEnv(t)
 	e.killer.left = []int{3, 3, 0} // the first two kills leave processes behind
 	e.cfg.Lease = LeaseOptions{PollEvery: time.Millisecond, PollWait: 10 * time.Millisecond, RetryEvery: 5 * time.Millisecond}
@@ -314,6 +318,7 @@ func TestActivateLeftoversClearWhenTheyAreGone(t *testing.T) {
 // C10: an idle sweep that fails (the kill or the /proc read) degrades the status like a failed
 // start-up sweep, is tried again on the next tick, and the reason clears once a sweep succeeds.
 func TestActivateIdleSweepFailureDegradesAndIsRetried(t *testing.T) {
+	needRootForOwnership(t)
 	three := func(msg string) []error { return []error{errors.New(msg), errors.New(msg), errors.New(msg)} }
 	for name, fail := range map[string]func(k *fakeKiller){
 		"kill":      func(k *fakeKiller) { k.failNext(three("kill failed"), nil) },
@@ -659,6 +664,7 @@ func TestDrainLogsTheStopTimeCleanup(t *testing.T) {
 // A part started after activation (the egress forwarder) that fails makes the status degraded
 // with its own reason; it never switches isolation off. Reporting again replaces the entry.
 func TestReportFailureDegradesWithTheReasonAndKeepsIsolation(t *testing.T) {
+	needRootForOwnership(t)
 	e := newActEnv(t)
 	iso, err := Activate(t.Context(), e.cfg)
 	if err != nil {
@@ -678,5 +684,24 @@ func TestReportFailureDegradesWithTheReasonAndKeepsIsolation(t *testing.T) {
 	}
 	if !strings.HasPrefix(os.Getenv("PATH"), e.cfg.Layout.ShimDir+":") {
 		t.Error("the shim left PATH")
+	}
+}
+
+// needRootForOwnership skips a test that drives Activate to the enforced state: the self-check
+// hands a probe workspace to the tool user (lchown), which only root may do. Hosted CI runs these
+// tests again as root (see the "root-only tests" step of .github/workflows/ci.yml).
+func needRootForOwnership(t *testing.T) {
+	t.Helper()
+	if os.Geteuid() != 0 {
+		t.Skip("needs root: the self-check hands a workspace to the tool user")
+	}
+}
+
+// Test of the skip: as a non-root user the guard skips, and as root it does not.
+func TestNeedRootForOwnershipSkipsWithoutRoot(t *testing.T) {
+	var sub *testing.T
+	t.Run("guard", func(t *testing.T) { sub = t; needRootForOwnership(t) })
+	if got, want := sub.Skipped(), os.Geteuid() != 0; got != want {
+		t.Fatalf("skipped=%v with euid %d", got, os.Geteuid())
 	}
 }

@@ -120,6 +120,9 @@ func regexpFind(s, re string) string {
 // The script directory is the server's: a directory only the server can write, 0711, and the
 // file is made exclusively with a name nobody can guess.
 func TestScriptFileIsTheServersAndOutOfTheToolsReach(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root: the scripts directory and the files in it are owned by root")
+	}
 	_, l := activateEnforcedTree(t)
 	rec := fakeRootStage(t, l)
 	_ = rec
