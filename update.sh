@@ -66,6 +66,7 @@ update_docker(){
       *) warn "Could not read pg_hba.conf in the postgres container (exit $hba_rc); check the authentication of this volume by hand." ;;
     esac
   fi
+  warn "After upgrading from 0.5.17m or earlier, rotate the database password and the model provider API keys (see GHSA-x67q-r3xq-3ghq and .env.example)."
   info "View logs: docker compose logs -f artex"
   info "Clean up old images (optional): docker image prune -f"
 }

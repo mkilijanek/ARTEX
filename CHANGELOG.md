@@ -373,6 +373,12 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Security
 
+- **Tool isolation (security advisory [GHSA-x67q-r3xq-3ghq](https://github.com/mkilijanek/ARTEX/security/advisories/GHSA-x67q-r3xq-3ghq), fixed in 0.5.18m).**
+  The tool isolation, socket-only database, login throttling and platform-tool approval of this release close the
+  path by which agent tool processes in 0.5.17m and earlier read the server's secrets and reached its database.
+  After upgrading, rotate the database password and the model provider API keys (and any LLM proxy credentials);
+  see the advisory for the affected versions and the full list of post-upgrade actions.
+
 - **Destination checks for WebFetch and the custom http tool** (Phase D.1, #23, #7).
   WebFetch in every role (planner, worker, main agent, chat) and the custom http tool
   check the initial URL and every redirect hop (at most 10) before connecting. Direct
