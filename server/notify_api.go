@@ -1,9 +1,11 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -454,7 +456,11 @@ func (s *Server) notifyTestChannel(w http.ResponseWriter, r *http.Request) {
 	_, err = channel.Send(r.Context(), cfg, msg)
 	if ch.Kind == notify.KindSignal {
 		// Whatever the outcome, the bridge socket may exist now: re-run the isolation check C12.
-		notify.RecheckSignal(r.Context())
+		rctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		if rerr := notify.RecheckSignal(rctx); rerr != nil {
+			log.Printf("[notify] signal: isolation recheck skipped: %v", rerr)
+		}
+		cancel()
 	}
 	if err != nil {
 		// Return the channel's raw error to the user as-is — it is their only clue

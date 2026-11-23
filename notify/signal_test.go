@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -185,6 +186,12 @@ func TestSignalLoadEnv(t *testing.T) {
 
 			env := map[string]string{SignalAPIEnv: tc.api, SignalNumberEnv: tc.num}
 			LoadSignalEnv(func(k string) string { return env[k] })
+			// The parse runs in init, before the log sink exists: it only stores the lines, and
+			// LogSignalConfig (called by main once the sink is up) writes them.
+			if buf.Len() != 0 {
+				t.Errorf("LoadSignalEnv must not log, got %q", buf.String())
+			}
+			LogSignalConfig()
 
 			if got := SignalSocketPath(); got != tc.wantSocket {
 				t.Errorf("SignalSocketPath() = %q, want %q", got, tc.wantSocket)
@@ -424,8 +431,8 @@ func TestSignalIgnoresProxyEnvironment(t *testing.T) {
 	}
 	// http.ProxyFromEnvironment caches the environment once per process, so also
 	// assert the configuration itself.
-	tr, ok := signalState.Load().client.Transport.(*http.Transport)
-	if !ok || tr.Proxy != nil {
+	st, ok := signalState.Load().client.Transport.(*signalTransport)
+	if !ok || st.base.Proxy != nil {
 		t.Fatal("the Signal transport must not have a Proxy function")
 	}
 }
@@ -602,7 +609,23 @@ func TestSignalSend201Shapes(t *testing.T) {
 		{"array no errors", `[{"timestamp":"1"}]`, false},
 		{"array empty errors", `[{"timestamp":"1","errors":{"recipients":[]}}]`, false},
 		{"object form", `{"timestamp":"1"}`, false},
-		{"empty body", ``, false},
+		{"object numeric timestamp", `{"timestamp":1732370000000}`, false},
+		{"array of two", `[{"timestamp":"1"},{"timestamp":2}]`, false},
+		{"empty body", ``, true},
+		{"whitespace body", " \n", true},
+		{"empty object", `{}`, true},
+		{"empty array", `[]`, true},
+		{"null", `null`, true},
+		{"object with error", `{"error":"boom"}`, true},
+		{"error and timestamp", `{"timestamp":"1","error":"boom"}`, true},
+		{"missing timestamp", `{"foo":"bar"}`, true},
+		{"zero numeric timestamp", `{"timestamp":0}`, true},
+		{"empty string timestamp", `{"timestamp":""}`, true},
+		{"boolean timestamp", `{"timestamp":true}`, true},
+		{"array with one bad element", `[{"timestamp":"1"},{}]`, true},
+		{"array with null element", `[{"timestamp":"1"},null]`, true},
+		{"array of scalars", `[1,2]`, true},
+		{"scalar", `42`, true},
 		{"not json", `OK`, true},
 		{"truncated json array", `[{"timestamp":`, true},
 	}
@@ -615,12 +638,40 @@ func TestSignalSend201Shapes(t *testing.T) {
 				if err == nil || !IsPermanent(err) {
 					t.Fatalf("want a permanent error, got kept=%d err=%v", kept, err)
 				}
+				if !strings.HasPrefix(err.Error(), "Signal bridge returned an unexpected success response (HTTP 201)") &&
+					!strings.Contains(err.Error(), "unreadable success response") {
+					t.Fatalf("error = %q", err)
+				}
 				return
 			}
 			if err != nil || kept != 1 {
 				t.Fatalf("kept=%d err=%v", kept, err)
 			}
 		})
+	}
+}
+
+// The error for an unexpected success never quotes the body: only the text of an error member, with
+// numbers masked and cut short, may follow the status.
+func TestSignalSendUnexpectedSuccessHintIsScrubbed(t *testing.T) {
+	long := strings.Repeat("x", 300)
+	body := `{"error":"account ` + sigSender + ` ` + long + `","challenge_tokens":["CHALLENGE-TOKEN-XYZ"],"timestamp":"1"}`
+	br := newFakeBridge(t, 200, "application/json", body)
+	useSignal(t, br.sock, sigSender)
+	_, err := sendGroup(t, groupCfg(), sigMsg)
+	if err == nil || !IsPermanent(err) {
+		t.Fatalf("want a permanent error, got %v", err)
+	}
+	if !strings.HasPrefix(err.Error(), "Signal bridge returned an unexpected success response (HTTP 200): account …0100") {
+		t.Fatalf("error = %q", err)
+	}
+	for _, leak := range []string{"5555550100", "CHALLENGE-TOKEN-XYZ", "challenge_tokens", long} {
+		if strings.Contains(err.Error(), leak) {
+			t.Fatalf("error leaks %q: %v", leak, err)
+		}
+	}
+	if len(err.Error()) > 200 {
+		t.Fatalf("hint is not short: %d bytes", len(err.Error()))
 	}
 }
 
@@ -974,5 +1025,163 @@ func TestSignalConfigIsNotMaskedAndUpdatesMerge(t *testing.T) {
 	}
 	if !reflect.DeepEqual(merged["recipients"], []any{sigRecipA}) || merged["recipient_type"] != "numbers" {
 		t.Fatalf("merged = %v", merged)
+	}
+}
+
+// ---- isolation re-check hook (C12) ----
+
+// sigLogBuf is a log sink that the send goroutine and the test may touch at the same time.
+type sigLogBuf struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *sigLogBuf) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *sigLogBuf) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// resetSignalRecheck gives a test a clean hook and once-flag, and restores them after it.
+func resetSignalRecheck(t *testing.T) {
+	t.Helper()
+	signalSentOnce.Store(false)
+	SetSignalRecheck(nil)
+	t.Cleanup(func() { SetSignalRecheck(nil); signalSentOnce.Store(false) })
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// The hook runs once, after the first successful send, with a bounded context that outlives the
+// caller's (the send must not wait for it, and a cancelled request must not cancel it).
+func TestSignalRecheckHookRunsOnceAfterFirstSuccess(t *testing.T) {
+	resetSignalRecheck(t)
+	br := newFakeBridge(t, 201, "application/json", `[{"timestamp":"1"}]`)
+	useSignal(t, br.sock, sigSender)
+
+	var calls atomic.Int32
+	type seen struct {
+		remaining time.Duration
+		hasDL     bool
+		err       error
+	}
+	got := make(chan seen, 4)
+	SetSignalRecheck(func(ctx context.Context) error {
+		calls.Add(1)
+		dl, ok := ctx.Deadline()
+		got <- seen{time.Until(dl), ok, ctx.Err()}
+		return nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	if _, err := (signalChannel{}).Send(ctx, groupCfg(), sigMsg); err != nil {
+		t.Fatal(err)
+	}
+	cancel() // the request is over; the re-check goes on
+	select {
+	case s := <-got:
+		if !s.hasDL || s.remaining <= time.Minute || s.remaining > 2*time.Minute {
+			t.Errorf("hook deadline = %v (set %v), want within 2 minutes", s.remaining, s.hasDL)
+		}
+		if s.err != nil {
+			t.Errorf("hook context already done: %v", s.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the hook was not called")
+	}
+	for range 2 {
+		if _, err := sendGroup(t, groupCfg(), sigMsg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(100 * time.Millisecond) // a wrong second call would have started by now
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("hook called %d times, want 1", n)
+	}
+}
+
+// A hook that fails (here: the check was skipped) is logged and tried again after the next
+// successful send; a failed send does not call it at all.
+func TestSignalRecheckHookFailureIsLoggedAndRetried(t *testing.T) {
+	resetSignalRecheck(t)
+	sink := &sigLogBuf{}
+	old := log.Writer()
+	log.SetOutput(sink)
+	t.Cleanup(func() { log.SetOutput(old) })
+
+	br := newFakeBridge(t, 201, "application/json", `[{"timestamp":"1"}]`)
+	useSignal(t, br.sock, sigSender)
+
+	var calls atomic.Int32
+	SetSignalRecheck(func(context.Context) error {
+		if calls.Add(1) == 1 {
+			return errors.New("lock not obtained")
+		}
+		return nil
+	})
+	if _, err := sendGroup(t, groupCfg(), sigMsg); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the skipped line", func() bool {
+		return strings.Contains(sink.String(), "[notify] signal: isolation recheck skipped: lock not obtained")
+	})
+	waitFor(t, "the once-flag to reset", func() bool { return !signalSentOnce.Load() })
+
+	if _, err := sendGroup(t, groupCfg(), sigMsg); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the second call", func() bool { return calls.Load() == 2 })
+	time.Sleep(100 * time.Millisecond)
+	if n := calls.Load(); n != 2 {
+		t.Fatalf("hook called %d times, want 2", n)
+	}
+	// it succeeded the second time: no further call
+	if _, err := sendGroup(t, groupCfg(), sigMsg); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if n := calls.Load(); n != 2 {
+		t.Fatalf("hook called %d times after success, want 2", n)
+	}
+}
+
+func TestSignalRecheckHookNotCalledOnFailedSend(t *testing.T) {
+	resetSignalRecheck(t)
+	br := newFakeBridge(t, 400, "application/json", `{"error":"no"}`)
+	useSignal(t, br.sock, sigSender)
+	var calls atomic.Int32
+	SetSignalRecheck(func(context.Context) error { calls.Add(1); return nil })
+	if _, err := sendGroup(t, groupCfg(), sigMsg); err == nil {
+		t.Fatal("want an error")
+	}
+	time.Sleep(100 * time.Millisecond)
+	if calls.Load() != 0 || signalSentOnce.Load() {
+		t.Fatalf("calls=%d once=%v after a failed send", calls.Load(), signalSentOnce.Load())
+	}
+}
+
+func TestRecheckSignalWithoutHookIsNil(t *testing.T) {
+	resetSignalRecheck(t)
+	if err := RecheckSignal(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want := errors.New("boom")
+	SetSignalRecheck(func(context.Context) error { return want })
+	if err := RecheckSignal(context.Background()); !errors.Is(err, want) {
+		t.Fatalf("err = %v, want the hook's error", err)
 	}
 }

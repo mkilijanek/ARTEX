@@ -17,14 +17,15 @@
 #
 # The bridge keeps the account keys in the signal-data volume: whoever can read it can
 # send as that number. Back it up like a secret and do not delete it casually.
-# On a host with SELinux enforcing the shared socket volume needs the :z label (set below).
+# On a host with SELinux enforcing the shared socket volume needs the shared :z label (set below);
+# signal-data is mounted by signal-cli alone and gets the private :Z label.
 services:
   signal-cli:
     image: ${SIGNAL_CLI_IMAGE:-bbernhard/signal-cli-rest-api:0.102@sha256:6b35b3527459aec9c459398de33f4f229239b3f17b0989d4bceb5191ad71fca9}
     environment:
       MODE: json-rpc
     volumes:
-      - signal-data:/home/.local/share/signal-cli:z
+      - signal-data:/home/.local/share/signal-cli:Z
     # The image is s6-overlay and runs as uid 1000. It exits at start (s6 "cannot create
     # /run/test: Permission denied", or "/run noexec") unless /run is writable by that
     # user and allows exec, so give it a tmpfs with exactly those properties.

@@ -62,6 +62,9 @@ type signalSettings struct {
 	apiErr    string
 	numberErr string
 	client    *http.Client // dials socket only; nil when socket == ""
+	// logLines are the `[notify] signal: ...` lines the parse produced. init cannot log them: the
+	// process log sink (server.StartLogCapture) does not exist yet, so LogSignalConfig writes them.
+	logLines []string
 }
 
 var signalState atomic.Pointer[signalSettings]
@@ -71,9 +74,10 @@ func init() { LoadSignalEnv(os.Getenv) }
 // LoadSignalEnv parses ARTEX_SIGNAL_API and ARTEX_SIGNAL_NUMBER with getenv and
 // makes the result the process-wide Signal configuration. It runs once at start
 // (init, with os.Getenv); tests call it with a fake getenv. An invalid value
-// logs one `[notify] signal: ...` line naming the variable, with the number
-// masked to its last 4 digits, and leaves Signal "not configured"; the process
-// keeps running.
+// leaves Signal "not configured" and stores one `[notify] signal: ...` line
+// naming the variable, with the number masked to its last 4 digits; the process
+// keeps running. It does not log: LogSignalConfig writes the stored lines once
+// the log sink is up.
 func LoadSignalEnv(getenv func(string) string) {
 	st := &signalSettings{}
 
@@ -84,7 +88,7 @@ func LoadSignalEnv(getenv func(string) string) {
 	case !strings.HasPrefix(api, "unix:") || !filepath.IsAbs(strings.TrimPrefix(api, "unix:")) ||
 		strings.ContainsRune(api, 0):
 		st.apiErr = "Signal bridge is not configured: " + SignalAPIEnv + " must be unix:/absolute/path"
-		log.Printf("[notify] signal: %s is invalid, expected unix:/absolute/path; Signal channels stay disabled", SignalAPIEnv)
+		st.logLines = append(st.logLines, fmt.Sprintf("[notify] signal: %s is invalid, expected unix:/absolute/path; Signal channels stay disabled", SignalAPIEnv))
 	default:
 		st.socket = strings.TrimPrefix(api, "unix:")
 		st.client = newSignalClient(st.socket)
@@ -96,8 +100,8 @@ func LoadSignalEnv(getenv func(string) string) {
 		st.numberErr = "Signal sender is not configured: set " + SignalNumberEnv
 	case !signalNumberRe.MatchString(num):
 		st.numberErr = "Signal sender is not configured: " + SignalNumberEnv + " must be an E.164 number (+ and 7 to 15 digits)"
-		log.Printf("[notify] signal: %s is invalid (got %s), expected E.164 (+ and 7 to 15 digits); Signal channels stay disabled",
-			SignalNumberEnv, signalMaskTail(num))
+		st.logLines = append(st.logLines, fmt.Sprintf("[notify] signal: %s is invalid (got %s), expected E.164 (+ and 7 to 15 digits); Signal channels stay disabled",
+			SignalNumberEnv, signalMaskTail(num)))
 	default:
 		st.number = num
 	}
@@ -107,20 +111,33 @@ func LoadSignalEnv(getenv func(string) string) {
 	}
 }
 
+// LogSignalConfig writes the lines LoadSignalEnv stored for an invalid setting. main calls it once,
+// right after the log sink is installed, so the lines reach the captured log and not just stderr.
+func LogSignalConfig() {
+	for _, l := range signalState.Load().logLines {
+		log.Print(l)
+	}
+}
+
 // SignalSocketPath returns the bridge socket path, or "" when ARTEX_SIGNAL_API
 // is unset or invalid.
 func SignalSocketPath() string { return signalState.Load().socket }
 
 // signalRecheck is the hook main installs to re-run the isolation self-check C12 (the bridge socket
 // is not reachable by tools). It is a hook, not an import of the sandbox package, so notify stays
-// independent of it. signalSentOnce makes the send path call it once, after the first success.
+// independent of it. It returns nil only when the check ran and its result was published.
+// signalSentOnce makes the send path call it after the first success, and again after the next
+// success when the call returned an error.
 var (
-	signalRecheck  atomic.Pointer[func(context.Context)]
+	signalRecheck  atomic.Pointer[func(context.Context) error]
 	signalSentOnce atomic.Bool
 )
 
+// signalRecheckTimeout bounds the background re-run started by a send.
+const signalRecheckTimeout = 2 * time.Minute
+
 // SetSignalRecheck installs the C12 re-run hook; nil removes it.
-func SetSignalRecheck(f func(context.Context)) {
+func SetSignalRecheck(f func(context.Context) error) {
 	if f == nil {
 		signalRecheck.Store(nil)
 		return
@@ -128,12 +145,33 @@ func SetSignalRecheck(f func(context.Context)) {
 	signalRecheck.Store(&f)
 }
 
-// RecheckSignal calls the C12 re-run hook when one is installed, and waits for it.
-func RecheckSignal(ctx context.Context) {
+// RecheckSignal calls the C12 re-run hook when one is installed, and waits for it. It returns nil
+// without a hook, and otherwise what the hook returns: an error means the check did not run.
+func RecheckSignal(ctx context.Context) error {
 	if f := signalRecheck.Load(); f != nil {
-		(*f)(ctx)
+		return (*f)(ctx)
 	}
+	return nil
 }
+
+// signalStatusKey carries a *int in the request context; signalTransport stores the response
+// status there, because doJSONVia returns the body of a 2xx response and not its status code.
+type signalStatusKey struct{}
+
+// signalTransport is the bridge transport plus the status recording described at signalStatusKey.
+type signalTransport struct{ base *http.Transport }
+
+func (t *signalTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	if resp != nil {
+		if p, ok := req.Context().Value(signalStatusKey{}).(*int); ok {
+			*p = resp.StatusCode
+		}
+	}
+	return resp, err
+}
+
+func (t *signalTransport) CloseIdleConnections() { t.base.CloseIdleConnections() }
 
 // newSignalClient builds the bridge client. It differs from the shared
 // httpClient on purpose:
@@ -146,7 +184,7 @@ func RecheckSignal(ctx context.Context) {
 func newSignalClient(socket string) *http.Client {
 	return &http.Client{
 		Timeout: signalSendTimeout,
-		Transport: &http.Transport{
+		Transport: &signalTransport{base: &http.Transport{
 			Proxy: nil,
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				conn, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "unix", socket)
@@ -162,7 +200,7 @@ func newSignalClient(socket string) *http.Client {
 			},
 			MaxIdleConns:    2,
 			IdleConnTimeout: 30 * time.Second,
-		},
+		}},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 }
@@ -343,17 +381,26 @@ func (c signalChannel) Send(ctx context.Context, cfg map[string]any, m Message) 
 	text, kept := signalText(m)
 	payload := signalPayload{Number: st.number, Recipients: recipients, Message: text, TextMode: "normal"}
 
-	raw, err := doJSONVia(ctx, st.client, scrub.body, "POST", signalSendURL, nil, payload)
+	var status int
+	raw, err := doJSONVia(context.WithValue(ctx, signalStatusKey{}, &status), st.client, scrub.body, "POST", signalSendURL, nil, payload)
 	if err != nil {
 		return 0, scrub.err(signalClassify(err))
 	}
-	if err := signalCheckDelivery(raw, recipients, scrub); err != nil {
+	if err := signalCheckDelivery(status, raw, recipients, scrub); err != nil {
 		return 0, scrub.err(err)
 	}
 	// The first delivery proves the socket exists now: let the isolation check C12 look again
-	// (in the background, so the delivery is not held up by the tool shell).
+	// (in the background, so the delivery is not held up by the tool shell). The re-run outlives the
+	// request but is bounded; when it did not run, the next successful send tries again.
 	if signalSentOnce.CompareAndSwap(false, true) {
-		go RecheckSignal(context.WithoutCancel(ctx))
+		go func() {
+			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), signalRecheckTimeout)
+			defer cancel()
+			if err := RecheckSignal(rctx); err != nil {
+				log.Printf("[notify] signal: isolation recheck skipped: %v", err)
+				signalSentOnce.Store(false)
+			}
+		}()
 	}
 	return kept, nil
 }
@@ -367,13 +414,18 @@ func signalClassify(err error) error {
 	return err
 }
 
-// signalCheckDelivery inspects the 2xx body. The bridge reports recipients it
-// could not reach inside a successful response; any such recipient makes the
-// delivery a permanent failure (a retry would send the message again to the
+// signalCheckDelivery inspects the 2xx body. Only two shapes count as accepted by the bridge: an
+// object with a non-empty timestamp, or an array whose every element is such an object; anything
+// else (an empty body, {}, [], null, an error object, a missing or zero timestamp) is a permanent
+// "unexpected success response", because a retry would not tell whether the message went out. The
+// bridge also reports recipients it could not reach inside a successful response; any such
+// recipient makes the delivery a permanent failure (a retry would send the message again to the
 // recipients that already got it).
-func signalCheckDelivery(raw []byte, recipients []string, scrub *signalScrubber) error {
+func signalCheckDelivery(status int, raw []byte, recipients []string, scrub *signalScrubber) error {
 	type result struct {
-		Errors struct {
+		Timestamp any `json:"timestamp"`
+		Error     any `json:"error"`
+		Errors    struct {
 			Recipients []struct {
 				Number   string `json:"number"`
 				UUID     string `json:"uuid"`
@@ -382,21 +434,59 @@ func signalCheckDelivery(raw []byte, recipients []string, scrub *signalScrubber)
 			} `json:"recipients"`
 		} `json:"errors"`
 	}
-	var results []result
+	// unexpected never quotes the body; the only hint is the text of an {"error": ...} member,
+	// scrubbed and cut short.
+	unexpected := func(hint string) error {
+		msg := fmt.Sprintf("Signal bridge returned an unexpected success response (HTTP %d)", status)
+		if hint = OneLine(scrub.text(hint), 80); hint != "" {
+			msg += ": " + hint
+		}
+		return Permanent(errors.New(msg))
+	}
+	// accepted reports whether one element has the shape of an accepted send.
+	accepted := func(r *result) bool {
+		if r == nil || r.Error != nil {
+			return false
+		}
+		switch ts := r.Timestamp.(type) {
+		case string:
+			return strings.TrimSpace(ts) != ""
+		case float64:
+			return ts != 0
+		}
+		return false
+	}
+	errHint := func(r *result) string {
+		if r != nil {
+			if e, ok := r.Error.(string); ok {
+				return e
+			}
+		}
+		return ""
+	}
+	var results []*result
 	trimmed := strings.TrimSpace(string(raw))
 	switch {
 	case trimmed == "":
-		return nil
+		return unexpected("")
 	case strings.HasPrefix(trimmed, "["):
 		if err := json.Unmarshal(raw, &results); err != nil {
 			return Permanent(fmt.Errorf("Signal bridge returned an unreadable success response: %s", scrub.body(raw)))
 		}
+		if len(results) == 0 {
+			return unexpected("")
+		}
 	default:
-		var one result
+		var one *result
 		if err := json.Unmarshal(raw, &one); err != nil {
 			return Permanent(fmt.Errorf("Signal bridge returned an unreadable success response: %s", scrub.body(raw)))
 		}
-		results = []result{one}
+		results = []*result{one}
+	}
+	for _, r := range results {
+		if !accepted(r) {
+			return unexpected(errHint(r))
+		}
 	}
 	var failed []string
 	for _, r := range results {

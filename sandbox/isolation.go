@@ -57,11 +57,12 @@ type Isolation struct {
 	permsSeen string // the problems of the last pass, to log a change only
 
 	// What a C12 re-run needs, set at activation when the drop chain is on and a Signal socket
-	// is configured. c12mu keeps two re-runs from overlapping; the result goes through setCheck
-	// and clearCheck, which take mu.
-	c12in  SelfCheckInput
-	runner ScriptRunner
-	c12mu  sync.Mutex
+	// is configured. c12lock (a 1-buffered channel, so a waiter can give up with its context) keeps
+	// two re-runs from overlapping; the result goes through setCheck and clearCheck, which take mu.
+	c12in   SelfCheckInput
+	runner  ScriptRunner
+	c12lock chan struct{}
+	c12once sync.Once
 
 	mu       sync.Mutex
 	pre      Preconditions
@@ -441,20 +442,37 @@ func (i *Isolation) ReapplyPermissions() {
 // "not verified" that was set because the bridge socket was not there yet clears once the socket
 // exists and the tool user is kept out of it, and a socket that turns out reachable degrades the
 // status. The self-check has no periodic loop (it runs once, at start), so the server calls this
-// after the first successful Signal send and on each Signal channel test. It does nothing when
-// the drop chain is off or no Signal socket is configured, and is safe to call concurrently.
-func (i *Isolation) RecheckSignal(ctx context.Context) {
+// after the first successful Signal send and on each Signal channel test. It does nothing (nil)
+// when the drop chain is off or no Signal socket is configured, and is safe to call concurrently.
+//
+// The result is nil only when the check ran and its result was published. It is an error when ctx
+// ended while waiting for another re-run or for the lease, when the lease could not be taken, or
+// when the tool shell failed to run (C12 is still published as degraded in that last case).
+func (i *Isolation) RecheckSignal(ctx context.Context) error {
 	if i == nil || !i.on || i.c12in.SignalSocket == "" || i.runner == nil {
-		return
+		return nil
 	}
-	i.c12mu.Lock()
-	defer i.c12mu.Unlock()
+	i.c12once.Do(func() { i.c12lock = make(chan struct{}, 1) })
+	select {
+	case i.c12lock <- struct{}{}:
+		defer func() { <-i.c12lock }()
+	case <-ctx.Done():
+		return fmt.Errorf("C12 re-run: waiting for another re-run: %w", ctx.Err())
+	}
 	lease, err := i.leases.Acquire(ctx)
 	if err != nil {
 		i.logf("[isolation] C12 re-run skipped: %v", err)
-		return
+		return fmt.Errorf("C12 re-run: %w", err)
 	}
-	failed := RunSignalCheck(ctx, i.runner, i.c12in)
+	var runErr error
+	run := func(rctx context.Context, dir, script string) (string, error) {
+		out, err := i.runner(rctx, dir, script)
+		if err != nil {
+			runErr = err
+		}
+		return out, err
+	}
+	failed := RunSignalCheck(ctx, run, i.c12in)
 	lease.Release()
 
 	before := i.checkDetail("C12")
@@ -466,6 +484,10 @@ func (i *Isolation) RecheckSignal(ctx context.Context) {
 	if after := i.checkDetail("C12"); after != before {
 		i.logStatus()
 	}
+	if runErr != nil {
+		return fmt.Errorf("C12 re-run: the tool shell failed to run: %w", runErr)
+	}
+	return nil
 }
 
 // checkDetail is the detail of the failed check id, or "" when it has not failed.

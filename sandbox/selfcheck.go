@@ -68,6 +68,22 @@ func writeProbeHelpers(w func(format string, a ...any)) {
 	w(`  if ! command -v python3 >/dev/null 2>&1; then echo "$1=unknown"; return; fi`)
 	w(`  if python3 -I -S -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.settimeout(2); s.connect(sys.argv[1])' "$2" >/dev/null 2>&1; then echo "$1=connected"; else echo "$1=refused"; fi`)
 	w(`}`)
+	// C12 only: unlike probe_unix, "refused" means the tool user was kept away from the socket
+	// (PermissionError, FileNotFoundError). The server already saw a socket file there, so a
+	// refused connection (nobody listens), a timeout or any other error means the tool user got
+	// as far as the socket: unknown, which degrades C12.
+	w(`probe_unix_strict() {`)
+	w(`  if ! command -v python3 >/dev/null 2>&1; then echo "$1=unknown"; return; fi`)
+	w(`  r=$(python3 -I -S -c 'import socket,sys`)
+	w(`s=socket.socket(socket.AF_UNIX); s.settimeout(2)`)
+	w(`try:`)
+	w(`    s.connect(sys.argv[1]); print("connected")`)
+	w(`except (PermissionError, FileNotFoundError):`)
+	w(`    print("refused")`)
+	w(`except Exception:`)
+	w(`    print("unknown")' "$2" 2>/dev/null)`)
+	w(`  case "$r" in connected|refused) echo "$1=$r";; *) echo "$1=unknown";; esac`)
+	w(`}`)
 	// connect over TCP with bash; unknown when timeout or bash is missing
 	w(`probe_tcp() {`)
 	w(`  if ! command -v timeout >/dev/null 2>&1 || ! command -v bash >/dev/null 2>&1; then echo "$1=unknown"; return; fi`)
@@ -122,11 +138,11 @@ func writeC12Probes(w func(format string, a ...any), in SelfCheckInput) {
 	if in.SignalSocket == "" || c12Precheck(in.SignalSocket) != "" {
 		return
 	}
-	w(`probe_unix c12.sock %s`, shq(in.SignalSocket))
+	w(`probe_unix_strict c12.sock %s`, shq(in.SignalSocket))
 	w(`probe_list c12.dir %s`, shq(filepath.Dir(in.SignalSocket)))
 }
 
-// c12Precheck is the root-side half of C12. probe_unix maps ENOENT and EACCES both to "refused", so
+// c12Precheck is the root-side half of C12. probe_unix_strict maps only ENOENT and EACCES to "refused", so
 // the server, which can see the path, first says whether a socket is there at all. It returns the
 // detail of a "not verified" C12, or "" when the path is a socket and the tool user may be probed.
 func c12Precheck(path string) string {

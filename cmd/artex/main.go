@@ -79,6 +79,7 @@ func run() int {
 	// capture backend logs into the in-memory sink (still to stderr) so the /logs
 	// page can show a live log stream. Do this first, to catch startup logs too.
 	server.StartLogCapture()
+	notify.LogSignalConfig() // the Signal settings are parsed in init, before the sink existed
 
 	// surface which config file the binary reads (absolute, so `go run`'s relative
 	// "config.json" — resolved against the CWD — is unambiguous).

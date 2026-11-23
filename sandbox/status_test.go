@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeProbe is a platform that satisfies P1-P5 until a field says otherwise.
@@ -340,5 +342,99 @@ func TestRecheckSignalIsSafeConcurrently(t *testing.T) {
 	wg.Wait()
 	if v := iso.View(); v.Status != Enforced {
 		t.Fatalf("%+v", v)
+	}
+}
+
+// The re-run waits for the C12 lock with its context: while another re-run holds the lock, a caller
+// whose context is done (cancelled or past its deadline) gets an error back at once, and the one
+// that holds the lock still finishes and publishes. Run with -race.
+func TestRecheckSignalHonoursContextWhileAnotherRecheckHoldsTheLock(t *testing.T) {
+	sock := filepath.Join(shortSockDir(t), "api.sock")
+	listenAt(t, sock)
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	iso := c12Iso(t, sock, func(context.Context, string, string) (string, error) {
+		started <- struct{}{}
+		<-release
+		return "c12.sock=refused\nc12.dir=denied\n", nil
+	})
+	first := make(chan error, 1)
+	go func() { first <- iso.RecheckSignal(context.Background()) }()
+	<-started // the first re-run now holds the lock
+
+	call := func(ctx context.Context) error {
+		done := make(chan error, 1)
+		go func() { done <- iso.RecheckSignal(ctx) }()
+		select {
+		case err := <-done:
+			return err
+		case <-time.After(3 * time.Second):
+			t.Error("RecheckSignal did not return while its context was done")
+			return nil
+		}
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := call(cancelled); !errors.Is(err, context.Canceled) {
+		t.Errorf("cancelled context: err = %v, want context.Canceled", err)
+	}
+	short, cancel2 := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel2()
+	if err := call(short); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("deadline: err = %v, want context.DeadlineExceeded", err)
+	}
+
+	close(release)
+	if err := <-first; err != nil {
+		t.Errorf("the re-run that held the lock: %v", err)
+	}
+	if v := iso.View(); v.Status != Enforced {
+		t.Errorf("%+v", v)
+	}
+}
+
+// nil means the check ran and its result was published; every other outcome is an error, and a
+// tool shell that failed to run still degrades C12 as before.
+func TestRecheckSignalReturnsAnErrorWhenTheCheckDidNotRun(t *testing.T) {
+	sock := filepath.Join(shortSockDir(t), "api.sock")
+	listenAt(t, sock)
+
+	// context already done and nothing else running: the lease is not acquired
+	iso := c12Iso(t, sock, func(context.Context, string, string) (string, error) {
+		t.Error("the tool shell must not run for a context that is done")
+		return "", nil
+	})
+	done, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := iso.RecheckSignal(done); err == nil {
+		t.Error("a context that is done: want an error")
+	}
+
+	// runner failure: published as degraded, and reported
+	boom := errors.New("no tool shell")
+	failing := c12Iso(t, sock, func(context.Context, string, string) (string, error) { return "", boom })
+	err := failing.RecheckSignal(context.Background())
+	if !errors.Is(err, boom) {
+		t.Errorf("runner failure: err = %v, want it to wrap %v", err, boom)
+	}
+	if v := failing.View(); v.Status != Degraded || !strings.Contains(v.Reason, "the tool shell failed to run") {
+		t.Errorf("runner failure must still degrade C12: %+v", v)
+	}
+
+	// the check ran and passed
+	ok := c12Iso(t, sock, func(context.Context, string, string) (string, error) {
+		return "c12.sock=refused\nc12.dir=denied\n", nil
+	})
+	if err := ok.RecheckSignal(context.Background()); err != nil {
+		t.Errorf("a check that ran: %v", err)
+	}
+
+	// nothing to check is not an error
+	off := c12Iso(t, sock, nil)
+	off.on = false
+	for name, i := range map[string]*Isolation{"no socket": c12Iso(t, "", nil), "chain off": off, "nil receiver": nil} {
+		if err := i.RecheckSignal(context.Background()); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 }
