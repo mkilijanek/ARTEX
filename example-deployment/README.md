@@ -78,7 +78,7 @@ later command (`pull`, `logs`, `exec`, `down`).
 
 - **digest**: needs `ARTEX_IMAGE_DIGEST=sha256:...` in `.env`. Get it from the release workflow
   summary (`Digest: sha256:...`) or with
-  `docker buildx imagetools inspect ghcr.io/mkilijanek/artex:v0.5.19m`. A digest cannot be moved,
+  `docker buildx imagetools inspect ghcr.io/mkilijanek/artex:v0.6.0m`. A digest cannot be moved,
   a tag can. `ARTEX_VERSION` is still required and should match.
 - **data-bind**: `ARTEX_DATA_DIR` (default `./data`). The image runs the server as root and
   creates and owns its subdirectories itself, so no `chown` on the host is needed; keep the
