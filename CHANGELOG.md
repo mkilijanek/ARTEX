@@ -19,7 +19,10 @@ All notable changes to this project are documented in this file. The format is b
   header bytes, so plain ASCII is the safest choice. An LLM profile's own User-Agent follows the same rule, so a value
   with other characters is refused at save and test time. The model-listing request of the LLM page also sends the profile's
   or the ARTEX User-Agent. `ARTEX_USER_AGENT` is managed by the server and also reaches other child processes (MCP stdio servers, custom command tools). An unreadable or invalid stored value forces hidden and is logged.
-
+- **Example deployment from the published image.** `example-deployment/` holds a Docker Compose deployment that runs
+  `ghcr.io/mkilijanek/artex` pinned by `ARTEX_VERSION` (no build, no checkout), with the same socket-only PostgreSQL
+  layout as `docker-compose.yml`, a named data volume, a `.env` template and opt-in override files for a digest pin,
+  a host data directory, a host skills directory, LAN publishing and resource limits.
 - **Tool isolation.** In the Docker image, every process an agent starts (Bash, background tasks, `Monitor`,
   interactive shells, MCP stdio servers, custom command and script tools, and the file tools `Read`, `Write`, `Edit`,
   `MultiEdit`, `LS`, `Glob`, `Grep`) runs as the unprivileged user `artex-tool` (uid/gid 30002; 30001, 30003 and 30004

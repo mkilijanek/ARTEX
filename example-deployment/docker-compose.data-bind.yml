@@ -1,0 +1,19 @@
+# Override: keep ARTEX data in a host directory instead of the named volume `artexdata`,
+# for easy backup and inspection.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.data-bind.yml up -d
+#
+# Directory: ARTEX_DATA_DIR (default ./data next to this file).
+# Permissions: the image has no USER and no chown step; start.sh runs the server as root
+# inside the container, and the server creates and owns its subdirectories itself (some
+# are root 0700, workspaces are uid 30002). So any directory root can write to works, and
+# nothing on the host needs chown. Do not make the directory writable by other host users:
+# it holds jwt.key and session data. With SELinux enforcing, add the
+# :z label (done below). Rootless Docker / user namespaces map container root to your user.
+# Note: this does not migrate existing data; copy the content of the old volume first.
+services:
+  artex:
+    volumes:
+      # Same container path as in the base file, so Compose replaces that entry (volumes
+      # are merged by target path) and keeps the pgsock mount.
+      - ${ARTEX_DATA_DIR:-./data}:/app/data:z

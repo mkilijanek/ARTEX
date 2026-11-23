@@ -1,0 +1,13 @@
+# Override: pin the artex image by digest (immutable; a tag can be moved, a digest cannot).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.digest.yml up -d
+#
+# Set ARTEX_IMAGE_DIGEST in .env to the sha256 digest of the release you want:
+#   - the release workflow prints it in its run summary ("Digest: sha256:..."), or
+#   - docker buildx imagetools inspect ghcr.io/mkilijanek/artex:v0.5.18m
+#     (the line "Digest:" of the top-level manifest list).
+# ARTEX_VERSION is still required by the base file but is then only a label; keep it equal
+# to the release the digest belongs to.
+services:
+  artex:
+    image: ${ARTEX_IMAGE:-ghcr.io/mkilijanek/artex}@${ARTEX_IMAGE_DIGEST:?Set ARTEX_IMAGE_DIGEST in .env, e.g. sha256:<64 hex digits>}
