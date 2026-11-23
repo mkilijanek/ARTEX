@@ -197,8 +197,10 @@ its directory. Passing means both were refused. C12 is the only check that runs 
 - after the first successful Signal send, in the background, for at most 2 minutes. When that re-run cannot take
   place (for example it timed out waiting for the tool shell), the log shows
   `[notify] signal: isolation recheck skipped: <error>` and the next successful send tries again;
-- on every test of a Signal channel (System, Notifications, "Send test message", or
-  `POST /api/notify/channels/{id}/test`), whatever the test's outcome, for at most 30 seconds.
+- on every test of a Signal channel that gets as far as the send (System, Notifications, "Send test message", or
+  `POST /api/notify/channels/{id}/test`), whatever the send's outcome, for at most 30 seconds. A test that fails
+  validation first (an invalid recipient, or `ARTEX_SIGNAL_NUMBER` / `ARTEX_SIGNAL_API` missing or invalid) answers
+  400 and does not re-run C12.
 
 When the result of a re-run differs from the previous one, the server logs `[isolation] status=...` again (with the
 warning block when the status is not `enforced`). With the shipped override, `artex` waits at start for the bridge to

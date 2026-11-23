@@ -42,7 +42,7 @@ Option A: **`artex` has no network path to the bridge; the server reaches it onl
 5. **Self-check C12** (only when `ARTEX_SIGNAL_API` is set): the server checks as root that a socket exists, then a
    tool shell must be refused by the socket and must not be able to list its directory. Any other result degrades the
    isolation status. Because the bridge may start after the self-check, C12 alone is re-run after the first
-   successful send and on each channel test.
+   successful send and on each channel test that reaches the send.
 6. **Message and failure handling.** Plain text only (finding text comes from scanned targets); numbers and group ids
    masked before any error text is cut short; a partial delivery is a permanent failure.
 

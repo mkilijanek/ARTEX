@@ -43,7 +43,7 @@ All notable changes to this project are documented in this file. The format is b
 - **Tool isolation check C12**, only when `ARTEX_SIGNAL_API` is set: the tool user must be refused by the Signal
   bridge socket and must not be able to list its directory; an absent socket is `not verified: socket absent`. It
   degrades the status. C12 is the only check that runs again after start: after the first successful Signal send and
-  on each Signal channel test. `docs/tool-isolation.md`.
+  on each Signal channel test that reaches the send. `docs/tool-isolation.md`.
 - **Tool isolation.** In the Docker image, every process an agent starts (Bash, background tasks, `Monitor`,
   interactive shells, MCP stdio servers, custom command and script tools, and the file tools `Read`, `Write`, `Edit`,
   `MultiEdit`, `LS`, `Glob`, `Grep`) runs as the unprivileged user `artex-tool` (uid/gid 30002; 30001, 30003 and 30004
