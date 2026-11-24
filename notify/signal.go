@@ -119,7 +119,12 @@ func SignalSocketPath() string { return signalState.Load().socket }
 // signalSender is the hook the server installs to provide the sender account. It returns the
 // confirmed account number and, when sending is not allowed right now, a problem text for the
 // operator (the number may then be empty). It is a hook so notify does not import the database.
-var signalSender atomic.Pointer[func(context.Context) (string, string)]
+var signalSender atomic.Pointer[func(context.Context) (string, string, bool)]
+
+// signalRetryError is a hook problem that may clear by itself: the delivery is retried.
+type signalRetryError struct{ text string }
+
+func (e signalRetryError) Error() string { return e.text }
 
 // signalSenderTimeout bounds the hook call made by Validate, which has no context of its own.
 const signalSenderTimeout = 5 * time.Second
@@ -128,6 +133,20 @@ const signalSenderTimeout = 5 * time.Second
 // confirmed account number in E.164 form and a problem text; a non-empty problem means that
 // sending is not allowed now, and the text is shown to the operator as the delivery error.
 func SetSignalSender(f func(ctx context.Context) (number string, problem string)) {
+	if f == nil {
+		signalSender.Store(nil)
+		return
+	}
+	SetSignalSenderKind(func(ctx context.Context) (string, string, bool) {
+		n, p := f(ctx)
+		return n, p, false
+	})
+}
+
+// SetSignalSenderKind is SetSignalSender with a third result: retryable says the problem may clear by
+// itself (the service is not connected, the database could not be read), so a delivery that meets it is
+// retried. Any other problem is permanent.
+func SetSignalSenderKind(f func(ctx context.Context) (number string, problem string, retryable bool)) {
 	if f == nil {
 		signalSender.Store(nil)
 		return
@@ -143,8 +162,11 @@ func signalSenderNumber(ctx context.Context) (string, error) {
 	if f == nil {
 		return "", errors.New("Signal account is not linked: link one under System, Notifications")
 	}
-	number, problem := (*f)(ctx)
+	number, problem, retry := (*f)(ctx)
 	if problem != "" {
+		if retry {
+			return number, signalRetryError{problem}
+		}
 		return number, errors.New(problem)
 	}
 	if number == "" {
@@ -432,6 +454,10 @@ func (c signalChannel) Send(ctx context.Context, cfg map[string]any, m Message) 
 	number, err := signalValidate(ctx, cfg)
 	scrub := newSignalScrubber(number, recipients)
 	if err != nil {
+		var retry signalRetryError
+		if errors.As(err, &retry) {
+			return 0, scrub.err(err)
+		}
 		return 0, scrub.err(Permanent(err))
 	}
 	if len(m.Items) == 0 {

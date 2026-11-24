@@ -276,9 +276,9 @@ func TestSignalSenderHook(t *testing.T) {
 		{"not confirmed", func(context.Context) (string, string) {
 			return sigSender, "confirm the linked Signal account first"
 		}, "confirm the linked Signal account first", ""},
-		{"service down", func(context.Context) (string, string) {
-			return "", "Signal service is not connected"
-		}, "Signal service is not connected", ""},
+		{"error state", func(context.Context) (string, string) {
+			return "", "Signal service is in an error state: unlink and link the account again"
+		}, "unlink and link the account again", ""},
 		{"empty number and no problem", func(context.Context) (string, string) { return "", "" }, "not linked", ""},
 		{"malformed number", func(context.Context) (string, string) { return "12345", "" }, "invalid", ""},
 		{"ready", func(context.Context) (string, string) { return sigRecipB, "" }, "", sigRecipB},
@@ -313,6 +313,50 @@ func TestSignalSenderHook(t *testing.T) {
 			}
 			if len(reqs) != 0 {
 				t.Fatalf("nothing may be sent, got %d requests", len(reqs))
+			}
+		})
+	}
+}
+
+// A problem that may clear by itself (the service is not connected, the state cannot be read) is retried; a
+// hook that does not say so, or says it is not retryable, is permanent.
+func TestSignalSenderHookRetryableProblems(t *testing.T) {
+	br := newFakeBridge(t, 201, "application/json", `[{"timestamp":"1"}]`)
+	env := map[string]string{SignalAPIEnv: "unix:" + br.sock}
+	LoadSignalEnv(func(k string) string { return env[k] })
+	t.Cleanup(func() {
+		SetSignalSender(nil)
+		LoadSignalEnv(os.Getenv)
+	})
+	cases := []struct {
+		name    string
+		problem string
+		retry   bool
+	}{
+		{"service down", "Signal service is not connected", true},
+		{"state unreadable", "Signal state cannot be read: database unavailable", true},
+		{"not linked", "Signal account is not linked: link one under System, Notifications", false},
+		{"not confirmed", "confirm the linked Signal account first", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			SetSignalSenderKind(func(context.Context) (string, string, bool) { return sigSender, tc.problem, tc.retry })
+			before := len(br.requests())
+			vErr := signalChannel{}.Validate(groupCfg())
+			_, sErr := sendGroup(t, groupCfg(), sigMsg)
+			for _, err := range []error{vErr, sErr} {
+				if err == nil || !strings.Contains(err.Error(), tc.problem) {
+					t.Fatalf("error = %v, want it to contain %q", err, tc.problem)
+				}
+			}
+			if IsPermanent(sErr) == tc.retry {
+				t.Fatalf("permanent = %v for retryable = %v: %v", IsPermanent(sErr), tc.retry, sErr)
+			}
+			if strings.Contains(sErr.Error(), sigSender) {
+				t.Fatalf("the sender number is not masked: %v", sErr)
+			}
+			if n := len(br.requests()) - before; n != 0 {
+				t.Fatalf("nothing may be sent, got %d requests", n)
 			}
 		})
 	}
