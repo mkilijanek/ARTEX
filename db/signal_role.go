@@ -11,7 +11,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"net"
 	"regexp"
 	"sort"
 	"strings"
@@ -157,7 +159,23 @@ func stateText(err error) string {
 	} else if c != "" {
 		return "SQLSTATE " + c
 	}
-	return "connection or driver error"
+	return "connection or driver error (" + errClass(err) + ")"
+}
+
+// errClass names the kind of a failure that has no SQLSTATE, without any text of the error itself.
+func errClass(err error) string {
+	var ne net.Error
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		return "connection closed"
+	case errors.As(err, &ne):
+		return "network"
+	}
+	return "other"
 }
 
 // hbaRule is one usable line of pg_hba.conf.
@@ -555,6 +573,10 @@ func (d *DB) provisionSignalRole(ctx context.Context, cfg SignalRoleConfig) Sign
 	if _, err := tx.ExecContext(ctx, `SELECT set_config('lock_timeout', $1, true)`, signalLockTimeout); err != nil {
 		return fail("cannot set the lock timeout: " + stateText(err))
 	}
+	// Two servers that start together provision one after the other, so neither sees the other's half-done work.
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, schemaMigrationLockKey); err != nil {
+		return fail("cannot take the provisioning lock: " + stateText(err))
+	}
 
 	// 2: the role is never the user that is connected.
 	var cur, sess, dbName string
@@ -762,7 +784,7 @@ func recordSignalAuth(ctx context.Context, q signalExecQuerier, auth string) err
 }
 
 // signalLoginWorks logs in as the role with the configured password over the endpoint of the server's own DSN.
-// A failed password is (false, nil); any other failure is an error.
+// A failed password (28P01) is (false, nil); any other failure, 28000 included, is an error.
 func (d *DB) signalLoginWorks(ctx context.Context, cfg SignalRoleConfig, role string) (bool, error) {
 	cc, err := pgx.ParseConfig(cfg.DSN)
 	if err != nil {
@@ -773,7 +795,7 @@ func (d *DB) signalLoginWorks(ctx context.Context, cfg SignalRoleConfig, role st
 	defer conn.Close()
 	conn.SetMaxOpenConns(1)
 	if err := conn.PingContext(ctx); err != nil {
-		if c := pgCode(err); c == "28P01" || c == "28000" {
+		if c := pgCode(err); c == "28P01" {
 			return false, nil
 		}
 		return false, err

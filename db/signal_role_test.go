@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -525,5 +527,65 @@ func TestSignalRoleNameRule(t *testing.T) {
 	d := &DB{}
 	if st := d.provisionSignalRole(context.Background(), SignalRoleConfig{Role: "bad name", Password: "x"}); st.State != SignalRoleError {
 		t.Errorf("an invalid role name: %+v", st)
+	}
+}
+
+// Only a wrong password (28P01) means "the password differs"; a role that may not log in is an error.
+func TestSignalRoleLoginCheckTreatsOnlyAWrongPasswordAsWrong(t *testing.T) {
+	u := newServerUser(t, "superuser", "sigrolelogin")
+	if st := u.provision(t, nil); st.State != SignalRoleOK {
+		t.Fatalf("provisioning: %+v", st)
+	}
+	ctx := context.Background()
+	cfg := u.cfg(nil)
+	if ok, err := u.d.signalLoginWorks(ctx, cfg, u.role.Name); err != nil || !ok {
+		t.Fatalf("login with the right password = %v %v", ok, err)
+	}
+	cfg.Password = "not-the-password"
+	if ok, err := u.d.signalLoginWorks(ctx, cfg, u.role.Name); err != nil || ok {
+		t.Fatalf("login with a wrong password = %v %v, want false and no error", ok, err)
+	}
+	cfg.Password = u.role.Password
+	signalExec(t, u.d, `ALTER ROLE `+quoteSQLIdent(u.role.Name)+` NOLOGIN`)
+	if ok, err := u.d.signalLoginWorks(ctx, cfg, u.role.Name); err == nil {
+		t.Fatalf("login of a role without LOGIN = %v, want an error", ok)
+	}
+}
+
+// Provisioning takes the schema advisory lock, so two starting servers do not interleave.
+func TestSignalRoleProvisionWaitsForTheAdvisoryLock(t *testing.T) {
+	u := newServerUser(t, "superuser", "sigrolelock")
+	ctx := context.Background()
+	holder, err := superConn(t, u).BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback() //nolint:errcheck
+	if _, err := holder.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, schemaMigrationLockKey); err != nil {
+		t.Fatal(err)
+	}
+	st := u.provision(t, nil)
+	if st.State != SignalRoleError || !strings.Contains(st.Detail, "55P03") {
+		t.Errorf("provisioning while the lock is held: %+v, want error naming SQLSTATE 55P03", st)
+	}
+	if roleExists(t, u.d, u.role.Name) {
+		t.Error("the role was created without the lock")
+	}
+}
+
+// A failure without a SQLSTATE says what kind it was, and nothing of its text.
+func TestSignalRoleStateTextNamesTheErrorClass(t *testing.T) {
+	for _, c := range []struct {
+		err  error
+		want string
+	}{
+		{context.DeadlineExceeded, "connection or driver error (timeout)"},
+		{fmt.Errorf("dial tcp 10.1.2.3:5432: %w", context.Canceled), "connection or driver error (canceled)"},
+		{io.ErrUnexpectedEOF, "connection or driver error (connection closed)"},
+		{errors.New("password=hunter2"), "connection or driver error (other)"},
+	} {
+		if got := stateText(c.err); got != c.want {
+			t.Errorf("stateText(%v) = %q, want %q", c.err, got, c.want)
+		}
 	}
 }
