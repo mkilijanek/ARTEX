@@ -131,10 +131,32 @@ func (c *Client) closedErr() error {
 	return ErrClosed
 }
 
-// Call sends one request and waits for its answer, for the context to end, or
+// allowedMethods is every method the client will put on the wire. Anything
+// else is refused before a byte is written: methods such as unregister with
+// deleteAccount would delete the operator's Signal account.
+var allowedMethods = map[string]bool{
+	"version":      true,
+	"listAccounts": true,
+	"startLink":    true,
+	"finishLink":   true,
+	"listGroups":   true,
+	"send":         true,
+}
+
+// ErrMethodNotAllowed is returned for a method outside the allowlist.
+var ErrMethodNotAllowed = errors.New("signal-cli method not allowed")
+
+// ErrNoAccount is returned for a listGroups or send without an account: in
+// multi-account mode signal-cli would silently pick the single loaded one.
+var ErrNoAccount = errors.New("signal-cli call without an account")
+
+// call sends one request and waits for its answer, for the context to end, or
 // for the client to close. The deadline of ctx is the timeout of this request
 // only. A nil result discards the result value.
-func (c *Client) Call(ctx context.Context, method string, params, result any) error {
+func (c *Client) call(ctx context.Context, method string, params, result any) error {
+	if !allowedMethods[method] {
+		return fmt.Errorf("%w: %q", ErrMethodNotAllowed, method)
+	}
 	frame, id, err := c.frame(method, params)
 	if err != nil {
 		return err
@@ -304,4 +326,119 @@ func (c *Client) dispatch(line []byte) {
 	case ch <- response{result: m.Result, err: m.Error}:
 	default: // a second answer for the same id
 	}
+}
+
+// Account is an account of the signal-cli data directory.
+type Account struct {
+	Number string `json:"number"`
+	ACI    string `json:"aci"`
+}
+
+// Group is one entry of listGroups. The list also holds groups the account
+// has left and blocked groups; the caller filters.
+type Group struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	IsMember  bool   `json:"isMember"`
+	IsBlocked bool   `json:"isBlocked"`
+}
+
+// SendRecipientResult is the outcome for one recipient of a send. Proof
+// tokens and retry hints are not decoded.
+type SendRecipientResult struct {
+	Type    string `json:"type"`
+	GroupID string `json:"groupId,omitempty"`
+}
+
+// SendResult is the result of a send with at least one delivered recipient.
+type SendResult struct {
+	Timestamp int64                 `json:"timestamp"`
+	Results   []SendRecipientResult `json:"results"`
+}
+
+// SendFailureResults extracts the per-recipient results that signal-cli puts
+// in error.data.response when no recipient succeeded. ok is false when err is
+// not an RPCError that carries them.
+func SendFailureResults(err error) (results []SendRecipientResult, ok bool) {
+	var re *RPCError
+	if !errors.As(err, &re) || len(re.Data) == 0 {
+		return nil, false
+	}
+	var d struct {
+		Response struct {
+			Results []SendRecipientResult `json:"results"`
+		} `json:"response"`
+	}
+	if json.Unmarshal(re.Data, &d) != nil || d.Response.Results == nil {
+		return nil, false
+	}
+	return d.Response.Results, true
+}
+
+// Version asks signal-cli for its version.
+func (c *Client) Version(ctx context.Context) (string, error) {
+	var out struct {
+		Version string `json:"version"`
+	}
+	if err := c.call(ctx, "version", nil, &out); err != nil {
+		return "", err
+	}
+	return out.Version, nil
+}
+
+// ListAccounts lists the accounts known to signal-cli.
+func (c *Client) ListAccounts(ctx context.Context) ([]Account, error) {
+	var out []Account
+	if err := c.call(ctx, "listAccounts", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// StartLink begins a device link and returns the link URI.
+func (c *Client) StartLink(ctx context.Context) (string, error) {
+	var out struct {
+		URI string `json:"deviceLinkUri"`
+	}
+	if err := c.call(ctx, "startLink", nil, &out); err != nil {
+		return "", err
+	}
+	return out.URI, nil
+}
+
+// FinishLink waits until the phone has scanned the URI. It answers when the
+// link is done, fails, or signal-cli gives up (about 120 s); ctx can end the
+// wait earlier, but only a restart of signal-cli aborts the link itself.
+func (c *Client) FinishLink(ctx context.Context, uri, deviceName string) (Account, error) {
+	var out Account
+	err := c.call(ctx, "finishLink", map[string]string{"deviceLinkUri": uri, "deviceName": deviceName}, &out)
+	return out, err
+}
+
+// ListGroups lists the groups of the account.
+func (c *Client) ListGroups(ctx context.Context, account string) ([]Group, error) {
+	if account == "" {
+		return nil, ErrNoAccount
+	}
+	var out []Group
+	if err := c.call(ctx, "listGroups", map[string]string{"account": account}, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// Send sends a text message to one group (the id in signal-cli's own form).
+// When no recipient is reached signal-cli answers with an error; see
+// SendFailureResults.
+func (c *Client) Send(ctx context.Context, account, groupID, message string) (SendResult, error) {
+	if account == "" {
+		return SendResult{}, ErrNoAccount
+	}
+	var out SendResult
+	err := c.call(ctx, "send", map[string]any{
+		"account":  account,
+		"groupIds": []string{groupID},
+		"message":  message,
+	}, &out)
+	return out, err
 }

@@ -24,7 +24,8 @@ type scenario struct {
 	// StartLinkError, when set, makes startLink fail with this user error.
 	StartLinkError string `json:"start_link_error"`
 	Finish         struct {
-		// Mode: "after" (complete after AfterMS), "never", "fail", "on_stop"
+		// Mode: "after" (complete after AfterMS), "never", "fail", "timeout"
+		// (answer "Link request timed out" after AfterMS), "on_stop"
 		// (stay pending; the account is kept at the moment the process is
 		// stopped, the way a scan that races a cancel ends).
 		Mode    string `json:"mode"`
@@ -33,11 +34,14 @@ type scenario struct {
 		ACI     string `json:"aci"`
 		Error   string `json:"error"`
 	} `json:"finish"`
+	// DelayByMethodMS delays the answer to one method, so that answers leave
+	// in another order than the requests arrived.
+	DelayByMethodMS map[string]int `json:"delay_by_method_ms"`
 	// AnswerDelayMS delays the answers of other requests while a finishLink
 	// is pending (the real program answers them a few seconds later).
 	AnswerDelayMS int `json:"answer_delay_ms"`
 	Send          struct {
-		// Mode: "ok", "partial", "ratelimit", "ioerror", "unknown_group", "hang".
+		// Mode: "ok", "partial", "allfail", "ratelimit", "ioerror", "unexpected", "untrusted", "unknown_group", "hang".
 		Mode string `json:"mode"`
 	} `json:"send"`
 	Groups []json.RawMessage `json:"groups"`
@@ -62,8 +66,12 @@ type scenario struct {
 	StartDelayMS int `json:"start_delay_ms"`
 	// CallsFile receives one JSON line per request.
 	CallsFile string `json:"calls_file"`
-	// StartsFile receives one line per process start.
+	// StartsFile receives one line per process start: the pid and the time.
 	StartsFile string `json:"starts_file"`
+	// DumpFile receives the arguments and the environment at start.
+	DumpFile string `json:"dump_file"`
+	// StderrLines are written to standard error at start.
+	StderrLines []string `json:"stderr_lines"`
 }
 
 type account struct {
@@ -87,6 +95,7 @@ type server struct {
 
 	mu      sync.Mutex
 	pending int // finishLink requests in flight
+	issued  map[string]bool
 }
 
 func main() {
@@ -106,7 +115,7 @@ func main() {
 			}
 		}
 	}
-	s := &server{dataDir: dataDir, args: args, w: os.Stdout}
+	s := &server{dataDir: dataDir, args: args, w: os.Stdout, issued: map[string]bool{}}
 	if scPath != "" {
 		raw, err := os.ReadFile(scPath)
 		if err != nil {
@@ -125,7 +134,14 @@ func main() {
 		s.sc.LinkURI = "sgnl://linkdevice?uuid=ZmFrZS11dWlkLWZvci10ZXN0cw&pub_key=BQabcdefghijklmnopqrstuvwxyz0123456789%2BABCDEF&capabilities=a,b"
 	}
 	if s.sc.StartsFile != "" {
-		appendLine(s.sc.StartsFile, fmt.Sprintf("start %d", os.Getpid()))
+		appendLine(s.sc.StartsFile, fmt.Sprintf("%d %d", os.Getpid(), time.Now().UnixNano()))
+	}
+	if s.sc.DumpFile != "" {
+		raw, _ := json.Marshal(map[string]any{"args": os.Args[1:], "env": os.Environ()})
+		_ = os.WriteFile(s.sc.DumpFile, raw, 0o600)
+	}
+	for _, l := range s.sc.StderrLines {
+		fmt.Fprintln(os.Stderr, l)
 	}
 
 	sigs := make(chan os.Signal, 1)
@@ -272,6 +288,9 @@ func (s *server) handle(req request) {
 			time.Sleep(time.Duration(s.sc.AnswerDelayMS) * time.Millisecond)
 		}
 	}
+	if d := s.sc.DelayByMethodMS[req.Method]; d > 0 {
+		time.Sleep(time.Duration(d) * time.Millisecond)
+	}
 	if s.sc.Notifications {
 		s.write(map[string]any{"jsonrpc": "2.0", "method": "receive", "params": map[string]any{
 			"envelope": map[string]any{"source": "+48600100999", "dataMessage": map[string]any{"message": s.sc.NotifySentinel}},
@@ -293,10 +312,6 @@ func (s *server) handle(req request) {
 	switch req.Method {
 	case "version":
 		s.reply(req.ID, map[string]any{"version": s.sc.Version})
-	case "dumpEnv":
-		s.reply(req.ID, os.Environ())
-	case "dumpArgs":
-		s.reply(req.ID, s.args)
 	case "listAccounts":
 		out := []map[string]any{}
 		for _, a := range s.accounts() {
@@ -308,10 +323,16 @@ func (s *server) handle(req request) {
 			s.fail(req.ID, -3, s.sc.StartLinkError, nil)
 			return
 		}
+		s.mu.Lock()
+		s.issued[s.sc.LinkURI] = true
+		s.mu.Unlock()
 		s.reply(req.ID, map[string]any{"deviceLinkUri": s.sc.LinkURI})
 	case "finishLink":
 		s.finishLink(req)
 	case "listGroups":
+		if !s.checkAccount(req) {
+			return
+		}
 		if s.sc.ListGroupsError {
 			s.fail(req.ID, -3, "Failed to list groups (IOException)", nil)
 			return
@@ -328,7 +349,34 @@ func (s *server) handle(req request) {
 	}
 }
 
+// checkAccount mirrors multi-account mode: a call must name a loaded account.
+func (s *server) checkAccount(req request) bool {
+	var p struct {
+		Account string `json:"account"`
+	}
+	_ = json.Unmarshal(req.Params, &p)
+	for _, a := range s.accounts() {
+		if p.Account != "" && a.Number == p.Account {
+			return true
+		}
+	}
+	s.fail(req.ID, -32602, "Specified account does not exist", nil)
+	return false
+}
+
 func (s *server) finishLink(req request) {
+	var p struct {
+		URI string `json:"deviceLinkUri"`
+	}
+	_ = json.Unmarshal(req.Params, &p)
+	s.mu.Lock()
+	known := s.issued[p.URI]
+	delete(s.issued, p.URI) // a link URI is good for one finishLink
+	s.mu.Unlock()
+	if !known {
+		s.fail(req.ID, -1, "Unknown device link uri.", nil)
+		return
+	}
 	switch s.sc.Finish.Mode {
 	case "after":
 		time.Sleep(time.Duration(s.sc.Finish.AfterMS) * time.Millisecond)
@@ -342,6 +390,9 @@ func (s *server) finishLink(req request) {
 			a = "11111111-2222-4333-8444-555555555555"
 		}
 		s.reply(req.ID, map[string]any{"number": n, "aci": a})
+	case "timeout":
+		time.Sleep(time.Duration(s.sc.Finish.AfterMS) * time.Millisecond)
+		s.fail(req.ID, -1, "Link request timed out, please try again.", nil)
 	case "fail":
 		time.Sleep(time.Duration(s.sc.Finish.AfterMS) * time.Millisecond)
 		msg := s.sc.Finish.Error
@@ -355,12 +406,20 @@ func (s *server) finishLink(req request) {
 }
 
 func (s *server) send(req request) {
+	if !s.checkAccount(req) {
+		return
+	}
 	recipient := map[string]any{"number": nil, "uuid": "22222222-3333-4444-8555-666666666666"}
 	switch s.sc.Send.Mode {
 	case "partial":
 		s.reply(req.ID, map[string]any{"timestamp": 1700000000000, "results": []map[string]any{
 			{"recipientAddress": recipient, "type": "SUCCESS"},
 			{"recipientAddress": recipient, "type": "NETWORK_FAILURE"},
+		}})
+	case "allfail":
+		s.fail(req.ID, -3, "Failed to send message", map[string]any{"response": map[string]any{
+			"timestamp": 1700000000000,
+			"results":   []map[string]any{{"recipientAddress": recipient, "type": "NETWORK_FAILURE"}},
 		}})
 	case "ratelimit":
 		s.fail(req.ID, -5, "Failed to send message due to rate limiting", map[string]any{"response": map[string]any{
@@ -369,6 +428,10 @@ func (s *server) send(req request) {
 		}})
 	case "ioerror":
 		s.fail(req.ID, -3, "Failed to send message: connection reset (IOException)", nil)
+	case "unexpected":
+		s.fail(req.ID, -32603, "Failed to send message: connection reset (SocketException)", nil)
+	case "untrusted":
+		s.fail(req.ID, -4, "Failed to send message: untrusted identity", nil)
 	case "unknown_group":
 		s.fail(req.ID, -1, "Failed to send to group: Unknown group", nil)
 	case "hang":
