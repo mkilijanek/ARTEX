@@ -29,8 +29,11 @@ TOOL_PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 TOOL_NPROC=4096
 BBOT_HOME=/opt/bbot-home
 BROWSERS=${PLAYWRIGHT_BROWSERS_PATH:-/opt/ms-playwright}
-# bbot dry-run modules of the tool matrix, and the one only the full variant has
-DRY_MODULES=wafw00f,paramminer_getparams,lightfuzz,sslcert,gowitness,nuclei,legba,medusa
+# bbot dry-run modules of the tool matrix, and the one only the full variant has. nuclei is not
+# in the list: its module setup downloads the nuclei templates from GitHub on every run, which
+# depends on the network and the GitHub API rate limit, not on the image. The nuclei binary, its
+# version and the link bbot uses are checked in rows of their own.
+DRY_MODULES=wafw00f,paramminer_getparams,lightfuzz,sslcert,gowitness,legba,medusa
 
 # ---------------------------------------------------------------- library scan ---
 
