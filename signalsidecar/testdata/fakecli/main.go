@@ -272,7 +272,7 @@ func (s *server) addAccount() {
 	acc := s.accounts()
 	n := s.sc.Finish.Number
 	if n == "" {
-		n = "+48600100101"
+		n = "+15555550101"
 	}
 	a := s.sc.Finish.ACI
 	if a == "" {
@@ -307,7 +307,7 @@ func (s *server) handle(req request) {
 	}
 	if s.sc.Notifications {
 		s.write(map[string]any{"jsonrpc": "2.0", "method": "receive", "params": map[string]any{
-			"envelope": map[string]any{"source": "+48600100999", "dataMessage": map[string]any{"message": s.sc.NotifySentinel}},
+			"envelope": map[string]any{"source": "+15555550999", "dataMessage": map[string]any{"message": s.sc.NotifySentinel}},
 		}})
 	}
 	if s.sc.Oversize.Bytes > 0 && s.sc.Oversize.Method == req.Method {
@@ -401,7 +401,7 @@ func (s *server) finishLink(req request) {
 		s.addAccount()
 		n := s.sc.Finish.Number
 		if n == "" {
-			n = "+48600100101"
+			n = "+15555550101"
 		}
 		a := s.sc.Finish.ACI
 		if a == "" {

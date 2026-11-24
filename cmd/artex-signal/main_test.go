@@ -379,7 +379,7 @@ func exists(path string) bool {
 // database to confirm password authentication before it starts signal-cli,
 // links, sends over the socket and stops cleanly on a signal.
 func TestServeRunsTheSidecarEndToEnd(t *testing.T) {
-	const number = "+48600100101"
+	const number = "+15555550101"
 	t.Setenv(envDSN, "postgres://leak:SECRET-DSN-VALUE@db/x")
 	f := newFixture(t, "mainsrv")
 	f.exec(`UPDATE public.signal_sidecar_config SET db_auth_state = 'unchecked'`)

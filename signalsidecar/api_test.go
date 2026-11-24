@@ -18,8 +18,8 @@ import (
 )
 
 const (
-	apiNumber = "+48600100101"
-	apiPeer   = "+48600100102"
+	apiNumber = "+15555550101"
+	apiPeer   = "+15555550102"
 	apiGroup  = "group.QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg5YWJjZGVmZ2hpamtsbW5vcA=="
 )
 
@@ -285,9 +285,9 @@ func TestRateLimitBodyHasNoChallengeData(t *testing.T) {
 }
 
 func TestErrorTextsAreScrubbedInBodiesAndLogs(t *testing.T) {
-	leaks := "failed for +48600100199 in group.QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg5YWJjZGVmZ2hpamtsbW5vcA== " +
+	leaks := "failed for +15555550199 in group.QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg5YWJjZGVmZ2hpamtsbW5vcA== " +
 		"id 11111111-2222-4333-8444-555555555555 via sgnl://linkdevice?uuid=SECRETPARAM&pub_key=abc"
-	secrets := []string{"+48600100199", "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg5YWJjZGVmZ2hpamtsbW5vcA", "11111111-2222-4333-8444-555555555555", "SECRETPARAM", "linkdevice"}
+	secrets := []string{"+15555550199", "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg5YWJjZGVmZ2hpamtsbW5vcA", "11111111-2222-4333-8444-555555555555", "SECRETPARAM", "linkdevice"}
 	for _, code := range []int{-1, -3, -4, -32602, -32603} {
 		t.Run(fmt.Sprint(code), func(t *testing.T) {
 			r := newAPIRig(t)
@@ -377,7 +377,7 @@ func TestBadRequestsAreRefusedWithoutASend(t *testing.T) {
 		name string
 		body any
 	}{
-		{"wrongnumber", mod(func(m map[string]any) { m["number"] = "+48600100109" })},
+		{"wrongnumber", mod(func(m map[string]any) { m["number"] = "+15555550109" })},
 		{"nonumber", mod(func(m map[string]any) { delete(m, "number") })},
 		{"markdown", mod(func(m map[string]any) { m["text_mode"] = "styled" })},
 		{"notextmode", mod(func(m map[string]any) { delete(m, "text_mode") })},
@@ -387,7 +387,7 @@ func TestBadRequestsAreRefusedWithoutASend(t *testing.T) {
 		{"mixed", sendBody(apiGroup, apiPeer)},
 		{"twogroups", sendBody(apiGroup, apiGroup)},
 		{"badnumber", sendBody("+0123456789")},
-		{"nonumberplus", sendBody("48600100102")},
+		{"nonumberplus", sendBody("15555550102")},
 		{"uuid", sendBody("11111111-2222-4333-8444-555555555555")},
 		{"username", sendBody("someone.01")},
 		{"emptygroup", sendBody("group.")},
@@ -403,7 +403,7 @@ func TestBadRequestsAreRefusedWithoutASend(t *testing.T) {
 				t.Fatalf("%d %s", code, body)
 			}
 			text := errorText(t, body)
-			for _, s := range []string{apiNumber, apiPeer, "48600100109", "someone"} {
+			for _, s := range []string{apiNumber, apiPeer, "15555550109", "someone"} {
 				if strings.Contains(text, s) {
 					t.Fatalf("error echoes %q: %s", s, text)
 				}
@@ -531,7 +531,7 @@ func TestAboutReportsTheServiceOnly(t *testing.T) {
 			t.Fatalf("%s: %s", k, body)
 		}
 	}
-	if strings.Contains(string(body), "4860") {
+	if strings.Contains(string(body), "155555") {
 		t.Fatalf("account data in %s", body)
 	}
 	if readies, _, abouts := r.b.calls(); readies != 0 || abouts != 1 {

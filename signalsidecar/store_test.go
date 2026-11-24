@@ -182,13 +182,13 @@ func TestStoreReadsTheView(t *testing.T) {
 		t.Fatalf("view %+v, want %+v", v, want)
 	}
 	r.exec(`UPDATE public.signal_sidecar_config SET desired = 'link', gen = 4, device_name = 'My Box',
-	    link_ttl_seconds = 45, confirmed_account = '+48600100101', groups_refresh_gen = 3, db_auth_state = 'unchecked'`)
+	    link_ttl_seconds = 45, confirmed_account = '+15555550101', groups_refresh_gen = 3, db_auth_state = 'unchecked'`)
 	r.exec(`UPDATE public.signal_sidecar_status SET handled_gen = 2, groups_gen = 1`)
 	v, err = s.Config(ctx5(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = ConfigView{Desired: "link", Gen: 4, DeviceName: "My Box", LinkTTLSeconds: 45, ConfirmedAccount: "+48600100101",
+	want = ConfigView{Desired: "link", Gen: 4, DeviceName: "My Box", LinkTTLSeconds: 45, ConfirmedAccount: "+15555550101",
 		GroupsRefreshGen: 3, DBAuthOK: false, HandledGen: 2, GroupsGen: 1}
 	if v != want {
 		t.Fatalf("view %+v, want %+v", v, want)
@@ -221,11 +221,11 @@ func TestStoreCallsTheThreeFunctions(t *testing.T) {
 		t.Fatalf("after set_link: %v", st)
 	}
 
-	if err := s.Heartbeat(ctx, Heartbeat{State: "linked", HandledGen: gen, Number: "+48600100101", ACI: "11111111-2222-4333-8444-555555555555"}); err != nil {
+	if err := s.Heartbeat(ctx, Heartbeat{State: "linked", HandledGen: gen, Number: "+15555550101", ACI: "11111111-2222-4333-8444-555555555555"}); err != nil {
 		t.Fatal(err)
 	}
 	st = r.status()
-	if st.State != "linked" || st.Number != "+48600100101" || st.URI.Valid || st.Handled != gen {
+	if st.State != "linked" || st.Number != "+15555550101" || st.URI.Valid || st.Handled != gen {
 		t.Fatalf("after linked: %v", st)
 	}
 
@@ -507,8 +507,8 @@ func TestDBErrorTextHoldsOnlyFixedTexts(t *testing.T) {
 	if !strings.Contains(e.Error(), "timed out") {
 		t.Fatal(e)
 	}
-	e = dbError("x", errors.New("failed to connect to `host=+48600100101`"))
-	if strings.Contains(e.Error(), "48600100101") {
+	e = dbError("x", errors.New("failed to connect to `host=+15555550101`"))
+	if strings.Contains(e.Error(), "15555550101") {
 		t.Fatalf("number not masked: %v", e)
 	}
 }

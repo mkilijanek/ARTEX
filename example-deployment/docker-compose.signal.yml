@@ -2,7 +2,7 @@
 #
 #   docker compose -f docker-compose.yml -f docker-compose.signal.yml up -d
 #
-# Needs ARTEX 0.5.19m or later (set ARTEX_VERSION accordingly); older images have no Signal channel.
+# Needs an ARTEX release that publishes the artex-signal image; both images use the same ARTEX_VERSION.
 # Required in .env: ARTEX_SIGNAL_DB_PASSWORD, a long random value (for example openssl rand -hex 24).
 # The database role of the sidecar is ARTEX_SIGNAL_DB_ROLE (default artex_signal). It must
 # never be the POSTGRES_USER role.

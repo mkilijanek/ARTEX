@@ -245,17 +245,17 @@ func TestErrorResponseBecomesRPCErrorWithScrubbedText(t *testing.T) {
 	c, s := newPipeClient(t, ClientOptions{})
 	go func() {
 		r := s.readReq()
-		s.writeLine(fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-5,"message":"limit for +48600100101","data":{"response":{"token":"T"}}},"id":%s}`, r.ID))
+		s.writeLine(fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-5,"message":"limit for +15555550101","data":{"response":{"token":"T"}}},"id":%s}`, r.ID))
 	}()
 	err := c.call(context.Background(), "listGroups", nil, nil)
 	var re *RPCError
 	if !errors.As(err, &re) {
 		t.Fatalf("want RPCError, got %v", err)
 	}
-	if re.Code != -5 || !strings.Contains(re.Message, "+48600100101") || len(re.Data) == 0 {
+	if re.Code != -5 || !strings.Contains(re.Message, "+15555550101") || len(re.Data) == 0 {
 		t.Fatalf("fields lost: %+v", re)
 	}
-	if strings.Contains(err.Error(), "48600100101") || !strings.Contains(err.Error(), "-5") {
+	if strings.Contains(err.Error(), "15555550101") || !strings.Contains(err.Error(), "-5") {
 		t.Fatalf("Error() = %q", err.Error())
 	}
 }
@@ -386,8 +386,8 @@ func TestTypedCallsUseFixedParameterSets(t *testing.T) {
 		"listAccounts": `null`,
 		"startLink":    `null`,
 		"finishLink":   `{"deviceLinkUri":"sgnl://linkdevice?a=b","deviceName":"dev"}`,
-		"listGroups":   `{"account":"+48600100101"}`,
-		"send":         `{"account":"+48600100101","groupIds":["gid"],"message":"hi"}`,
+		"listGroups":   `{"account":"+15555550101"}`,
+		"send":         `{"account":"+15555550101","groupIds":["gid"],"message":"hi"}`,
 	}
 	go func() {
 		for i := 0; i < len(want); i++ {
@@ -427,10 +427,10 @@ func TestTypedCallsUseFixedParameterSets(t *testing.T) {
 	if a, err := c.FinishLink(ctx, "sgnl://linkdevice?a=b", "dev"); err != nil || a.Number != "+1" {
 		t.Fatalf("finishLink %+v %v", a, err)
 	}
-	if _, err := c.ListGroups(ctx, "+48600100101"); err != nil {
+	if _, err := c.ListGroups(ctx, "+15555550101"); err != nil {
 		t.Fatal(err)
 	}
-	if r, err := c.Send(ctx, "+48600100101", "gid", "hi"); err != nil || len(r.Results) != 1 || r.Results[0].Type != "SUCCESS" {
+	if r, err := c.Send(ctx, "+15555550101", "gid", "hi"); err != nil || len(r.Results) != 1 || r.Results[0].Type != "SUCCESS" {
 		t.Fatalf("send %+v %v", r, err)
 	}
 }
@@ -451,10 +451,10 @@ func TestSendFailureResultsReadsErrorData(t *testing.T) {
 
 func TestSendToNumbersUsesTheRecipientParameterAndNeedsAnAccount(t *testing.T) {
 	c, s := newPipeClient(t, ClientOptions{})
-	if _, err := c.SendNumbers(context.Background(), "", []string{"+48600100102"}, "m"); !errors.Is(err, ErrNoAccount) {
+	if _, err := c.SendNumbers(context.Background(), "", []string{"+15555550102"}, "m"); !errors.Is(err, ErrNoAccount) {
 		t.Fatalf("no account: %v", err)
 	}
-	if _, err := c.SendNumbers(context.Background(), "+48600100101", nil, "m"); !errors.Is(err, ErrNoRecipient) {
+	if _, err := c.SendNumbers(context.Background(), "+15555550101", nil, "m"); !errors.Is(err, ErrNoRecipient) {
 		t.Fatalf("no recipient: %v", err)
 	}
 	got := make(chan reqLine, 1)
@@ -465,12 +465,12 @@ func TestSendToNumbersUsesTheRecipientParameterAndNeedsAnAccount(t *testing.T) {
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	res, err := c.SendNumbers(ctx, "+48600100101", []string{"+48600100102", "+48600100103"}, "hi")
+	res, err := c.SendNumbers(ctx, "+15555550101", []string{"+15555550102", "+15555550103"}, "hi")
 	if err != nil || res.Timestamp != 7 {
 		t.Fatalf("send: %+v %v", res, err)
 	}
 	r := <-got
-	const want = `{"account":"+48600100101","message":"hi","recipient":["+48600100102","+48600100103"]}`
+	const want = `{"account":"+15555550101","message":"hi","recipient":["+15555550102","+15555550103"]}`
 	if r.Method != "send" || string(r.Params) != want {
 		t.Fatalf("%s %s, want send %s", r.Method, r.Params, want)
 	}
@@ -480,21 +480,21 @@ func TestSendResultsCarryTheRecipientAddress(t *testing.T) {
 	c, s := newPipeClient(t, ClientOptions{})
 	go func() {
 		r := s.readReq()
-		s.result(r.ID, `{"timestamp":7,"results":[{"recipientAddress":{"number":"+48600100102","uuid":"u1"},"type":"SUCCESS"},{"recipientAddress":{"number":null,"uuid":"u2"},"type":"NETWORK_FAILURE"}]}`)
+		s.result(r.ID, `{"timestamp":7,"results":[{"recipientAddress":{"number":"+15555550102","uuid":"u1"},"type":"SUCCESS"},{"recipientAddress":{"number":null,"uuid":"u2"},"type":"NETWORK_FAILURE"}]}`)
 		r = s.readReq()
-		s.writeLine(fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-3,"message":"x","data":{"response":{"results":[{"recipientAddress":{"number":"+48600100103"},"type":"UNREGISTERED_FAILURE"}]}}},"id":%s}`, r.ID))
+		s.writeLine(fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-3,"message":"x","data":{"response":{"results":[{"recipientAddress":{"number":"+15555550103"},"type":"UNREGISTERED_FAILURE"}]}}},"id":%s}`, r.ID))
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	res, err := c.SendNumbers(ctx, "+48600100101", []string{"+48600100102"}, "hi")
+	res, err := c.SendNumbers(ctx, "+15555550101", []string{"+15555550102"}, "hi")
 	if err != nil || len(res.Results) != 2 ||
-		res.Results[0].Address != (RecipientAddress{Number: "+48600100102", UUID: "u1"}) ||
+		res.Results[0].Address != (RecipientAddress{Number: "+15555550102", UUID: "u1"}) ||
 		res.Results[1].Address != (RecipientAddress{UUID: "u2"}) {
 		t.Fatalf("result path: %+v %v", res, err)
 	}
-	_, err = c.SendNumbers(ctx, "+48600100101", []string{"+48600100103"}, "hi")
+	_, err = c.SendNumbers(ctx, "+15555550101", []string{"+15555550103"}, "hi")
 	got, ok := SendFailureResults(err)
-	if !ok || len(got) != 1 || got[0].Address.Number != "+48600100103" {
+	if !ok || len(got) != 1 || got[0].Address.Number != "+15555550103" {
 		t.Fatalf("error path: %+v %v", got, err)
 	}
 }

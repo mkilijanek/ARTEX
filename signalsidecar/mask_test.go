@@ -8,7 +8,7 @@ import (
 
 const (
 	probeURI    = "sgnl://linkdevice?uuid=ZmFrZS11dWlkLWZvci10ZXN0cw&pub_key=BQabcdefghijklmnopqrstuvwxyz0123456789%2BABCDEF&capabilities=a,b"
-	probeNumber = "+48600100101"
+	probeNumber = "+15555550101"
 	probeGroup  = "group.dGhpcy1pcy1hLXRlc3QtZ3JvdXAtaWQtMzItYnl0ZXM="
 	probeRawID  = "dGhpcy1pcy1hLXRlc3QtZ3JvdXAtaWQtMzItYnl0ZXM="
 	probeUUID   = "11111111-2222-4333-8444-555555555555"
@@ -24,8 +24,8 @@ func TestScrubMasksSecrets(t *testing.T) {
 		{"link uri in quotes", `uri="` + probeURI + `"`, []string{"pub_key", "ZmFrZS11dWlk"}, nil},
 		{"link uri uppercase scheme", "SGNL://linkdevice?uuid=abc&pub_key=def", []string{"pub_key", "abc"}, nil},
 		{"legacy device uri", "tsdevice:/?uuid=abc&pub_key=def end", []string{"pub_key", "abc"}, []string{"end"}},
-		{"number with plus", "account " + probeNumber + " failed", []string{probeNumber, "4860010"}, []string{"…0101", "failed"}},
-		{"number without plus", "account 48600100101 failed", []string{"48600100101"}, []string{"…0101"}},
+		{"number with plus", "account " + probeNumber + " failed", []string{probeNumber, "1555555"}, []string{"…0101", "failed"}},
+		{"number without plus", "account 15555550101 failed", []string{"15555550101"}, []string{"…0101"}},
 		{"group prefixed", "group " + probeGroup + " unknown", []string{probeRawID}, []string{"group.…0ZXM", "unknown"}},
 		{"group bare padded id", "id " + probeRawID + " x", []string{probeRawID}, nil},
 		{"uuid", "aci " + probeUUID + " ok", []string{probeUUID, "11111111"}, []string{"…5555"}},
