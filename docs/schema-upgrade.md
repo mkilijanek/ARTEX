@@ -423,7 +423,11 @@ the server creates and checks it at start when `ARTEX_SIGNAL_DB_PASSWORD` is set
   and run `db/testdata/upgrade/rollback-drop-5004.sql` with `ON_ERROR_STOP` (change the role name in the file when
   `ARTEX_SIGNAL_DB_ROLE` named another one). It acts only when `5004` is the newest fork migration and its row has
   the shipped name, and raises, changing nothing, on any other ledger. In one transaction it:
-  1. reads `signal_sidecar_config.public_temp_revoked` first;
+  0. sets `lock_timeout` to 5 seconds, so a lock held by another session ends the run with SQLSTATE `55P03`
+     instead of waiting for ever. That means a session is still connected (the sidecar, an ARTEX instance or a
+     client): disconnect it and run the file again;
+  1. reads `signal_sidecar_config.public_temp_revoked` first; when the configuration row is gone it raises a
+     warning and does not grant `TEMPORARY` back, because it cannot know whether provisioning had taken it away;
   2. drops the role (only a role that carries the comment `artex signal sidecar`; any other role of that name makes
      the recipe raise) and everything it owns or was granted in this database;
   3. drops the view, the four functions and the two tables;

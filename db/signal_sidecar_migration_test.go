@@ -4,7 +4,11 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/mkilijanek/artex/db/dbtest"
 )
 
@@ -139,4 +143,70 @@ func TestSignalSidecarDropRecipeIsGuarded(t *testing.T) {
 		t.Error("the recipe dropped a role that is not the sidecar's")
 	}
 	_ = ctx
+}
+
+// runSignalRecipeOn runs the recipe on a connection of its own and returns the notices it raised. The wait is
+// bounded by the test, not by the recipe.
+func runSignalRecipeOn(t *testing.T, tmp *dbtest.Temp, role string, wait time.Duration) ([]string, error) {
+	t.Helper()
+	script := strings.Replace(readUpgradeFile(t, rollbackDropSignalSidecarFile), "v_role    text := 'artex_signal'", "v_role    text := '"+role+"'", 1)
+	cc, err := pgx.ParseConfig(tmp.DSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var notices []string
+	cc.OnNotice = func(_ *pgconn.PgConn, n *pgconn.Notice) { notices = append(notices, n.Severity+": "+n.Message) }
+	conn := stdlib.OpenDB(*cc)
+	defer conn.Close()
+	conn.SetMaxOpenConns(1)
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
+	_, err = conn.ExecContext(ctx, script)
+	if err != nil {
+		_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
+	}
+	return notices, err
+}
+
+// A configuration row that is already gone does not stop the recipe, and it says so.
+func TestSignalSidecarDropRecipeWarnsWhenTheConfigurationRowIsMissing(t *testing.T) {
+	d, tmp, srv := signalFresh(t, "sigdropwarn")
+	role := srv.NewSidecarRole(t, tmp)
+	signalExec(t, d, `DELETE FROM signal_sidecar_config`)
+	notices, err := runSignalRecipeOn(t, tmp, role.Name, time.Minute)
+	if err != nil {
+		t.Fatalf("the recipe failed (%s)", dbtest.AtomicErrorSummary(err))
+	}
+	var warned bool
+	for _, n := range notices {
+		if strings.HasPrefix(n, "WARNING:") && strings.Contains(n, "signal_sidecar_config") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("no warning about the missing configuration row; notices: %q", notices)
+	}
+}
+
+// The recipe gives up on a lock another session holds, instead of waiting for ever.
+func TestSignalSidecarDropRecipeGivesUpOnALock(t *testing.T) {
+	d, tmp, srv := signalFresh(t, "sigdroplock")
+	role := srv.NewSidecarRole(t, tmp)
+	ctx := context.Background()
+	holder, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback() //nolint:errcheck
+	if _, err := holder.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, schemaMigrationLockKey); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, err = runSignalRecipeOn(t, tmp, role.Name, 30*time.Second)
+	if pgCode(err) != "55P03" {
+		t.Fatalf("the recipe under a held lock: err = %v, want SQLSTATE 55P03", err)
+	}
+	if time.Since(start) > 15*time.Second {
+		t.Errorf("the recipe waited %v", time.Since(start))
+	}
 }

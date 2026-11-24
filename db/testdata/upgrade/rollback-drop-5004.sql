@@ -12,8 +12,11 @@
 -- Order of the recipes on a database this release started: this file first, then rollback-drop-5003.sql, then
 -- rollback-drop-5002.sql, then rollback-0004-index.sql, then rollback-cleanup-ledger.sql (each of those refuses while
 -- 5004 is recorded).
+-- Locks wait at most 5 seconds. A lock timeout (SQLSTATE 55P03) means that a session is still connected as the sidecar
+-- role or another statement holds a lock: stop it and run the file again.
 -- This file is run by db/signal_sidecar_migration_test.go and db/upgrade_rollback_test.go.
 BEGIN;
+SET LOCAL lock_timeout = '5s';
 SELECT pg_advisory_xact_lock(7337741001);
 DO $$
 DECLARE
@@ -27,6 +30,9 @@ BEGIN
     RAISE EXCEPTION '5004 is recorded under another name: restore the pre-upgrade dump instead';
   END IF;
   SELECT c.public_temp_revoked INTO v_revoked FROM public.signal_sidecar_config c WHERE c.id;
+  IF NOT FOUND THEN
+    RAISE WARNING 'signal_sidecar_config has no row: whether PUBLIC held TEMPORARY is unknown, so it is not granted back';
+  END IF;
   IF EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname = v_role) THEN
     IF shobj_description((SELECT r.oid FROM pg_roles r WHERE r.rolname = v_role), 'pg_authid') IS DISTINCT FROM 'artex signal sidecar' THEN
       RAISE EXCEPTION 'the role % was not made for the sidecar: it is left alone; drop the objects by hand', v_role;
