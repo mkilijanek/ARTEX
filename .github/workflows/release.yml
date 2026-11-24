@@ -90,7 +90,7 @@ jobs:
 
   # ③ Collect all zips → create the GitHub Release
   release:
-    needs: [binaries, ghcr]
+    needs: [binaries, ghcr, ghcr-signal]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -124,6 +124,7 @@ jobs:
           IMAGE: ghcr.io/${{ github.repository }}
         run: |
           cd src
+          # shellcheck disable=SC2153 # IMAGE is set in env above; image is its lower-case copy
           image="${IMAGE,,}"
           # checkout can leave an annotated tag as a plain commit reference: fetch the
           # tag object itself, and use its subject only when it is an annotated tag.
@@ -150,6 +151,7 @@ jobs:
             echo "- Five platform archives and \`SHA256SUMS\`."
             echo "- \`artex-$RELEASE_TAG-source.spdx.json\`: SBOM of the tagged source (SPDX)."
             echo "- Docker image \`$image:$RELEASE_TAG\` (\`linux/amd64\`), with an SBOM attestation. The digest is in the workflow summary."
+            echo "- Docker image \`ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/artex-signal:$RELEASE_TAG\` (\`linux/amd64\`), the Signal sidecar, with SBOM and provenance attestations."
             echo
             echo "Details: \`CHANGELOG.md\`."
           } > ../release-notes.md
@@ -288,4 +290,113 @@ jobs:
             echo "### $VERSION"
             echo "Image: $IMAGE:$VERSION"
             echo "Digest: $DIGEST"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # The Signal sidecar image: same trigger, same version tag and same checks as the ARTEX
+  # image above. Pushed by digest first and tagged only after the attestations are verified.
+  ghcr-signal:
+    needs: binaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      DOCKER_BUILD_RECORD_UPLOAD: "false"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate fork version and image name
+        id: version
+        env:
+          RELEASE_TAG: ${{ inputs.version || github.ref_name }}
+          IMAGE_OWNER: ${{ github.repository_owner }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+m$ ]] || { echo "Expected vMAJOR.MINOR.PATCHm"; exit 1; }
+          {
+            echo "version=${RELEASE_TAG#v}"
+            echo "image=ghcr.io/${IMAGE_OWNER,,}/artex-signal"
+            echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push the sidecar image (by digest, no tag)
+        id: image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/signal/Dockerfile
+          platforms: linux/amd64
+          outputs: type=image,name=${{ steps.version.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+          build-args: ARTEX_VERSION=${{ inputs.version || github.ref_name }}
+          sbom: true
+          provenance: mode=max
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ inputs.version || github.ref_name }}
+            org.opencontainers.image.created=${{ steps.version.outputs.created }}
+          annotations: |
+            index,manifest:org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            index,manifest:org.opencontainers.image.revision=${{ github.sha }}
+            index,manifest:org.opencontainers.image.version=${{ inputs.version || github.ref_name }}
+            index,manifest:org.opencontainers.image.created=${{ steps.version.outputs.created }}
+          cache-from: type=gha,scope=fork-release-signal-amd64
+          cache-to: type=gha,scope=fork-release-signal-amd64,mode=max
+      - name: Verify the pushed digest
+        env:
+          IMAGE: ${{ steps.version.outputs.image }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no digest ('$DIGEST')"; exit 1; }
+          ref="$IMAGE@$DIGEST"
+          docker buildx imagetools inspect "$ref"
+          # Written to a file first: the SBOM is large and a reader that quits early would
+          # fail the pipe.
+          attestations=$(mktemp)
+          docker buildx imagetools inspect "$ref" --format '{{ json .SBOM }}' > "$attestations"
+          jq -e '.SPDX.SPDXID == "SPDXRef-DOCUMENT"' "$attestations" > /dev/null \
+            || { echo "::error::no SPDX SBOM attestation on $ref"; exit 1; }
+          docker buildx imagetools inspect "$ref" --format '{{ json .Provenance }}' > "$attestations"
+          jq -e '.SLSA.buildDefinition' "$attestations" > /dev/null \
+            || { echo "::error::no provenance attestation on $ref"; exit 1; }
+          rm -f "$attestations"
+      - name: Tag the verified digest
+        env:
+          IMAGE: ${{ steps.version.outputs.image }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+          RELEASE_TAG: ${{ inputs.version || github.ref_name }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create -t "$IMAGE:$RELEASE_TAG" -t "$IMAGE:$VERSION" "$IMAGE@$DIGEST"
+          [ "$(docker buildx imagetools inspect "$IMAGE:$RELEASE_TAG" --format '{{ .Manifest.Digest }}')" = "$DIGEST" ] \
+            || { echo "::error::$IMAGE:$RELEASE_TAG does not resolve to $DIGEST"; exit 1; }
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.version.outputs.image }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - name: Write the summary
+        env:
+          IMAGE: ${{ steps.version.outputs.image }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+          VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          {
+            echo "### $VERSION (sidecar)"
+            echo "Image: $IMAGE:$VERSION"
+            echo "Digest: $DIGEST"
+            echo
+            echo "Vulnerability scan: not run by this workflow; the scan of this digest is attached to the release approval per the release runbook."
           } >> "$GITHUB_STEP_SUMMARY"
