@@ -25,7 +25,8 @@ This block supersedes them. Design: `docs/adr/0011-signal-sidecar-with-database-
   Nothing is sent from an unconfirmed account. **Unlink** with the password deletes the local account data; the
   device has to be removed on the phone as well (signal-cli gives a linked device no way to do that). The card shows
   the state, the service and signal-cli versions, and warnings about the database role. Routes under
-  `/api/notify/signal/` accept the token in the `Authorization` header only and JSON bodies only.
+  `/api/notify/signal/` accept the token in the `Authorization` header only and JSON bodies only
+  (`docs/signal-account-api.md`).
 - **Group picker** in Signal channels: the groups of the linked account (with a masked id to tell equal names apart),
   **Refresh**, and "Enter id manually" for a `group.<id>`.
 - **Migration `5004`** (additive): the tables `signal_sidecar_config` and `signal_sidecar_status`, the view
@@ -92,7 +93,6 @@ This block supersedes them. Design: `docs/adr/0011-signal-sidecar-with-database-
   bumped when Debian ships fixes, signal-cli when upstream releases, and every release is scanned again.
 - The service can reach the LAN and cloud metadata addresses; ARTEX does not warn about it. Block them in the host
   firewall if that matters.
-- `ARTEX_SIGNAL_DB_ROLE` reaches only the service in the shipped override, not `artex`; keep the default name.
 
 ### Added
 

@@ -138,7 +138,8 @@ link a device or change the account through the socket:
 
 The socket answers exactly two requests: `POST /v2/send` (body at most 64 KiB) and `GET /v1/about`. Every other path
 gets `404` (a wrong method on those two paths gets `405`). Linking, unlinking, the confirmation and the group list go
-through the database instead: ARTEX writes what the operator asked for into a table, and the service reads it through
+through the database instead (the server routes are in
+[../docs/signal-account-api.md](../docs/signal-account-api.md)): ARTEX writes what the operator asked for into a table, and the service reads it through
 **one view** and reports its state through **three functions**, as its own database role. That role can do nothing
 else in ARTEX's schema: it cannot read any table, create objects or create temporary tables, and has at most 5
 connections. It keeps what PostgreSQL gives every role: it can connect to other databases of the cluster that allow
@@ -257,9 +258,8 @@ It never fails the start. The outcome is one log line and a line on the card:
 | `[signal] database role missing and cannot be created by this database user; run once as a user who may: ...` | an external PostgreSQL; see below |
 | `[signal] database role not checked: no password is configured and the role does not exist` | `ARTEX_SIGNAL_DB_PASSWORD` does not reach `artex`; the override is not in the file set |
 
-`ARTEX_SIGNAL_DB_ROLE`: the shipped override uses it only in the service's connection string and does not pass it to
-`artex`, which then provisions the default name. Keep the default, or also set the variable for `artex` in a local
-override file.
+`ARTEX_SIGNAL_DB_ROLE` and `ARTEX_SIGNAL_DB_PASSWORD` are set once in `.env`; the override gives both to `artex`,
+which creates the role, and to the service, which logs in with it.
 
 **External PostgreSQL.** The service's connection string must be a Unix socket or use `sslmode=verify-full`.
 
@@ -292,7 +292,7 @@ override file.
 - ARTEX reads the authentication rules from `pg_hba_file_rules`, which by default only superusers may read. When it
   cannot, the card shows "Database logins: could not be checked", and the service waits without starting signal-cli.
   Once you have made sure that the rules require a password for the role, set `ARTEX_SIGNAL_DB_AUTH_ASSERTED=1` in
-  the environment of `artex`. The service still refuses to start when a wrong password logs in.
+  `.env` (the override passes it to `artex`; leave it unset for the bundled PostgreSQL, whose rules ARTEX can read). The service still refuses to start when a wrong password logs in.
 - On a cluster shared with other databases, run `REVOKE CONNECT ON DATABASE <other> FROM PUBLIC` for each of them,
   or use the `pg_hba.conf` lines below.
 
