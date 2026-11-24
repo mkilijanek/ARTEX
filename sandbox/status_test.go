@@ -269,7 +269,7 @@ func TestRecheckSignalClearsNotVerifiedOnceTheSocketExists(t *testing.T) {
 	runs := 0
 	iso := c12Iso(t, sock, func(ctx context.Context, d, s string) (string, error) { runs++; return answer, nil })
 
-	iso.RecheckSignal(t.Context()) // the bridge has not created the socket yet
+	iso.RecheckSignal(t.Context()) // the Signal service has not created the socket yet
 	v := iso.View()
 	if v.Status != Degraded || !strings.Contains(v.Reason, "C12: not verified: socket absent") {
 		t.Fatalf("absent: %+v", v)

@@ -28,7 +28,7 @@ type Config struct {
 	DBSockets  []string // database socket files, from the DSN
 	DBTCP      []string // database host:port endpoints reached over TCP, from the DSN
 
-	// SignalSocket is the Signal bridge socket file, from ARTEX_SIGNAL_API. Empty: no C12.
+	// SignalSocket is the Signal service socket file, from ARTEX_SIGNAL_API. Empty: no C12.
 	SignalSocket string
 
 	// SecretNames are the variables main read once and removed. Activation refuses to go on
@@ -439,7 +439,7 @@ func (i *Isolation) ReapplyPermissions() {
 }
 
 // RecheckSignal runs check C12 alone again and publishes the result like any other check: a
-// "not verified" that was set because the bridge socket was not there yet clears once the socket
+// "not verified" that was set because the Signal service socket was not there yet clears once the socket
 // exists and the tool user is kept out of it, and a socket that turns out reachable degrades the
 // status. The self-check has no periodic loop (it runs once, at start), so the server calls this
 // after the first successful Signal send and on each Signal channel test. It does nothing (nil)
