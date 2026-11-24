@@ -50,9 +50,20 @@ docker run --rm -v "$PWD/docker/base:/mnt/base:ro" --entrypoint bash artex-base:
   /mnt/base/check-tools.sh full
 ```
 
-On a host with SELinux enforcing, add `--security-opt label=disable` to the `docker run` of the check
-(otherwise the read of the mounted script is denied). The last line of a good run is
-`check-tools: N passed, 0 failed, 0 skipped (variant slim)`.
+On a host with SELinux enforcing, a bind mount of the checkout is denied. Do not disable the
+confinement. Copy the scripts into a stopped container instead, and start it:
+
+```bash
+for v in slim full; do
+  ctr=$(docker create --entrypoint bash "artex-base:$v" /mnt/base/check-tools.sh "$v")
+  docker cp docker/base/. "$ctr":/mnt/base
+  docker start -a "$ctr"
+  docker rm "$ctr"
+done
+```
+
+(A `:z` relabel of a temporary copy of `docker/base` also works; never relabel the checkout itself.)
+The last line of a good run is `check-tools: N passed, 0 failed, 0 skipped (variant slim)`.
 
 The inventory is read from inside the image; compare it with the committed one:
 

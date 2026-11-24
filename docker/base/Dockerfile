@@ -37,36 +37,59 @@ RUN apt-get update \
 # into /usr/local/bin so hunt workers can run them directly through their Bash tool.
 # Versions pinned per tool; upgrade deliberately. sqlmap is a python checkout of a
 # pinned release tag (no release binaries) symlinked into PATH; its .git is dropped.
+# Every release asset is verified against a pinned sha256 before it is unpacked. Sources:
+# nuclei, httpx, subfinder, katana, vulnx: the <tool>_<version>_checksums.txt of the GitHub release
+# (the file for katana is katana-<version>-checksums.txt); ffuf: ffuf_<version>_checksums.txt of the
+# release; dalfox: the <asset>.sha256 file of the release (its checksum.txt covers only the source
+# archives). Each value equals the sha256 digest GitHub reports for the asset. A version bump
+# must replace both hashes of the tool.
 ARG NUCLEI_VERSION=v3.11.1
+ARG NUCLEI_SHA256_AMD64=ea63d4ae232808cd7c6bc00d0142428e231fab59dae01042246097d195835ab6
+ARG NUCLEI_SHA256_ARM64=8044e3d9768ba0a744b2872c1a87e813006f013da97ca9f50f7661a4203bec07
 ARG HTTPX_VERSION=v1.12.0
+ARG HTTPX_SHA256_AMD64=9d8439e8b6c9aa7d1e2314817a392e00d5178da3af5652f7475f88868f418f76
+ARG HTTPX_SHA256_ARM64=fd7b123c1dfbc3d69f19f524e4eebcd6ec06b9a6cbd56813c76f11645197331e
 ARG SUBFINDER_VERSION=v2.17.0
+ARG SUBFINDER_SHA256_AMD64=a39c3e5c7a26ef3c430915c4d6cbf7716a00f26769a75e9405aba796142eba37
+ARG SUBFINDER_SHA256_ARM64=24913d49dddc1d3a5e99a4a7580da5be980959b9415b96f52c4f7f4124392190
 ARG KATANA_VERSION=v1.8.0
+ARG KATANA_SHA256_AMD64=cb027ae99d0757061b70c07a15c7a80f62c5a535ab52c4a329f80c4b0a7309d2
+ARG KATANA_SHA256_ARM64=80e269210727a855511ffac8dfb01297b2344742acec71a35e8ba4a67a90f0f2
 ARG FFUF_VERSION=v2.3.0
+ARG FFUF_SHA256_AMD64=b2a3c725fcb9da175159682f54d6e9149f2905b00d84d155e7efc5d599975ceb
+ARG FFUF_SHA256_ARM64=e2d712615d53da797ee929006e41f2df5a7960a5353133db9c150ddaa22ae4e8
 ARG DALFOX_VERSION=v3.2.4
+ARG DALFOX_SHA256_AMD64=c11cfd2f8261973f0a2a2a1eba5a147ce77712a29acfa6343f9847fb8bb7eca2
+ARG DALFOX_SHA256_ARM64=fd56b0b7da2d06868cd73b504f41d21314629feffcd5bdc97718db1c9dd2fa70
 # vulnx is ProjectDiscovery's vulnerability-intelligence CLI, the successor of cvemap
 # (the cvemap repository was renamed; the binary is `vulnx`).
 ARG VULNX_VERSION=v2.0.2
+ARG VULNX_SHA256_AMD64=387abd1c42b0357e1d4257b54528fc38e1d0357b12f05ab12117a4c628a5aaf8
+ARG VULNX_SHA256_ARM64=13c5888dde027b84bd3b6cf69c36c87e1e7aad7e7159bdeeb576f4962dcc1d06
 ARG SQLMAP_VERSION=1.10.11
 RUN set -eux; \
     base="https://github.com"; \
-    pd_fetch() { repo="$1"; ver="$2"; name="$3"; nov="${ver#v}"; \
+    case "$TARGETARCH" in amd64) FFUF_ARCH=amd64; DALFOX_ARCH=x86_64;; arm64) FFUF_ARCH=arm64; DALFOX_ARCH=aarch64;; *) echo "unsupported TARGETARCH $TARGETARCH" >&2; exit 1;; esac; \
+    pick() { if [ "$TARGETARCH" = amd64 ]; then echo "$1"; else echo "$2"; fi; }; \
+    pd_fetch() { repo="$1"; ver="$2"; name="$3"; sha="$(pick "$4" "$5")"; nov="${ver#v}"; \
       curl -fsSL "$base/$repo/releases/download/$ver/${name}_${nov}_linux_${TARGETARCH}.zip" -o /tmp/t.zip \
+      && echo "$sha  /tmp/t.zip" | sha256sum -c - \
       && unzip -o -q /tmp/t.zip -d /tmp/td \
       && find /tmp/td -type f -name "$name" -exec install -m 0755 {} /usr/local/bin/ \; \
       && rm -rf /tmp/t.zip /tmp/td; }; \
-    case "$TARGETARCH" in amd64) FFUF_ARCH=amd64; DALFOX_ARCH=x86_64;; arm64) FFUF_ARCH=arm64; DALFOX_ARCH=aarch64;; esac; \
-    pd_fetch projectdiscovery/nuclei "$NUCLEI_VERSION" nuclei; \
-    pd_fetch projectdiscovery/httpx "$HTTPX_VERSION" httpx; \
-    pd_fetch projectdiscovery/subfinder "$SUBFINDER_VERSION" subfinder; \
-    pd_fetch projectdiscovery/katana "$KATANA_VERSION" katana; \
-    pd_fetch projectdiscovery/vulnx "$VULNX_VERSION" vulnx; \
-    tar_fetch() { url="$1"; name="$2"; \
+    pd_fetch projectdiscovery/nuclei "$NUCLEI_VERSION" nuclei "$NUCLEI_SHA256_AMD64" "$NUCLEI_SHA256_ARM64"; \
+    pd_fetch projectdiscovery/httpx "$HTTPX_VERSION" httpx "$HTTPX_SHA256_AMD64" "$HTTPX_SHA256_ARM64"; \
+    pd_fetch projectdiscovery/subfinder "$SUBFINDER_VERSION" subfinder "$SUBFINDER_SHA256_AMD64" "$SUBFINDER_SHA256_ARM64"; \
+    pd_fetch projectdiscovery/katana "$KATANA_VERSION" katana "$KATANA_SHA256_AMD64" "$KATANA_SHA256_ARM64"; \
+    pd_fetch projectdiscovery/vulnx "$VULNX_VERSION" vulnx "$VULNX_SHA256_AMD64" "$VULNX_SHA256_ARM64"; \
+    tar_fetch() { url="$1"; name="$2"; sha="$(pick "$3" "$4")"; \
       curl -fsSL "$url" -o /tmp/t.tgz \
+      && echo "$sha  /tmp/t.tgz" | sha256sum -c - \
       && mkdir -p /tmp/td && tar -xzf /tmp/t.tgz -C /tmp/td \
       && find /tmp/td -type f -name "$name" -exec install -m 0755 {} /usr/local/bin/ \; \
       && rm -rf /tmp/t.tgz /tmp/td; }; \
-    tar_fetch "$base/ffuf/ffuf/releases/download/$FFUF_VERSION/ffuf_${FFUF_VERSION#v}_linux_${FFUF_ARCH}.tar.gz" ffuf; \
-    tar_fetch "$base/hahwul/dalfox/releases/download/$DALFOX_VERSION/dalfox-${DALFOX_VERSION}-linux-${DALFOX_ARCH}-musl.tar.gz" dalfox; \
+    tar_fetch "$base/ffuf/ffuf/releases/download/$FFUF_VERSION/ffuf_${FFUF_VERSION#v}_linux_${FFUF_ARCH}.tar.gz" ffuf "$FFUF_SHA256_AMD64" "$FFUF_SHA256_ARM64"; \
+    tar_fetch "$base/hahwul/dalfox/releases/download/$DALFOX_VERSION/dalfox-${DALFOX_VERSION}-linux-${DALFOX_ARCH}-musl.tar.gz" dalfox "$DALFOX_SHA256_AMD64" "$DALFOX_SHA256_ARM64"; \
     git clone --depth 1 --branch "$SQLMAP_VERSION" https://github.com/sqlmapproject/sqlmap /opt/sqlmap; \
     rm -rf /opt/sqlmap/.git; \
     ln -s /opt/sqlmap/sqlmap.py /usr/local/bin/sqlmap; \

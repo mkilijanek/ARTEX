@@ -330,7 +330,9 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # Both tags must be free before either variant is pushed. GHCR does not stop an overwrite, so this
-      # is what makes the tags write-once. Anything but "not found" (no access, network) fails closed.
+      # is what makes the tags write-once. Only the registry's answer for a missing tag counts as free:
+      # buildx prints exactly "ERROR: <ref>: not found" for it (checked against ghcr.io and registry:2).
+      # Everything else (no access, a 403 token error, network, an unknown repository) fails closed.
       - name: Both tags are free
         run: |
           set -euo pipefail
@@ -341,7 +343,7 @@ jobs:
             if [ "$rc" -eq 0 ]; then
               echo "::error::The tag $IMAGE:$tag already exists. Nothing was pushed."
               taken=1
-            elif grep -qi 'not found' <<<"$out"; then
+            elif [ "$out" = "ERROR: $IMAGE:$tag: not found" ]; then
               echo "free: $IMAGE:$tag"
             else
               echo "::error::Cannot tell whether $IMAGE:$tag is free; nothing was pushed."
@@ -391,16 +393,16 @@ jobs:
             echo "$v: $got"
           done
 
-      - name: Push slim
+      - name: Push slim (by digest, no tag)
         id: push_slim
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: docker/base
           target: slim
-          # push is requested through the output, not the push input, so that rewrite-timestamp
-          # is part of the same output definition.
-          outputs: type=image,push=true,rewrite-timestamp=true
-          tags: ${{ env.IMAGE }}:${{ needs.base-build.outputs.slim_tag }}
+          # Pushed by digest and without a tag: nothing can pull this by name until the checks below
+          # have passed. push is requested through the output, not the push input, so that
+          # rewrite-timestamp is part of the same output definition.
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true,rewrite-timestamp=true
           build-args: SOURCE_DATE_EPOCH=${{ needs.base-build.outputs.epoch }}
           sbom: true
           provenance: mode=max
@@ -408,20 +410,62 @@ jobs:
           annotations: ${{ needs.base-build.outputs.annotations_slim }}
           cache-from: type=gha,scope=artex-base
 
-      - name: Push full
+      - name: Push full (by digest, no tag)
         id: push_full
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: docker/base
           target: full
-          outputs: type=image,push=true,rewrite-timestamp=true
-          tags: ${{ env.IMAGE }}:${{ needs.base-build.outputs.full_tag }}
+          # Pushed by digest and without a tag: nothing can pull this by name until the checks below
+          # have passed. push is requested through the output, not the push input, so that
+          # rewrite-timestamp is part of the same output definition.
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true,rewrite-timestamp=true
           build-args: SOURCE_DATE_EPOCH=${{ needs.base-build.outputs.epoch }}
           sbom: true
           provenance: mode=max
           labels: ${{ needs.base-build.outputs.labels_full }}
           annotations: ${{ needs.base-build.outputs.annotations_full }}
           cache-from: type=gha,scope=artex-base
+
+      # Nothing is tagged or attested before this step passes.
+      - name: The pushed images are the checked images
+        env:
+          SLIM_DIGEST: ${{ steps.push_slim.outputs.digest }}
+          FULL_DIGEST: ${{ steps.push_full.outputs.digest }}
+        run: |
+          set -euo pipefail
+          for v in slim full; do
+            case $v in
+              slim) digest=$SLIM_DIGEST ;;
+              full) digest=$FULL_DIGEST ;;
+            esac
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no digest for $v ('$digest')"; exit 1; }
+            ref="$IMAGE@$digest"
+            docker buildx imagetools inspect "$ref"
+            # The pushed layers are the checked layers.
+            pushed=$(docker buildx imagetools inspect "$ref" --format '{{json .Image.RootFS.DiffIDs}}' | jq -c .)
+            checked=$(jq -c . "evidence/layers-$v.json")
+            [ "$pushed" = "$checked" ] || { echo "::error::the pushed $v layers differ from the checked layers; the image was not tagged or attested"; echo "$pushed"; echo "$checked"; exit 1; }
+            # The SBOM and the provenance are attached to the pushed digest. Written to a file first:
+            # the SBOM is several MB, and a reader that quits early would fail the pipe (pipefail).
+            attestations=$(mktemp)
+            docker buildx imagetools inspect "$ref" --format '{{ json .SBOM }}' > "$attestations"
+            jq -e '.SPDX.SPDXID == "SPDXRef-DOCUMENT"' "$attestations" > /dev/null \
+              || { echo "::error::no SPDX SBOM attestation on $ref"; exit 1; }
+            docker buildx imagetools inspect "$ref" --format '{{ json .Provenance }}' > "$attestations"
+            jq -e '.SLSA.buildDefinition' "$attestations" > /dev/null \
+              || { echo "::error::no provenance attestation on $ref"; exit 1; }
+            rm -f "$attestations"
+          done
+
+      - name: Tag the verified digests
+        env:
+          SLIM_DIGEST: ${{ steps.push_slim.outputs.digest }}
+          FULL_DIGEST: ${{ steps.push_full.outputs.digest }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create -t "$IMAGE:$SLIM_TAG" "$IMAGE@$SLIM_DIGEST"
+          docker buildx imagetools create -t "$IMAGE:$FULL_TAG" "$IMAGE@$FULL_DIGEST"
 
       - name: Attest slim (build provenance)
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -440,7 +484,7 @@ jobs:
           push-to-registry: true
           create-storage-record: false
 
-      - name: Verify the published images and write the digests
+      - name: Write the digests
         env:
           SLIM_DIGEST: ${{ steps.push_slim.outputs.digest }}
           FULL_DIGEST: ${{ steps.push_full.outputs.digest }}
@@ -457,23 +501,9 @@ jobs:
               slim) tag=$SLIM_TAG; digest=$SLIM_DIGEST ;;
               full) tag=$FULL_TAG; digest=$FULL_DIGEST ;;
             esac
-            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no digest for $v ('$digest')"; exit 1; }
-            ref="$IMAGE@$digest"
-            docker buildx imagetools inspect "$ref"
-            # The pushed layers are the checked layers.
-            pushed=$(docker buildx imagetools inspect "$ref" --format '{{json .Image.RootFS.DiffIDs}}' | jq -c .)
-            checked=$(jq -c . "evidence/layers-$v.json")
-            [ "$pushed" = "$checked" ] || { echo "::error::the pushed $v layers differ from the checked layers"; echo "$pushed"; echo "$checked"; exit 1; }
-            # The SBOM and the provenance are attached to the pushed digest. Written to a file first:
-            # the SBOM is several MB, and a reader that quits early would fail the pipe (pipefail).
-            attestations=$(mktemp)
-            docker buildx imagetools inspect "$ref" --format '{{ json .SBOM }}' > "$attestations"
-            jq -e '.SPDX.SPDXID == "SPDXRef-DOCUMENT"' "$attestations" > /dev/null \
-              || { echo "::error::no SPDX SBOM attestation on $ref"; exit 1; }
-            docker buildx imagetools inspect "$ref" --format '{{ json .Provenance }}' > "$attestations"
-            jq -e '.SLSA.buildDefinition' "$attestations" > /dev/null \
-              || { echo "::error::no provenance attestation on $ref"; exit 1; }
-            rm -f "$attestations"
+            # The tag resolves to the verified digest.
+            [ "$(docker buildx imagetools inspect "$IMAGE:$tag" --format '{{ .Manifest.Digest }}')" = "$digest" ] \
+              || { echo "::error::$IMAGE:$tag does not resolve to $digest"; exit 1; }
             echo "| $v | \`$tag\` | \`$digest\` |" >> "$GITHUB_STEP_SUMMARY"
           done
           {
