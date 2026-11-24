@@ -22,8 +22,8 @@ export type SignalCardState =
   | { kind: "off" }
   | { kind: "no_service" }
   | { kind: "unknown" }
-  | { kind: "preparing"; lastError?: string }
-  | { kind: "preparing_failed"; lastError?: string }
+  | { kind: "preparing" }
+  | { kind: "preparing_failed" }
   | { kind: "linking"; secondsLeft: number }
   | { kind: "linking_stale"; secondsLeft: number }
   | { kind: "expired" }
@@ -93,9 +93,10 @@ function cardState(status: SignalAccountStatus, nowMs: number, phase: SignalLink
     case "unknown":
       return { kind: "unknown" };
     case "unlinked": {
-      const linkError = status.last_error ? { lastError: status.last_error } : {};
-      if (phase === "preparing") return { kind: "preparing", ...linkError };
-      if (phase === "fetch_failed") return { kind: "preparing_failed", ...linkError };
+      // last_error is left over from an earlier attempt and carries no generation, so it is not shown
+      // while a new link is prepared.
+      if (phase === "preparing") return { kind: "preparing" };
+      if (phase === "fetch_failed") return { kind: "preparing_failed" };
       return {
         kind: "unlinked",
         removedOnSignal: status.remote_unlink || null,
@@ -251,4 +252,10 @@ export async function signalRequest<T>(t: SignalTransport, method: string, path:
   const text = await r.text();
   if (!r.ok) throw parseSignalError(r.status, text, r.headers.get("Retry-After"));
   return (text ? JSON.parse(text) : undefined) as T;
+}
+
+// signalVersionLabel is the sidecar version as shown on the card: a release number gets a "v", a name
+// such as "dev" or a tag that already has its own prefix is shown as it is.
+export function signalVersionLabel(version: string): string {
+  return /^[0-9]/.test(version) ? `v${version}` : version;
 }

@@ -4,6 +4,7 @@ import {
   signalCardView,
   signalFailureKind,
   signalRequest,
+  signalVersionLabel,
 } from "./signal-account.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -170,11 +171,18 @@ test("a warning without text shows its kind, and no warning is ever an object", 
   for (const x of w) assert.equal(typeof x.text, "string");
 });
 
-test("a failed or running link request does not hide the last link error", () => {
-  const s = status({ last_error: "link failed" });
-  assert.deepEqual(view(s, "preparing").state, { kind: "preparing", lastError: "link failed" });
-  assert.deepEqual(view(s, "fetch_failed").state, { kind: "preparing_failed", lastError: "link failed" });
+test("a leftover error from an earlier link attempt is not shown while a new link is prepared", () => {
+  const s = status({ last_error: "link interrupted" });
+  assert.deepEqual(view(s, "preparing").state, { kind: "preparing" });
+  assert.deepEqual(view(s, "fetch_failed").state, { kind: "preparing_failed" });
   assert.deepEqual(view(status(), "preparing").state, { kind: "preparing" });
+});
+
+test("the version gets a v prefix only when it starts with a digit", () => {
+  assert.equal(signalVersionLabel("0.6.1"), "v0.6.1");
+  assert.equal(signalVersionLabel("dev"), "dev");
+  assert.equal(signalVersionLabel("v0.6.1m"), "v0.6.1m");
+  assert.equal(signalVersionLabel(""), "");
 });
 
 test("the failure kinds of the codes the server sends", () => {
