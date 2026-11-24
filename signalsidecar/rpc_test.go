@@ -475,3 +475,26 @@ func TestSendToNumbersUsesTheRecipientParameterAndNeedsAnAccount(t *testing.T) {
 		t.Fatalf("%s %s, want send %s", r.Method, r.Params, want)
 	}
 }
+
+func TestSendResultsCarryTheRecipientAddress(t *testing.T) {
+	c, s := newPipeClient(t, ClientOptions{})
+	go func() {
+		r := s.readReq()
+		s.result(r.ID, `{"timestamp":7,"results":[{"recipientAddress":{"number":"+48600100102","uuid":"u1"},"type":"SUCCESS"},{"recipientAddress":{"number":null,"uuid":"u2"},"type":"NETWORK_FAILURE"}]}`)
+		r = s.readReq()
+		s.writeLine(fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-3,"message":"x","data":{"response":{"results":[{"recipientAddress":{"number":"+48600100103"},"type":"UNREGISTERED_FAILURE"}]}}},"id":%s}`, r.ID))
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := c.SendNumbers(ctx, "+48600100101", []string{"+48600100102"}, "hi")
+	if err != nil || len(res.Results) != 2 ||
+		res.Results[0].Address != (RecipientAddress{Number: "+48600100102", UUID: "u1"}) ||
+		res.Results[1].Address != (RecipientAddress{UUID: "u2"}) {
+		t.Fatalf("result path: %+v %v", res, err)
+	}
+	_, err = c.SendNumbers(ctx, "+48600100101", []string{"+48600100103"}, "hi")
+	got, ok := SendFailureResults(err)
+	if !ok || len(got) != 1 || got[0].Address.Number != "+48600100103" {
+		t.Fatalf("error path: %+v %v", got, err)
+	}
+}

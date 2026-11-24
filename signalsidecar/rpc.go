@@ -346,11 +346,19 @@ type Group struct {
 	IsBlocked bool   `json:"isBlocked"`
 }
 
+// RecipientAddress identifies a recipient in a send result. Either field can
+// be empty. The values are as received: mask them before they are logged.
+type RecipientAddress struct {
+	Number string `json:"number,omitempty"`
+	UUID   string `json:"uuid,omitempty"`
+}
+
 // SendRecipientResult is the outcome for one recipient of a send. Proof
 // tokens and retry hints are not decoded.
 type SendRecipientResult struct {
-	Type    string `json:"type"`
-	GroupID string `json:"groupId,omitempty"`
+	Type    string           `json:"type"`
+	GroupID string           `json:"groupId,omitempty"`
+	Address RecipientAddress `json:"recipientAddress"`
 }
 
 // SendResult is the result of a send with at least one delivered recipient.

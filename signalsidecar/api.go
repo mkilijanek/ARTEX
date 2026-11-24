@@ -213,7 +213,8 @@ func (a *api) send(w http.ResponseWriter, r *http.Request) {
 		if out.Errors == nil {
 			out.Errors = &sendErrors{}
 		}
-		out.Errors.Recipients = append(out.Errors.Recipients, recipientFailure{Reason: failureReason(x.Type)})
+		out.Errors.Recipients = append(out.Errors.Recipients, recipientFailure{
+			Number: x.Address.Number, UUID: x.Address.UUID, Reason: failureReason(x.Type)})
 	}
 	if out.Errors != nil {
 		a.logf("[signal] api: send reached %d of %d recipients", len(res.Results)-len(out.Errors.Recipients), len(res.Results))
@@ -225,9 +226,11 @@ type sendErrors struct {
 	Recipients []recipientFailure `json:"recipients"`
 }
 
-// recipientFailure is one entry of errors.recipients. The result of signal-cli
-// is decoded without the address of the recipient, so only the reason is set.
+// recipientFailure is one entry of errors.recipients. The address is returned
+// as received; the caller masks it.
 type recipientFailure struct {
+	Number string `json:"number,omitempty"`
+	UUID   string `json:"uuid,omitempty"`
 	Reason string `json:"reason"`
 }
 

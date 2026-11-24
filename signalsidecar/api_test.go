@@ -196,7 +196,9 @@ func TestSendToNumbersSucceeds(t *testing.T) {
 func TestPartialDeliveryIsListedAndStillCreated(t *testing.T) {
 	r := newAPIRig(t)
 	r.b.result = SendResult{Timestamp: 5, Results: []SendRecipientResult{
-		{Type: "SUCCESS"}, {Type: "UNREGISTERED_FAILURE"}, {Type: "NETWORK_FAILURE"},
+		{Type: "SUCCESS", Address: RecipientAddress{Number: apiPeer}},
+		{Type: "UNREGISTERED_FAILURE", Address: RecipientAddress{Number: "+15555550100"}},
+		{Type: "NETWORK_FAILURE", Address: RecipientAddress{UUID: "11111111-2222-4333-8444-555555555555"}},
 	}}
 	code, body := r.send(t, sendBody(apiPeer, "+15555550100", "+15555550101"))
 	if code != 201 {
@@ -219,8 +221,13 @@ func TestPartialDeliveryIsListedAndStillCreated(t *testing.T) {
 	if got.Timestamp != "5" || len(got.Errors.Recipients) != 2 {
 		t.Fatalf("%s", body)
 	}
-	if got.Errors.Recipients[0].Reason != "unregistered failure" || got.Errors.Recipients[1].Reason != "network failure" {
+	a, b := got.Errors.Recipients[0], got.Errors.Recipients[1]
+	if a.Reason != "unregistered failure" || a.Number != "+15555550100" || a.UUID != "" ||
+		b.Reason != "network failure" || b.UUID != "11111111-2222-4333-8444-555555555555" || b.Number != "" {
 		t.Fatalf("%s", body)
+	}
+	if strings.Contains(r.log.all(), "5555550100") || strings.Contains(r.log.all(), "11111111") {
+		t.Fatalf("address in log: %s", r.log.all())
 	}
 }
 
