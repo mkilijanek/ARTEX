@@ -33,7 +33,7 @@ const (
 
 const (
 	// signalTextLimit is the message size limit in **bytes**. Conservative
-	// against Signal's long-text threshold (exact value unverified, plan AC16).
+	// against Signal's long-text threshold (the exact value is not verified).
 	signalTextLimit = 2000
 	// signalReservedBytes is reserved for the digest title and the footer link
 	// when packing items (the footer itself is measured separately).
@@ -332,7 +332,7 @@ const (
 )
 
 // signalRecipientKind classifies one recipient string. It is the single
-// extension point for new recipient types (usernames, see plan D6).
+// extension point for new recipient types (for example usernames).
 func signalRecipientKind(s string) string {
 	switch {
 	case signalNumberRe.MatchString(s):

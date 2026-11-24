@@ -670,7 +670,7 @@ func TestNotifyMetaAndSettingsRoundTrip(t *testing.T) {
 		t.Fatalf("meta should list all %d channels, got %d", len(notify.Kinds()), len(meta.Kinds))
 	}
 	for _, k := range meta.Kinds {
-		// Signal has no credential in its channel config (plan D2); the sender and
+		// Signal has no credential in its channel config; the sender and
 		// the endpoint are operator environment.
 		if len(k.SecretKeys) == 0 && k.Kind != notify.KindSignal {
 			t.Errorf("channel %s did not report credential fields", k.Kind)

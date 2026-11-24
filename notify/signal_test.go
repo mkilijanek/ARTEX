@@ -1175,7 +1175,7 @@ func TestSignalSendEmptyMessageIsPermanent(t *testing.T) {
 	}
 }
 
-// ---- masking helpers with an empty key set (plan D2) ----
+// ---- masking helpers with an empty key set ----
 
 func TestSignalConfigIsNotMaskedAndUpdatesMerge(t *testing.T) {
 	stored := map[string]any{"recipient_type": "group", "recipients": []any{sigGroup}}

@@ -218,7 +218,7 @@ func TestComputeStatusReasonsAndWarnings(t *testing.T) {
 
 func sprintf(f string, a ...any) string { return fmt.Sprintf(f, a...) }
 
-// ---- C12 on the published status (plan AC10) ----
+// ---- C12 on the published status ----
 
 // c12Iso is an enforced isolation with a Signal socket configured, built without Activate so
 // that it needs no root: the check workspace falls back to a directory the test owns.
