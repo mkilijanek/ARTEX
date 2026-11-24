@@ -292,10 +292,44 @@ jobs:
             echo "Digest: $DIGEST"
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # The sidecar tests, with the same database service as ci.yml. The sidecar image is not
+  # pushed unless they pass. There is no image scanner in the repository: scan the image by
+  # hand before announcing a release.
+  signal-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: artex
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: artextest
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U artex"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      ARTEX_PG_DSN: postgres://artex:testpass@localhost:5432/artextest?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: go test (sidecar)
+        run: go test -p 1 -count=1 ./signalsidecar/... ./cmd/artex-signal/...
+
   # The Signal sidecar image: same trigger, same version tag and same checks as the ARTEX
   # image above. Pushed by digest first and tagged only after the attestations are verified.
   ghcr-signal:
-    needs: binaries
+    needs: [binaries, signal-test]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
