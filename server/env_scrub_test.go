@@ -47,7 +47,7 @@ func TestSecretEnvNamesCoverEveryStartupSecret(t *testing.T) {
 	for _, k := range got {
 		have[k] = true
 	}
-	for _, want := range []string{"ARTEX_PG_DSN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "ARTEX_LLM_PROXY"} {
+	for _, want := range []string{"ARTEX_PG_DSN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "ARTEX_LLM_PROXY", "ARTEX_SIGNAL_DB_PASSWORD"} {
 		if !have[want] {
 			t.Errorf("%s is not scrubbed", want)
 		}

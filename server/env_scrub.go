@@ -8,10 +8,11 @@ import (
 
 // secretEnv lists the credentials read from the environment only at startup, by cmd/artex's main:
 // ARTEX_PG_DSN (the database), the two provider API keys and the LLM proxy URL (it may carry
-// credentials), all read once by agent.FromEnv and db.DSN. ARTEX_LLM_BASE_URL is deliberately not
+// credentials), all read once by agent.FromEnv and db.DSN; and the password of the Signal service's
+// database role, which main hands to role provisioning. ARTEX_LLM_BASE_URL is deliberately not
 // here: the SDK's provider constructor reads it again, and it is not on the tool allow-list, so
 // tools never see it.
-var secretEnv = []string{"ARTEX_PG_DSN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "ARTEX_LLM_PROXY"}
+var secretEnv = []string{"ARTEX_PG_DSN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "ARTEX_LLM_PROXY", "ARTEX_SIGNAL_DB_PASSWORD"}
 
 // SecretEnvNames returns the names ScrubSecretEnv removes. Isolation start-up refuses to go on
 // while any of them is still set.

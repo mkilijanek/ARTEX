@@ -1025,13 +1025,17 @@ const (
 	testSignalInner   = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
 )
 
-// useSignalEnv points the Signal channel at sock with the given sender. The
-// setting is process-wide, so it is restored when the test ends.
+// useSignalEnv points the Signal channel at sock with the given sender, which the sender hook returns
+// as the linked and confirmed account. The settings are process-wide, so they are restored when the test ends.
 func useSignalEnv(t *testing.T, sock, number string) {
 	t.Helper()
-	env := map[string]string{notify.SignalAPIEnv: "unix:" + sock, notify.SignalNumberEnv: number}
+	env := map[string]string{notify.SignalAPIEnv: "unix:" + sock}
 	notify.LoadSignalEnv(func(k string) string { return env[k] })
-	t.Cleanup(func() { notify.LoadSignalEnv(os.Getenv) })
+	notify.SetSignalSender(func(context.Context) (string, string) { return number, "" })
+	t.Cleanup(func() {
+		notify.SetSignalSender(nil)
+		notify.LoadSignalEnv(os.Getenv)
+	})
 }
 
 // fakeSignalBridge answers every request on a Unix socket with a fixed response
@@ -1143,22 +1147,26 @@ func TestNotifySignalChannelAPICreateValidation(t *testing.T) {
 		})
 	}
 
-	// No sender: create and test both return 400 naming the variable.
+	// No linked account: create and test both return 400 saying so.
 	chID := f.createChannel(t, signalGroupChannel())
 	env := map[string]string{notify.SignalAPIEnv: "unix:" + br.sock}
 	notify.LoadSignalEnv(func(k string) string { return env[k] })
+	notify.SetSignalSender(func(context.Context) (string, string) {
+		return "", "Signal account is not linked: link one under System, Notifications"
+	})
 	raw, _ := json.Marshal(signalGroupChannel())
 	r := f.request("POST", "/api/notify/channels", string(raw))
-	if r.Code != 400 || !strings.Contains(r.Body.String(), "Signal sender is not configured: set ARTEX_SIGNAL_NUMBER") {
+	if r.Code != 400 || !strings.Contains(r.Body.String(), "Signal account is not linked: link one under System, Notifications") {
 		t.Fatalf("create without sender: %d %s", r.Code, r.Body)
 	}
 	r = f.request("POST", fmt.Sprintf("/api/notify/channels/%d/test", chID), "")
-	if r.Code != 400 || !strings.Contains(r.Body.String(), "Signal sender is not configured: set ARTEX_SIGNAL_NUMBER") {
+	if r.Code != 400 || !strings.Contains(r.Body.String(), "Signal account is not linked: link one under System, Notifications") {
 		t.Fatalf("test without sender: %d %s", r.Code, r.Body)
 	}
-	// No bridge endpoint: same, naming ARTEX_SIGNAL_API.
-	env = map[string]string{notify.SignalNumberEnv: testSignalSender}
+	// No service endpoint: same, naming ARTEX_SIGNAL_API.
+	env = map[string]string{}
 	notify.LoadSignalEnv(func(k string) string { return env[k] })
+	notify.SetSignalSender(func(context.Context) (string, string) { return testSignalSender, "" })
 	r = f.request("POST", fmt.Sprintf("/api/notify/channels/%d/test", chID), "")
 	if r.Code != 400 || !strings.Contains(r.Body.String(), "ARTEX_SIGNAL_API") {
 		t.Fatalf("test without bridge endpoint: %d %s", r.Code, r.Body)
@@ -1198,7 +1206,7 @@ func TestNotifySignalTestSend502IsRedacted(t *testing.T) {
 	// Socket gone: retryable text, no socket detail.
 	useSignalEnv(t, filepath.Join(filepath.Dir(br.sock), "absent.sock"), testSignalSender)
 	r = f.request("POST", fmt.Sprintf("/api/notify/channels/%d/test", chID), "")
-	if r.Code != 502 || !strings.Contains(r.Body.String(), "Signal bridge socket unreachable (is docker-compose.signal.yml up?)") {
+	if r.Code != 502 || !strings.Contains(r.Body.String(), "Signal service socket unreachable (is docker-compose.signal.yml up?)") {
 		t.Fatalf("socket missing: %d %s", r.Code, r.Body)
 	}
 	for _, leak := range []string{"connect:", "no such file", "absent.sock"} {
@@ -1208,8 +1216,8 @@ func TestNotifySignalTestSend502IsRedacted(t *testing.T) {
 	}
 }
 
-// AC3/AC7: with the sender missing the notifier marks the delivery failed with
-// the variable name (never dropped, never retried); a bridge 400 is stored
+// With no linked account the notifier marks the delivery failed with
+// that reason (never dropped, never retried); a bridge 400 is stored
 // without any number.
 func TestNotifySignalDeliveryFailuresAreVisibleAndRedacted(t *testing.T) {
 	f := newNotifyFixture(t)
@@ -1238,17 +1246,18 @@ func TestNotifySignalDeliveryFailuresAreVisibleAndRedacted(t *testing.T) {
 		}
 	}
 
-	// Operator settings missing: resend and expect a permanent failure naming the variable.
+	// No linked account: resend and expect a permanent failure saying so.
 	if _, err := f.pg.Exec(`UPDATE notification_deliveries SET state=$2, attempts=0, last_error='', next_attempt_at = now() - interval '1 minute' WHERE channel_id=$1`, chID, db.NotifyStatePending); err != nil {
 		t.Fatal(err)
 	}
-	env := map[string]string{notify.SignalAPIEnv: "unix:" + br.sock}
-	notify.LoadSignalEnv(func(k string) string { return env[k] })
+	notify.SetSignalSender(func(context.Context) (string, string) {
+		return "", "Signal account is not linked: link one under System, Notifications"
+	})
 	before := br.count()
 	f.deliver(t, chID, "")
 	state, msg, _ = lastError()
-	if state != db.NotifyStateFailed || !strings.Contains(msg, "ARTEX_SIGNAL_NUMBER") {
-		t.Fatalf("without a sender the delivery must fail naming the variable, got %s: %q", state, msg)
+	if state != db.NotifyStateFailed || !strings.Contains(msg, "Signal account is not linked") {
+		t.Fatalf("without a linked account the delivery must fail saying so, got %s: %q", state, msg)
 	}
 	if br.count() != before {
 		t.Fatal("nothing may be sent without a sender")

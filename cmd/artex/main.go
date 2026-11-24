@@ -122,6 +122,14 @@ func run() int {
 		log.Printf("[webfetch-policy] database endpoints unavailable: %v", endpointsErr)
 	}
 	envLLM, envLLMOK := agent.FromEnv()
+	// The Signal service's database role: its password is a startup secret like the DSN; the role name and the
+	// operator's statement about password authentication are not secret, and are read here with it.
+	signalRole := db.SignalRoleConfig{
+		Role:         os.Getenv("ARTEX_SIGNAL_DB_ROLE"),
+		Password:     os.Getenv("ARTEX_SIGNAL_DB_PASSWORD"),
+		DSN:          dsn,
+		AuthAsserted: os.Getenv("ARTEX_SIGNAL_DB_AUTH_ASSERTED") == "1",
+	}
 	server.ScrubSecretEnv()
 
 	// Steps 2-7: kill leftovers, TMPDIR, PATH, permissions, the self-check, the mode.
@@ -149,6 +157,11 @@ func run() int {
 		log.Fatalf("open stores: %v", err)
 	}
 	defer mgr.Close()
+
+	// The notifier asks the database which Signal account may send, and the Signal service's database role is
+	// created or checked. Provisioning reports a state (shown under System, Notifications) and never fails the
+	// start; it logs its own outcome once.
+	server.StartSignal(ctx, mgr.PG(), signalRole)
 
 	// The forwarder tools reach the operator's global egress proxy through. If it cannot start, tools
 	// are still pointed at its address (their egress fails visibly instead of using the credentials)
