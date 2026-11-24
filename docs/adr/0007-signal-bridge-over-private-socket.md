@@ -86,7 +86,7 @@ Option A: **`artex` has no network path to the bridge; the server reaches it onl
 
 Run the example deployment without the override and remove the two containers, keeping `signal-data`; Signal
 deliveries then fail visibly. Without Signal support in the code, existing Signal channels are an unknown kind and
-their deliveries are marked failed. Steps: the example deployment README, "Rollback of the override".
+their deliveries are marked failed. Steps: the example deployment README, "Rollback of the Signal service".
 
 ## Outcome to check
 

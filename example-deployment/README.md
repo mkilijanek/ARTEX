@@ -403,6 +403,13 @@ services:
 | `delivered to K of N; failed: …0102 (<reason>)` / `delivered to the group, but failed for M member(s): ...` | a partial delivery; sending again would repeat it to those who got it | no |
 | `Signal service returned an unexpected success response (HTTP <code>)` | the service answered 2xx without confirming a send | no |
 
+Two messages on the Signal account card (System, Notifications) need an action from the operator:
+
+- `link expired`: the code was not scanned within 2 minutes. signal-cli gives the link up at the same time, so the
+  old code cannot be used any more. Start the link again and scan the new code at once.
+- `the account is no longer linked; unlink and link again`: the device was removed on the phone (Linked devices),
+  or Signal ended the link. Unlink on the card (this only clears the local data), then link and confirm again.
+
 Failures that are not retried automatically can be retried from the delivery records on the Notifications page once
 the cause is gone.
 
