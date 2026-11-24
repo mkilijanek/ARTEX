@@ -18,14 +18,17 @@ import (
 	"time"
 )
 
-// Operator settings of the Signal channel. Both live in the server environment
-// and are never part of a channel config: the config holds recipients only, so
-// the UI cannot point Signal at another endpoint or another sender account.
+// Operator setting of the Signal channel. It lives in the server environment
+// and is never part of a channel config: the config holds recipients only, so
+// the UI cannot point Signal at another endpoint. The sender account does not
+// come from the environment: the server installs it with SetSignalSender.
 const (
-	// SignalAPIEnv is the bridge endpoint, `unix:/absolute/path`.
+	// SignalAPIEnv is the Signal service endpoint, `unix:/absolute/path`.
 	SignalAPIEnv = "ARTEX_SIGNAL_API"
-	// SignalNumberEnv is the sender account (E.164) registered on the bridge.
-	SignalNumberEnv = "ARTEX_SIGNAL_NUMBER"
+
+	// signalLegacyNumberEnv was the sender account variable. Its value is never
+	// read; a non-blank value only produces a log line saying it is ignored.
+	signalLegacyNumberEnv = "ARTEX_SIGNAL_NUMBER"
 )
 
 const (
@@ -37,11 +40,11 @@ const (
 	signalReservedBytes = 200
 	// signalSendURL: the host is a fixed placeholder, the client dials the
 	// configured socket whatever the URL says.
-	signalSendURL = "http://signal-bridge/v2/send"
+	signalSendURL = "http://signal/v2/send"
 	// signalSendTimeout stays below the notifier's 30 s send timeout.
 	signalSendTimeout = 25 * time.Second
 
-	signalUnreachable = "Signal bridge socket unreachable (is docker-compose.signal.yml up?)"
+	signalUnreachable = "Signal service socket unreachable (is docker-compose.signal.yml up?)"
 )
 
 var (
@@ -56,12 +59,10 @@ var (
 // signalSettings is the operator configuration, parsed once at start.
 type signalSettings struct {
 	socket string // "" when ARTEX_SIGNAL_API is unset or invalid
-	number string // "" when ARTEX_SIGNAL_NUMBER is unset or invalid
-	// apiErr / numberErr hold the text shown to the configurator when the
-	// matching value is unusable. They name the variable and never the value.
-	apiErr    string
-	numberErr string
-	client    *http.Client // dials socket only; nil when socket == ""
+	// apiErr holds the text shown to the configurator when ARTEX_SIGNAL_API is
+	// unusable. It names the variable and never the value.
+	apiErr string
+	client *http.Client // dials socket only; nil when socket == ""
 	// logLines are the `[notify] signal: ...` lines the parse produced. init cannot log them: the
 	// process log sink (server.StartLogCapture) does not exist yet, so LogSignalConfig writes them.
 	logLines []string
@@ -71,39 +72,31 @@ var signalState atomic.Pointer[signalSettings]
 
 func init() { LoadSignalEnv(os.Getenv) }
 
-// LoadSignalEnv parses ARTEX_SIGNAL_API and ARTEX_SIGNAL_NUMBER with getenv and
-// makes the result the process-wide Signal configuration. It runs once at start
-// (init, with os.Getenv); tests call it with a fake getenv. An invalid value
-// leaves Signal "not configured" and stores one `[notify] signal: ...` line
-// naming the variable, with the number masked to its last 4 digits; the process
-// keeps running. It does not log: LogSignalConfig writes the stored lines once
-// the log sink is up.
+// LoadSignalEnv parses ARTEX_SIGNAL_API with getenv and makes the result the
+// process-wide Signal configuration. It runs once at start (init, with
+// os.Getenv); tests call it with a fake getenv. An invalid value leaves Signal
+// "not configured" and stores one `[notify] signal: ...` line naming the
+// variable; the process keeps running. A non-blank former sender variable adds
+// one line saying it is ignored (its value is never logged). It does not log:
+// LogSignalConfig writes the stored lines once the log sink is up.
 func LoadSignalEnv(getenv func(string) string) {
 	st := &signalSettings{}
 
 	api := strings.TrimSpace(getenv(SignalAPIEnv))
 	switch {
 	case api == "":
-		st.apiErr = "Signal bridge is not configured: set " + SignalAPIEnv + " (unix:/absolute/path)"
+		st.apiErr = "Signal service is not configured: set " + SignalAPIEnv + " (unix:/absolute/path)"
 	case !strings.HasPrefix(api, "unix:") || !filepath.IsAbs(strings.TrimPrefix(api, "unix:")) ||
 		strings.ContainsRune(api, 0):
-		st.apiErr = "Signal bridge is not configured: " + SignalAPIEnv + " must be unix:/absolute/path"
+		st.apiErr = "Signal service is not configured: " + SignalAPIEnv + " must be unix:/absolute/path"
 		st.logLines = append(st.logLines, fmt.Sprintf("[notify] signal: %s is invalid, expected unix:/absolute/path; Signal channels stay disabled", SignalAPIEnv))
 	default:
 		st.socket = strings.TrimPrefix(api, "unix:")
 		st.client = newSignalClient(st.socket)
 	}
 
-	num := strings.TrimSpace(getenv(SignalNumberEnv))
-	switch {
-	case num == "":
-		st.numberErr = "Signal sender is not configured: set " + SignalNumberEnv
-	case !signalNumberRe.MatchString(num):
-		st.numberErr = "Signal sender is not configured: " + SignalNumberEnv + " must be an E.164 number (+ and 7 to 15 digits)"
-		st.logLines = append(st.logLines, fmt.Sprintf("[notify] signal: %s is invalid (got %s), expected E.164 (+ and 7 to 15 digits); Signal channels stay disabled",
-			SignalNumberEnv, signalMaskTail(num)))
-	default:
-		st.number = num
+	if strings.TrimSpace(getenv(signalLegacyNumberEnv)) != "" {
+		st.logLines = append(st.logLines, "[notify] signal: "+signalLegacyNumberEnv+" is no longer used; link the account under System, Notifications")
 	}
 
 	if old := signalState.Swap(st); old != nil && old.client != nil {
@@ -119,11 +112,51 @@ func LogSignalConfig() {
 	}
 }
 
-// SignalSocketPath returns the bridge socket path, or "" when ARTEX_SIGNAL_API
+// SignalSocketPath returns the Signal service socket path, or "" when ARTEX_SIGNAL_API
 // is unset or invalid.
 func SignalSocketPath() string { return signalState.Load().socket }
 
-// signalRecheck is the hook main installs to re-run the isolation self-check C12 (the bridge socket
+// signalSender is the hook the server installs to provide the sender account. It returns the
+// confirmed account number and, when sending is not allowed right now, a problem text for the
+// operator (the number may then be empty). It is a hook so notify does not import the database.
+var signalSender atomic.Pointer[func(context.Context) (string, string)]
+
+// signalSenderTimeout bounds the hook call made by Validate, which has no context of its own.
+const signalSenderTimeout = 5 * time.Second
+
+// SetSignalSender installs the sender hook; nil removes it. The hook returns the linked and
+// confirmed account number in E.164 form and a problem text; a non-empty problem means that
+// sending is not allowed now, and the text is shown to the operator as the delivery error.
+func SetSignalSender(f func(ctx context.Context) (number string, problem string)) {
+	if f == nil {
+		signalSender.Store(nil)
+		return
+	}
+	signalSender.Store(&f)
+}
+
+// signalSenderNumber asks the hook. It returns the sender number, or an error carrying the
+// problem text. The number is returned with the error when the hook gave one, so the scrubber
+// can still mask it.
+func signalSenderNumber(ctx context.Context) (string, error) {
+	f := signalSender.Load()
+	if f == nil {
+		return "", errors.New("Signal account is not linked: link one under System, Notifications")
+	}
+	number, problem := (*f)(ctx)
+	if problem != "" {
+		return number, errors.New(problem)
+	}
+	if number == "" {
+		return "", errors.New("Signal account is not linked: link one under System, Notifications")
+	}
+	if !signalNumberRe.MatchString(number) {
+		return "", errors.New("Signal account number is invalid; unlink and link the account again")
+	}
+	return number, nil
+}
+
+// signalRecheck is the hook main installs to re-run the isolation self-check C12 (the Signal service socket
 // is not reachable by tools). It is a hook, not an import of the sandbox package, so notify stays
 // independent of it. It returns nil only when the check ran and its result was published.
 // signalSentOnce makes the send path call it after the first success, and again after the next
@@ -158,7 +191,7 @@ func RecheckSignal(ctx context.Context) error {
 // status there, because doJSONVia returns the body of a 2xx response and not its status code.
 type signalStatusKey struct{}
 
-// signalTransport is the bridge transport plus the status recording described at signalStatusKey.
+// signalTransport is the Signal service transport plus the status recording described at signalStatusKey.
 type signalTransport struct{ base *http.Transport }
 
 func (t *signalTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -173,7 +206,7 @@ func (t *signalTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func (t *signalTransport) CloseIdleConnections() { t.base.CloseIdleConnections() }
 
-// newSignalClient builds the bridge client. It differs from the shared
+// newSignalClient builds the Signal service client. It differs from the shared
 // httpClient on purpose:
 //   - the Transport dials the socket path and nothing else, whatever host the
 //     URL names, so no config value can steer the endpoint;
@@ -187,6 +220,9 @@ func newSignalClient(socket string) *http.Client {
 		Transport: &signalTransport{base: &http.Transport{
 			Proxy: nil,
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				if err := signalCheckSocket(socket); err != nil {
+					return nil, err
+				}
 				conn, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "unix", socket)
 				if err != nil {
 					// The raw error carries "connect: no such file or directory" and
@@ -205,6 +241,23 @@ func newSignalClient(socket string) *http.Client {
 	}
 }
 
+// signalCheckSocket refuses a socket path that is a symlink or not a socket. The check runs
+// before every dial; the messages do not carry the path.
+func signalCheckSocket(socket string) error {
+	fi, err := os.Lstat(socket)
+	switch {
+	case errors.Is(err, syscall.ENOENT):
+		return errors.New(signalUnreachable)
+	case err != nil:
+		return fmt.Errorf("Signal service socket cannot be checked: %w", errors.Unwrap(err))
+	case fi.Mode()&os.ModeSymlink != 0:
+		return errors.New("Signal service socket path is a symlink; refusing to connect")
+	case fi.Mode()&os.ModeSocket == 0:
+		return errors.New("Signal service socket path is not a socket; refusing to connect")
+	}
+	return nil
+}
+
 // signalMaskTail renders a value as "…" plus its last 4 characters.
 func signalMaskTail(s string) string {
 	r := []rune(s)
@@ -219,13 +272,14 @@ func signalMaskGroup(id string) string {
 	return "group." + signalMaskTail(strings.TrimRight(id, "="))
 }
 
-// signalChannel implements the Signal channel through a signal-cli-rest-api
-// bridge reachable over a Unix socket (see the plan, design D1-D6).
+// signalChannel implements the Signal channel through the Signal service,
+// reachable over a Unix socket.
 //
 // Platform traits:
-//   - There is no credential in the channel config; the sender account lives on
-//     the bridge and in ARTEX_SIGNAL_NUMBER. Recipients are PII, not secrets.
-//   - The bridge answers 400 {"error": ...} for every send failure except rate
+//   - There is no credential in the channel config; the sender account is the
+//     linked account the server provides through SetSignalSender. Recipients
+//     are PII, not secrets.
+//   - The service answers 400 {"error": ...} for every send failure except rate
 //     limiting (429), and 201 with per-recipient errors on partial delivery.
 //   - Plain text only (text_mode "normal"): finding text comes from scanned
 //     targets, and styled mode would let it inject formatting.
@@ -265,9 +319,9 @@ func signalRecipientKind(s string) string {
 	}
 }
 
-// signalGroupInner checks the bridge's own group-id rule: base64 (std) that
+// signalGroupInner checks the Signal service's own group-id rule: base64 (std) that
 // decodes, and whose result decodes again, to exactly 32 bytes. It returns the
-// once-decoded id, which is how signal-cli knows the group and how the bridge
+// once-decoded id, which is how signal-cli knows the group and how the service
 // may echo it back.
 func signalGroupInner(id string) (string, bool) {
 	once, err := base64.StdEncoding.DecodeString(id)
@@ -307,17 +361,22 @@ func signalRecipients(cfg map[string]any) ([]string, error) {
 // settings. Messages name the field and never echo a recipient value, because
 // Send passes them on as a delivery error.
 func (signalChannel) Validate(cfg map[string]any) error {
+	ctx, cancel := context.WithTimeout(context.Background(), signalSenderTimeout)
+	defer cancel()
+	_, err := signalValidate(ctx, cfg)
+	return err
+}
+
+// signalValidate runs Validate and returns the sender number the hook gave, even with an error
+// from the hook, so Send can mask it.
+func signalValidate(ctx context.Context, cfg map[string]any) (string, error) {
 	if err := signalValidateRecipients(cfg); err != nil {
-		return err
+		return "", err
 	}
-	st := signalState.Load()
-	if st.numberErr != "" {
-		return errors.New(st.numberErr)
+	if st := signalState.Load(); st.apiErr != "" {
+		return "", errors.New(st.apiErr)
 	}
-	if st.apiErr != "" {
-		return errors.New(st.apiErr)
-	}
-	return nil
+	return signalSenderNumber(ctx)
 }
 
 func signalValidateRecipients(cfg map[string]any) error {
@@ -370,16 +429,16 @@ type signalPayload struct {
 func (c signalChannel) Send(ctx context.Context, cfg map[string]any, m Message) (int, error) {
 	st := signalState.Load()
 	recipients, _ := signalRecipients(cfg)
-	scrub := newSignalScrubber(st.number, recipients)
-
-	if err := c.Validate(cfg); err != nil {
+	number, err := signalValidate(ctx, cfg)
+	scrub := newSignalScrubber(number, recipients)
+	if err != nil {
 		return 0, scrub.err(Permanent(err))
 	}
 	if len(m.Items) == 0 {
 		return 0, Permanent(errors.New("nothing to send: the message has no items"))
 	}
 	text, kept := signalText(m)
-	payload := signalPayload{Number: st.number, Recipients: recipients, Message: text, TextMode: "normal"}
+	payload := signalPayload{Number: number, Recipients: recipients, Message: text, TextMode: "normal"}
 
 	var status int
 	raw, err := doJSONVia(context.WithValue(ctx, signalStatusKey{}, &status), st.client, scrub.body, "POST", signalSendURL, nil, payload)
@@ -406,19 +465,19 @@ func (c signalChannel) Send(ctx context.Context, cfg map[string]any, m Message) 
 }
 
 // signalClassify turns a doJSONVia error into the Signal-specific text. 429 is
-// retryable and must not carry the bridge body (it holds challenge_tokens).
+// retryable and must not carry the response body (it holds challenge_tokens).
 func signalClassify(err error) error {
 	if mm := signalStatusRe.FindStringSubmatch(err.Error()); mm != nil && mm[1] == "429" {
-		return errors.New("Signal rate limit: solve the rate-limit challenge on the bridge (see the deployment README); delivery is retried")
+		return errors.New("Signal rate limit: the account is rate limited by Signal (see the deployment README); delivery is retried")
 	}
 	return err
 }
 
-// signalCheckDelivery inspects the 2xx body. Only two shapes count as accepted by the bridge: an
+// signalCheckDelivery inspects the 2xx body. Only two shapes count as accepted by the service: an
 // object with a non-empty timestamp, or an array whose every element is such an object; anything
 // else (an empty body, {}, [], null, an error object, a missing or zero timestamp) is a permanent
 // "unexpected success response", because a retry would not tell whether the message went out. The
-// bridge also reports recipients it could not reach inside a successful response; any such
+// service also reports recipients it could not reach inside a successful response; any such
 // recipient makes the delivery a permanent failure (a retry would send the message again to the
 // recipients that already got it).
 func signalCheckDelivery(status int, raw []byte, recipients []string, scrub *signalScrubber) error {
@@ -437,7 +496,7 @@ func signalCheckDelivery(status int, raw []byte, recipients []string, scrub *sig
 	// unexpected never quotes the body; the only hint is the text of an {"error": ...} member,
 	// scrubbed and cut short.
 	unexpected := func(hint string) error {
-		msg := fmt.Sprintf("Signal bridge returned an unexpected success response (HTTP %d)", status)
+		msg := fmt.Sprintf("Signal service returned an unexpected success response (HTTP %d)", status)
 		if hint = OneLine(scrub.text(hint), 80); hint != "" {
 			msg += ": " + hint
 		}
@@ -471,7 +530,7 @@ func signalCheckDelivery(status int, raw []byte, recipients []string, scrub *sig
 		return unexpected("")
 	case strings.HasPrefix(trimmed, "["):
 		if err := json.Unmarshal(raw, &results); err != nil {
-			return Permanent(fmt.Errorf("Signal bridge returned an unreadable success response: %s", scrub.body(raw)))
+			return Permanent(fmt.Errorf("Signal service returned an unreadable success response: %s", scrub.body(raw)))
 		}
 		if len(results) == 0 {
 			return unexpected("")
@@ -479,7 +538,7 @@ func signalCheckDelivery(status int, raw []byte, recipients []string, scrub *sig
 	default:
 		var one *result
 		if err := json.Unmarshal(raw, &one); err != nil {
-			return Permanent(fmt.Errorf("Signal bridge returned an unreadable success response: %s", scrub.body(raw)))
+			return Permanent(fmt.Errorf("Signal service returned an unreadable success response: %s", scrub.body(raw)))
 		}
 		results = []*result{one}
 	}
