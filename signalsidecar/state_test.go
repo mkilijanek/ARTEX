@@ -299,7 +299,7 @@ func TestSidecarUnlinksALinkedAccount(t *testing.T) {
 
 func TestSidecarUnlinksFromTheErrorState(t *testing.T) {
 	mr := newMRig(t, "scunlinkerr", nil)
-	mr.r.seedAccounts(testNumber, "+15555550202")
+	mr.r.seedAccounts(testNumber, "+15555550104")
 	mr.start(nil, nil)
 	st := mr.waitState("error")
 	if !strings.Contains(st.Err, "more than one account") {
@@ -439,13 +439,13 @@ func TestRestartedSidecarKeepsALinkedAccountAndItsConfirmation(t *testing.T) {
 
 func TestRestartedSidecarReportsErrorForSeveralAccounts(t *testing.T) {
 	mr := newMRig(t, "screstarterr", nil)
-	mr.r.seedAccounts(testNumber, "+15555550202")
+	mr.r.seedAccounts(testNumber, "+15555550104")
 	mr.start(nil, nil)
 	st := mr.waitState("error")
 	if !strings.Contains(st.Err, "more than one account") {
 		t.Fatalf("error text %q", st.Err)
 	}
-	mr.logsHold(testNumber, "+15555550202")
+	mr.logsHold(testNumber, "+15555550104")
 }
 
 func TestRestartedSidecarRepeatsAPendingUnlink(t *testing.T) {
@@ -549,7 +549,7 @@ func TestReadyRefusesUntilTheAccountIsLinkedAndConfirmed(t *testing.T) {
 	waitWhy("not_linked")
 	mr.link()
 	waitWhy("not_confirmed")
-	mr.confirm("+15555550999")
+	mr.confirm("+15555550106")
 	waitWhy("not_confirmed")
 	mr.confirm(testNumber)
 	waitWhy("")
@@ -873,7 +873,7 @@ func TestSendThroughTheSocketApiNeedsAConfirmedAccount(t *testing.T) {
 	if status, body := post(testOuterGroup); status != 201 {
 		t.Fatalf("group: %d %s", status, body)
 	}
-	if status, body := post("+15555550202", "+15555550303"); status != 201 {
+	if status, body := post("+15555550104", "+15555550105"); status != 201 {
 		t.Fatalf("numbers: %d %s", status, body)
 	}
 	sent := mr.sentCalls()
@@ -884,7 +884,7 @@ func TestSendThroughTheSocketApiNeedsAConfirmedAccount(t *testing.T) {
 		fmt.Sprint(sent[0]["groupIds"]) != "["+testGroup+"]" || sent[0]["recipient"] != nil {
 		t.Fatalf("group send: %v", sent[0])
 	}
-	if fmt.Sprint(sent[1]["recipient"]) != "[+15555550202 +15555550303]" || sent[1]["groupIds"] != nil {
+	if fmt.Sprint(sent[1]["recipient"]) != "[+15555550104 +15555550105]" || sent[1]["groupIds"] != nil {
 		t.Fatalf("numbers send: %v", sent[1])
 	}
 
@@ -908,7 +908,7 @@ func TestSendThroughTheSocketApiNeedsAConfirmedAccount(t *testing.T) {
 	if about != (About{Service: "artex-signal", Version: "test-version", SignalCLI: "0.14.10", State: "linked"}) {
 		t.Fatalf("about: %+v", about)
 	}
-	mr.logsHold("SENTINEL-TEXT", "+15555550202")
+	mr.logsHold("SENTINEL-TEXT", "+15555550104")
 }
 
 func TestInnerGroupID(t *testing.T) {

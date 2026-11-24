@@ -307,7 +307,7 @@ func (s *server) handle(req request) {
 	}
 	if s.sc.Notifications {
 		s.write(map[string]any{"jsonrpc": "2.0", "method": "receive", "params": map[string]any{
-			"envelope": map[string]any{"source": "+15555550999", "dataMessage": map[string]any{"message": s.sc.NotifySentinel}},
+			"envelope": map[string]any{"source": "+15555550106", "dataMessage": map[string]any{"message": s.sc.NotifySentinel}},
 		}})
 	}
 	if s.sc.Oversize.Bytes > 0 && s.sc.Oversize.Method == req.Method {

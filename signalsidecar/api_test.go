@@ -285,9 +285,9 @@ func TestRateLimitBodyHasNoChallengeData(t *testing.T) {
 }
 
 func TestErrorTextsAreScrubbedInBodiesAndLogs(t *testing.T) {
-	leaks := "failed for +15555550199 in group.QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg5YWJjZGVmZ2hpamtsbW5vcA== " +
+	leaks := "failed for +15555550107 in group.QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg5YWJjZGVmZ2hpamtsbW5vcA== " +
 		"id 11111111-2222-4333-8444-555555555555 via sgnl://linkdevice?uuid=SECRETPARAM&pub_key=abc"
-	secrets := []string{"+15555550199", "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg5YWJjZGVmZ2hpamtsbW5vcA", "11111111-2222-4333-8444-555555555555", "SECRETPARAM", "linkdevice"}
+	secrets := []string{"+15555550107", "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg5YWJjZGVmZ2hpamtsbW5vcA", "11111111-2222-4333-8444-555555555555", "SECRETPARAM", "linkdevice"}
 	for _, code := range []int{-1, -3, -4, -32602, -32603} {
 		t.Run(fmt.Sprint(code), func(t *testing.T) {
 			r := newAPIRig(t)

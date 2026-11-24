@@ -466,7 +466,7 @@ func TestSendNamesTheAccountAndTheFakeInsistsOnIt(t *testing.T) {
 	r.seedAccounts(testNumber)
 	s, _ := r.run(r.config())
 	r.waitUp(s)
-	_, err := s.Send(ctx5(t), "+15555599999", testGroup, "hi")
+	_, err := s.Send(ctx5(t), "+15555550108", testGroup, "hi")
 	var re *RPCError
 	if !errors.As(err, &re) || re.Code != -32602 {
 		t.Fatalf("unknown account: %v", err)
@@ -673,7 +673,7 @@ func TestRestartWithoutACompletedLinkLeavesNoAccount(t *testing.T) {
 
 func TestPauseStopsTheChildAndResumeStartsIt(t *testing.T) {
 	r := newRig(t, nil)
-	r.seedAccounts(testNumber, "+15555550202")
+	r.seedAccounts(testNumber, "+15555550104")
 	s, _ := r.run(r.config())
 	r.waitUp(s)
 	pids, _ := r.startTimes()
@@ -824,7 +824,7 @@ func TestOversizeAndNotificationLinesDoNotDisturbCallsOrLeakIntoLogs(t *testing.
 		t.Fatal(err)
 	}
 	logs := r.logs.all()
-	if strings.Contains(logs, "SENTINEL-MESSAGE-BODY") || strings.Contains(logs, "15555550999") {
+	if strings.Contains(logs, "SENTINEL-MESSAGE-BODY") || strings.Contains(logs, "15555550106") {
 		t.Fatalf("incoming message content in the log:\n%s", logs)
 	}
 	if !strings.Contains(logs, "skipped an oversize line") {
@@ -862,7 +862,7 @@ func TestSendToNumbersReachesTheChildWithTheAccount(t *testing.T) {
 	if !strings.Contains(string(raw), `"recipient":["+15555550102"]`) || !strings.Contains(string(raw), `"account":"`+testNumber+`"`) {
 		t.Fatalf("calls: %s", raw)
 	}
-	if _, err := s.SendNumbers(ctx5(t), "+15555599999", []string{"+15555550102"}, "hi"); err == nil {
+	if _, err := s.SendNumbers(ctx5(t), "+15555550108", []string{"+15555550102"}, "hi"); err == nil {
 		t.Fatal("an account the child does not know must fail")
 	}
 }

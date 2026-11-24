@@ -227,7 +227,7 @@ func TestSignalLegacyNumberVariableIsIgnored(t *testing.T) {
 	t.Cleanup(func() { log.SetOutput(old) })
 	t.Cleanup(func() { LoadSignalEnv(os.Getenv) })
 
-	env := map[string]string{SignalAPIEnv: "unix:/s/api.sock", "ARTEX_SIGNAL_NUMBER": "+15555550199"}
+	env := map[string]string{SignalAPIEnv: "unix:/s/api.sock", "ARTEX_SIGNAL_NUMBER": "+15555550107"}
 	LoadSignalEnv(func(k string) string { return env[k] })
 	LogSignalConfig()
 
@@ -897,7 +897,7 @@ func TestSignalErrorsRedactNumbersAndGroups(t *testing.T) {
 	// (a) fixed probe numbers and the group id in the bridge's error body, as the
 	// real bridge echoes them ("Invalid identifier group.…").
 	body, _ := json.Marshal(map[string]any{"error": "Invalid identifier " + sigGroup +
-		" for +15555550100, +15555550101 and +15555550199"})
+		" for +15555550100, +15555550101 and +15555550107"})
 	br := newFakeBridge(t, 400, "application/json", string(body))
 	useSignal(t, br.sock, sigSender)
 	_, err := sendGroup(t, groupCfg(), sigMsg)
@@ -905,7 +905,7 @@ func TestSignalErrorsRedactNumbersAndGroups(t *testing.T) {
 		t.Fatal("want an error")
 	}
 	assertSignalClean(t, err.Error(), sigSender, sigRecipA, "5555550199")
-	for _, want := range []string{"group.…", "…0100", "…0101", "…0199"} {
+	for _, want := range []string{"group.…", "…0100", "…0101", "…0107"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q should contain %q", err, want)
 		}

@@ -883,7 +883,7 @@ func TestSignalSenderFollowsTheRows(t *testing.T) {
 		t.Fatalf("confirmed: %q %q", n, p)
 	}
 	// A confirmation of another number than the linked one does not count.
-	g.exec(`UPDATE signal_sidecar_config SET confirmed_account='+15555550999' WHERE id`)
+	g.exec(`UPDATE signal_sidecar_config SET confirmed_account='+15555550106' WHERE id`)
 	if n, p := next(); p != "confirm the linked Signal account first" {
 		t.Fatalf("confirmed another number: %q %q", n, p)
 	}
