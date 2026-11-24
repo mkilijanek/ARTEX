@@ -40,6 +40,9 @@ ARG SIGNAL_CLI_VERSION=0.14.10
 ARG SIGNAL_CLI_SHA256=706a57d9faae7525cf732936efdabf210146e3c83f9e8ae7e4e62f5946121c33
 ARG LIBSIGNAL_JNI_SHA256=dfd7bd7e2658950f74b476547f46a64ebcbbcf024e83e1e0ffa99329bdd818b0
 ARG SQLITE_JNI_SHA256=9149f234a03da04caba72ce534dfa0f0e5b999ae8d03d630034be65f24c7b44c
+# Hash of libsignal_jni.so after strip: it depends on the binutils that apt installs, so a
+# different strip shows up here and fails the build.
+ARG LIBSIGNAL_STRIPPED_SHA256=eada1538293c8af0f54ca4b8ef76cbd07185bd9989defa922229f32ef663ab01
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl unzip zip binutils \
  && rm -rf /var/lib/apt/lists/*
@@ -60,7 +63,9 @@ RUN set -eu; \
     unzip -o -j "$jar" libsignal_jni_amd64.so -d /work/libsignal; \
     echo "${LIBSIGNAL_JNI_SHA256}  /work/libsignal/libsignal_jni_amd64.so" | sha256sum -c -; \
     zip -d "$jar" '*signal_jni*.so' '*signal_jni*.dylib' '*signal_jni*.dll'; \
-    strip --strip-debug -o /opt/signal-cli/native/libsignal_jni.so /work/libsignal/libsignal_jni_amd64.so
+    strip --strip-debug -o /opt/signal-cli/native/libsignal_jni.so /work/libsignal/libsignal_jni_amd64.so; \
+    echo "${LIBSIGNAL_STRIPPED_SHA256}  /opt/signal-cli/native/libsignal_jni.so" | sha256sum -c - \
+      || { echo "stripped libsignal_jni.so is $(sha256sum /opt/signal-cli/native/libsignal_jni.so | cut -d' ' -f1)" >&2; exit 1; }
 # sqlite-jdbc: Linux x86_64 library only, checked, removed from the jar.
 RUN set -eu; \
     cd /opt/signal-cli/lib; \
@@ -86,6 +91,12 @@ RUN set -eu; \
     find /opt/signal-cli -type d -exec chmod 0555 {} +; \
     find /opt/signal-cli -type f -exec chmod 0444 {} +
 
+# ------------------------------------------------------------------ dirs ---
+# The two directories the sidecar writes to, owned by its user. The runtime image has
+# no shell, so they are made here; a fresh named volume copies their owner and mode.
+FROM debian:bookworm-slim@sha256:e67eeead736ff7bbe258ef088bff683635c561b1fcfefad0806c1df4ab49ce0e AS dirs
+RUN install -d -o 10001 -g 10001 -m 0700 /rootfs/data /rootfs/sock
+
 # ----------------------------------------------------------------- smoke ---
 # The runtime image plus the scripted stand-in for signal-cli, for CI and the compose
 # smoke test. The sidecar starts /usr/bin/java with a fixed command line, so the
@@ -94,6 +105,7 @@ RUN set -eu; \
 FROM gcr.io/distroless/java25-debian13@sha256:d1b024b25b9dd0a363c14e2927e8059c94bff102f2e2a645eb849ea36766292a AS smoke
 COPY --from=build --chown=0:0 --chmod=0555 /out/artex-signal /usr/local/bin/artex-signal
 COPY --from=build --chown=0:0 --chmod=0555 /out/fakecli /usr/bin/java
+COPY --from=dirs /rootfs/ /
 ENV ARTEX_SIGNAL_SOCKET=/sock/api.sock \
     ARTEX_SIGNAL_DATA=/data
 USER 10001:10001
@@ -115,6 +127,7 @@ LABEL org.opencontainers.image.title="artex-signal" \
 # The tree keeps the modes set in the signal-cli stage: directories 0555, files 0444.
 COPY --from=signal-cli --chown=0:0 /opt/signal-cli /opt/signal-cli
 COPY --from=build --chown=0:0 --chmod=0555 /out/artex-signal /usr/local/bin/artex-signal
+COPY --from=dirs /rootfs/ /
 # The java binary (/usr/bin/java), the native directory and the lib directory are
 # fixed places that the binary compiles in; only the socket and data paths are settings.
 ENV ARTEX_SIGNAL_SOCKET=/sock/api.sock \
