@@ -4,6 +4,98 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Signal service `artex-signal` (replaces the signal-cli REST bridge)
+
+The Signal entries further down (the bridge, `signal-proxy.conf`, `ARTEX_SIGNAL_NUMBER`) describe 0.5.19m to 0.6.0m.
+This block supersedes them. Design: `docs/adr/0011-signal-sidecar-with-database-config.md` (amends ADR 0007).
+
+#### Added
+
+- **Signal service `artex-signal`**, a separate container and image (`ghcr.io/mkilijanek/artex-signal`, released with
+  the same tag as `ghcr.io/mkilijanek/artex`). A Go supervisor runs signal-cli 0.14.10 (JVM build, pinned and checked
+  by SHA-256) as a **linked device** of one Signal account, with a fixed command line, a fixed list of six signal-cli
+  calls, received messages dropped (no attachments, stories, avatars or stickers), native libraries taken out of the
+  jars at build time so `/tmp` stays `noexec`, and a non-dumpable process so signal-cli cannot read the database
+  password. ARTEX sends through its socket (`POST /v2/send`, `GET /v1/about`, nothing else). It exits with code 78
+  when its database connection string is missing or unsafe, or when the database accepts a wrong password.
+  `example-deployment/README.md`, "Signal notifications (optional)".
+- **Linking from the UI** (System, Notifications, card "Signal account"): **Link account** with the current password
+  and an acknowledgement that the device can read all messages, a QR code valid for 2 minutes (cancellable, one link
+  at a time), then a **confirmation** by typing the last 6 digits of the linked number, which ARTEX never shows.
+  Nothing is sent from an unconfirmed account. **Unlink** with the password deletes the local account data; the
+  device has to be removed on the phone as well (signal-cli gives a linked device no way to do that). The card shows
+  the state, the service and signal-cli versions, and warnings about the database role. Routes under
+  `/api/notify/signal/` accept the token in the `Authorization` header only and JSON bodies only
+  (`docs/signal-account-api.md`).
+- **Group picker** in Signal channels: the groups of the linked account (with a masked id to tell equal names apart),
+  **Refresh**, and "Enter id manually" for a `group.<id>`.
+- **Migration `5004`** (additive): the tables `signal_sidecar_config` and `signal_sidecar_status`, the view
+  `signal_sidecar_config_v` and four functions. The service's database role can read that one view and execute three
+  SECURITY DEFINER functions, nothing else. ARTEX creates and checks the role at every start when
+  `ARTEX_SIGNAL_DB_PASSWORD` is set and logs `[signal] database role ready`; it refuses `trust` authentication, `CREATE`
+  for `PUBLIC` on schema `public`, and an existing role it did not create or that is privileged, and it never fails
+  the start. `docs/schema-upgrade.md`, "Migration 5004".
+- **New environment variables:** `ARTEX_SIGNAL_DB_PASSWORD` (required with the Signal override), `ARTEX_SIGNAL_DB_ROLE`
+  (default `artex_signal`), `ARTEX_SIGNAL_DB_AUTH_ASSERTED=1` (external PostgreSQL whose `pg_hba.conf` ARTEX cannot
+  read) and `ARTEX_SIGNAL_IMAGE` (pin the service image by digest). The service reads `ARTEX_SIGNAL_PG_DSN`,
+  `ARTEX_SIGNAL_SOCKET` and `ARTEX_SIGNAL_DATA`, which the override sets.
+
+#### Changed
+
+- **Wrong confirmation digits back off progressively:** they count like wrong passwords, and the third wrong attempt
+  starts a wait of 10 seconds that doubles with each further one, up to 15 minutes.
+- **Deliveries are retried while the service is not connected** (no heartbeat for 30 seconds) or the Signal state
+  cannot be read, and when the service answers `503` (signal-cli down, network failure). "Not linked", "not
+  confirmed" and an error state fail the delivery; retry it from the delivery records.
+- **Error texts** name the "Signal service" instead of the bridge, for example `Signal service socket unreachable (is
+  docker-compose.signal.yml up?)`. ARTEX refuses to dial a socket path that is a symlink or not a socket.
+- **`artex` no longer waits for the Signal container at start.** Isolation check C12 is re-run every 15 seconds while
+  it is `not verified` (normally because the socket is not there yet), for about an hour, and still after the first
+  successful send and on each channel test.
+
+#### Removed
+
+- The signal-cli REST API bridge and the nginx proxy from `example-deployment/docker-compose.signal.yml`, the file
+  `example-deployment/signal-proxy.conf`, the network `signal-internal`, the volumes `signal-data` and `signalsock`,
+  and the `.env` variables `SIGNAL_CLI_IMAGE` and `SIGNAL_PROXY_IMAGE`.
+- `ARTEX_SIGNAL_NUMBER`. The sender is the linked and confirmed account. A value that is still set is ignored, and
+  the log shows `[notify] signal: ARTEX_SIGNAL_NUMBER is no longer used; link the account under System,
+  Notifications`.
+
+#### Upgrade notes
+
+- **Nothing of the bridge set-up is carried over.** After the upgrade, Signal sends nothing until an account is
+  linked and confirmed in the UI; deliveries in between fail visibly and can be retried. Steps: set
+  `ARTEX_SIGNAL_DB_PASSWORD`, remove `ARTEX_SIGNAL_NUMBER`, `SIGNAL_CLI_IMAGE` and `SIGNAL_PROXY_IMAGE`, replace
+  `docker-compose.signal.yml`, delete `signal-proxy.conf`, run `docker compose pull && docker compose up -d
+  --remove-orphans`, then link, confirm and pick the group. Keep the old `signal-data` volume until the new set-up
+  works; it is not used by the service. `example-deployment/README.md`, "Upgrade from the signal-cli REST API
+  override".
+- **A database volume that still trusts local connections** (created before 0.5.18m) makes provisioning refuse the
+  role: follow the steps in `example-deployment/example.env` ("To require the password on an existing volume") to
+  require passwords first.
+- **Use a dedicated Signal account**: a linked device can read all messages of the account. The volume
+  `artex-signal-data` is a live credential until the device is removed on the phone.
+- **Docker does not restart an `unhealthy` container.** The service's health check fails when signal-cli has been
+  down for more than 120 seconds; monitoring has to act on it.
+- **Database dumps** now carry grants to the service's role, but not the role. Create the role before restoring
+  into a fresh volume. A `pg_restore` without the role, or any restore with `--no-acl`, leaves the service's
+  SECURITY DEFINER functions executable by every role, and ARTEX does not revoke that: run the four `REVOKE`
+  statements in `example-deployment/README.md`, "Backup of the account", and check with its query.
+- **Rollback:** the previous release's images and `docker-compose.signal.yml`, `signal-proxy.conf` and `.env` values,
+  with `ARTEX_SCHEMA_ALLOW_NEWER=5004`; the optional clean-up is the guarded recipe in `docs/schema-upgrade.md`,
+  "Migration 5004". Then remove the linked device on the phone.
+
+#### Known issues
+
+- Verified with a simulated signal-cli, and the production image started with the real signal-cli without an
+  account. Delivery from a real account and the 2000-byte limit are not verified yet.
+- The image scan of `artex-signal` shows 0 critical and 9 high findings: 8 in Debian `libexpat` and `libuuid` with no
+  fix available yet, and 1 in `wire-runtime` bundled with signal-cli 0.14.10. Accepted and tracked: the base image is
+  bumped when Debian ships fixes, signal-cli when upstream releases, and every release is scanned again.
+- The service can reach the LAN and cloud metadata addresses; ARTEX does not warn about it. Block them in the host
+  firewall if that matters.
+
 ### Added
 
 - **ARTEX User-Agent family and a global "Hide ARTEX user agent" switch** (System settings, "Advanced settings"; keys

@@ -103,7 +103,7 @@ export const CHANNEL_FIELDS: Record<string, FieldDef[]> = {
       key: "recipient_type",
       label: "Recipient type",
       kind: "select",
-      help: "Recommended for team alerts: members are managed in Signal and ARTEX stores no personal phone numbers. Paste the id as group.<id> (see the deployment README)",
+      help: "Recommended for team alerts: members are managed in Signal and ARTEX stores no personal phone numbers. Pick a group of the linked account, or enter group.<id> by hand",
       options: [
         { value: "group", label: "Group (recommended)" },
         { value: "numbers", label: "Phone numbers" },
@@ -202,4 +202,78 @@ export function parseKeywords(text: string): string[] {
     .split(/[\n,]+/)
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+// ---- Signal helpers (pure, so they can be tested without a browser) ----
+
+// A group as the picker needs it. Structurally the same as SignalGroup in lib/types.
+export interface GroupOption {
+  id: string;
+  masked: string;
+  name: string;
+}
+
+// formatCountdown prints whole seconds as mm:ss. Anything negative or not a number prints 00:00.
+export function formatCountdown(seconds: number): string {
+  const s = Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : 0;
+  const mm = String(Math.floor(s / 60)).padStart(2, "0");
+  const ss = String(s % 60).padStart(2, "0");
+  return `${mm}:${ss}`;
+}
+
+// isLastDigits reports whether the text is exactly the six ASCII digits the confirmation asks for.
+export function isLastDigits(text: string): boolean {
+  return /^[0-9]{6}$/.test(text);
+}
+
+const GROUP_NAME_MAX = 64;
+
+// cleanGroupName makes a group name safe to show: white space is collapsed, control and format
+// characters are dropped and the result is cut. Group names come from other people, so the
+// result is only ever rendered as text.
+export function cleanGroupName(name: string): string {
+  const cleaned = name
+    .replace(/\s+/gu, " ")
+    .replace(/[\p{Cc}\p{Cf}]/gu, "")
+    .replace(/ {2,}/g, " ")
+    .trim();
+  const chars = Array.from(cleaned);
+  if (chars.length <= GROUP_NAME_MAX) return cleaned;
+  return `${chars.slice(0, GROUP_NAME_MAX - 1).join("")}\u2026`;
+}
+
+export function groupRecipient(id: string): string {
+  // The server sends the id already in the form group.<id>.
+  return id;
+}
+
+// recipientsToText renders the recipients config value (an array from the server, text while typing).
+export function recipientsToText(value: unknown): string {
+  if (Array.isArray(value)) return value.map(String).join(", ");
+  if (value === null || value === undefined) return "";
+  return String(value);
+}
+
+export type GroupSelection = { kind: "empty" } | { kind: "selected"; recipient: string } | { kind: "manual" };
+
+// groupSelection decides what the group picker shows for the current recipients value. A value that is
+// not in the list (or a list that is missing) stays in manual entry, untouched.
+export function groupSelection(groups: GroupOption[] | null, value: unknown): GroupSelection {
+  if (!groups || groups.length === 0) return { kind: "manual" };
+  const text = recipientsToText(value).trim();
+  if (text === "") return { kind: "empty" };
+  const hit = groups.find((g) => groupRecipient(g.id) === text);
+  return hit ? { kind: "selected", recipient: text } : { kind: "manual" };
+}
+
+// relativeAge words how long ago a time was, for "updated 2 min ago".
+export function relativeAge(iso: string | null, nowMs: number): string {
+  if (!iso) return "never";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "never";
+  const s = Math.max(0, Math.floor((nowMs - t) / 1000));
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+  return `${Math.floor(s / 86400)} d ago`;
 }

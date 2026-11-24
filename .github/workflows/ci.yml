@@ -54,6 +54,15 @@ jobs:
       # - TestSideUsageRecordedOnceOnConsumerCancellation: concurrency/cancellation
       #   test that passes locally but is timing-sensitive on 2-core CI runners.
       # They now skip themselves in code (t.Skip with a pointer to the issue).
+      - name: Sidecar packages are part of the test run
+        # The sidecar packages are covered by ./... below (same database, same DSN, go on PATH
+        # for the fake CLI build). Fail if a layout change ever drops them from the pattern.
+        run: |
+          set -euo pipefail
+          listed=$(go list ./...)
+          for pkg in signalsidecar cmd/artex-signal; do
+            grep -q "/$pkg$" <<< "$listed" || { echo "::error::package $pkg is not matched by ./..."; exit 1; }
+          done
       - name: go test
         # -p 1: package test suites share the single postgres service; running
         # them in parallel makes packages delete each other's rows (observed
@@ -126,3 +135,62 @@ jobs:
       - uses: docker/setup-buildx-action@v3
       - name: Build application from a clean checkout
         run: docker build --target build --build-arg TARGETOS=linux --build-arg TARGETARCH=amd64 .
+
+  # Builds both targets of the sidecar image without pushing. The size is reported, not enforced:
+  # exceeding the budget needs the owner's decision at release.
+  signal-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      DOCKER_BUILD_RECORD_UPLOAD: "false"
+      SIZE_BUDGET_BYTES: "471859200"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build the sidecar image (default target)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/signal/Dockerfile
+          push: false
+          load: true
+          tags: artex-signal:ci
+          provenance: false
+          sbom: false
+      - name: Build the smoke target
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/signal/Dockerfile
+          target: smoke
+          push: false
+          load: true
+          tags: artex-signal-smoke:ci
+          provenance: false
+          sbom: false
+      - name: Record the image size
+        run: |
+          set -euo pipefail
+          size=$(docker image inspect -f '{{.Size}}' artex-signal:ci)
+          smoke=$(docker image inspect -f '{{.Size}}' artex-signal-smoke:ci)
+          {
+            echo "## Sidecar image size"
+            echo
+            echo "| image | bytes | MiB |"
+            echo "|---|---|---|"
+            echo "| artex-signal (default target) | $size | $((size / 1048576)) |"
+            echo "| artex-signal (smoke target) | $smoke | $((smoke / 1048576)) |"
+            echo
+            echo "Budget: $((SIZE_BUDGET_BYTES / 1048576)) MiB uncompressed."
+            echo
+            echo '```'
+            docker history --format '{{.Size}}\t{{.CreatedBy}}' artex-signal:ci
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$size" -gt "$SIZE_BUDGET_BYTES" ]; then
+            echo "::warning::artex-signal is $((size / 1048576)) MiB, over the $((SIZE_BUDGET_BYTES / 1048576)) MiB budget"
+          fi

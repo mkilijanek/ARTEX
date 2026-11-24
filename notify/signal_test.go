@@ -58,11 +58,16 @@ var sigMsg = Message{Items: []Item{{FindingID: 1, Severity: "high", Name: "SQL i
 
 // useSignal points the Signal channel at sock with the given sender for one
 // test; Signal state is process-wide, so these tests never run in parallel.
+// The sender comes from an installed hook, as the server does it.
 func useSignal(t *testing.T, sock, number string) {
 	t.Helper()
-	env := map[string]string{SignalAPIEnv: "unix:" + sock, SignalNumberEnv: number}
+	env := map[string]string{SignalAPIEnv: "unix:" + sock}
 	LoadSignalEnv(func(k string) string { return env[k] })
-	t.Cleanup(func() { LoadSignalEnv(os.Getenv) })
+	SetSignalSender(func(context.Context) (string, string) { return number, "" })
+	t.Cleanup(func() {
+		SetSignalSender(nil)
+		LoadSignalEnv(os.Getenv)
+	})
 }
 
 type bridgeReq struct {
@@ -160,21 +165,16 @@ func TestSignalRegistered(t *testing.T) {
 func TestSignalLoadEnv(t *testing.T) {
 	cases := []struct {
 		name       string
-		api, num   string
+		api        string
 		wantSocket string
 		wantLog    []string // each must appear in the log
-		wantNoLog  []string // none may appear in the log
 		wantErrSub string   // Validate error with a valid recipient list
 	}{
-		{"both unset", "", "", "", nil, []string{"[notify] signal"}, SignalNumberEnv},
-		{"valid", "unix:/run/artex-private/signal/api.sock", sigSender, "/run/artex-private/signal/api.sock", nil, []string{"[notify] signal"}, ""},
-		{"api is http", "http://signal-cli:8080", sigSender, "", []string{"[notify] signal: " + SignalAPIEnv}, nil, SignalAPIEnv},
-		{"api relative", "unix:run/api.sock", sigSender, "", []string{"[notify] signal: " + SignalAPIEnv}, nil, SignalAPIEnv},
-		{"api without scheme", "/run/api.sock", sigSender, "", []string{"[notify] signal: " + SignalAPIEnv}, nil, SignalAPIEnv},
-		{"number leading zero", "unix:/s/api.sock", "+0123456789", "/s/api.sock", []string{"[notify] signal: " + SignalNumberEnv, "…6789"}, []string{"+0123456789", "0123456789"}, SignalNumberEnv},
-		{"number without plus", "unix:/s/api.sock", "15555550100", "/s/api.sock", []string{"[notify] signal: " + SignalNumberEnv, "…0100"}, []string{"15555550100", "5555550100"}, SignalNumberEnv},
-		{"number too short", "unix:/s/api.sock", "+1234", "/s/api.sock", []string{SignalNumberEnv}, []string{"+1234"}, SignalNumberEnv},
-		{"number with spaces", "unix:/s/api.sock", "+1 555 555 0100", "/s/api.sock", []string{SignalNumberEnv}, []string{"555 0100"}, SignalNumberEnv},
+		{"unset", "", "", nil, SignalAPIEnv},
+		{"valid", "unix:/run/artex-private/signal/api.sock", "/run/artex-private/signal/api.sock", nil, ""},
+		{"api is http", "http://signal-cli:8080", "", []string{"[notify] signal: " + SignalAPIEnv}, SignalAPIEnv},
+		{"api relative", "unix:run/api.sock", "", []string{"[notify] signal: " + SignalAPIEnv}, SignalAPIEnv},
+		{"api without scheme", "/run/api.sock", "", []string{"[notify] signal: " + SignalAPIEnv}, SignalAPIEnv},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -183,8 +183,10 @@ func TestSignalLoadEnv(t *testing.T) {
 			log.SetOutput(&buf)
 			t.Cleanup(func() { log.SetOutput(old) })
 			t.Cleanup(func() { LoadSignalEnv(os.Getenv) })
+			SetSignalSender(func(context.Context) (string, string) { return sigSender, "" })
+			t.Cleanup(func() { SetSignalSender(nil) })
 
-			env := map[string]string{SignalAPIEnv: tc.api, SignalNumberEnv: tc.num}
+			env := map[string]string{SignalAPIEnv: tc.api}
 			LoadSignalEnv(func(k string) string { return env[k] })
 			// The parse runs in init, before the log sink exists: it only stores the lines, and
 			// LogSignalConfig (called by main once the sink is up) writes them.
@@ -202,13 +204,8 @@ func TestSignalLoadEnv(t *testing.T) {
 					t.Errorf("log %q should contain %q", logged, s)
 				}
 			}
-			for _, s := range tc.wantNoLog {
-				if strings.Contains(logged, s) {
-					t.Errorf("log %q must not contain %q", logged, s)
-				}
-			}
-			if n := strings.Count(logged, "[notify] signal:"); strings.Contains(tc.name, "unset") == false && tc.wantErrSub != "" && n != 1 {
-				t.Errorf("want exactly one [notify] signal line, got %d: %q", n, logged)
+			if tc.wantLog == nil && logged != "" {
+				t.Errorf("unexpected log output %q", logged)
 			}
 			err := signalChannel{}.Validate(groupCfg())
 			switch {
@@ -217,35 +214,210 @@ func TestSignalLoadEnv(t *testing.T) {
 			case tc.wantErrSub != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErrSub)):
 				t.Errorf("Validate error = %v, want it to name %q", err, tc.wantErrSub)
 			}
-			// The error text names the variable, never the invalid value.
-			if err != nil && tc.num != "" && strings.Contains(err.Error(), strings.TrimPrefix(tc.num, "+")) {
-				t.Errorf("Validate error echoes the sender value: %v", err)
+		})
+	}
+}
+
+// The former sender variable is ignored: one log line says so, the value is
+// never logged, and it does not become the sender.
+func TestSignalLegacyNumberVariableIsIgnored(t *testing.T) {
+	var buf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(old) })
+	t.Cleanup(func() { LoadSignalEnv(os.Getenv) })
+
+	env := map[string]string{SignalAPIEnv: "unix:/s/api.sock", "ARTEX_SIGNAL_NUMBER": "+15555550107"}
+	LoadSignalEnv(func(k string) string { return env[k] })
+	LogSignalConfig()
+
+	const want = "[notify] signal: ARTEX_SIGNAL_NUMBER is no longer used; link the account under System, Notifications"
+	logged := buf.String()
+	if n := strings.Count(logged, want); n != 1 || strings.Count(logged, "[notify] signal:") != 1 {
+		t.Fatalf("want exactly the one ignore line, got %q", logged)
+	}
+	if strings.Contains(logged, "5555550199") {
+		t.Fatalf("the value must not be logged: %q", logged)
+	}
+	err := signalChannel{}.Validate(groupCfg())
+	if err == nil || !strings.Contains(err.Error(), "not linked") {
+		t.Fatalf("the variable must not provide a sender, got %v", err)
+	}
+
+	// A blank variable logs nothing.
+	buf.Reset()
+	env["ARTEX_SIGNAL_NUMBER"] = "  "
+	LoadSignalEnv(func(k string) string { return env[k] })
+	LogSignalConfig()
+	if buf.Len() != 0 {
+		t.Fatalf("a blank variable must not log, got %q", buf.String())
+	}
+}
+
+func TestSignalSenderHook(t *testing.T) {
+	br := newFakeBridge(t, 201, "application/json", `[{"timestamp":"1"}]`)
+	env := map[string]string{SignalAPIEnv: "unix:" + br.sock}
+	LoadSignalEnv(func(k string) string { return env[k] })
+	t.Cleanup(func() {
+		SetSignalSender(nil)
+		LoadSignalEnv(os.Getenv)
+	})
+
+	cases := []struct {
+		name     string
+		hook     func(context.Context) (string, string)
+		wantErr  string // "" = the send goes out
+		wantSent string // number in the request body
+	}{
+		{"no hook installed", nil, "Signal account is not linked: link one under System, Notifications", ""},
+		{"not linked", func(context.Context) (string, string) {
+			return "", "Signal account is not linked: link one under System, Notifications"
+		}, "Signal account is not linked: link one under System, Notifications", ""},
+		{"not confirmed", func(context.Context) (string, string) {
+			return sigSender, "confirm the linked Signal account first"
+		}, "confirm the linked Signal account first", ""},
+		{"error state", func(context.Context) (string, string) {
+			return "", "Signal service is in an error state: unlink and link the account again"
+		}, "unlink and link the account again", ""},
+		{"empty number and no problem", func(context.Context) (string, string) { return "", "" }, "not linked", ""},
+		{"malformed number", func(context.Context) (string, string) { return "12345", "" }, "invalid", ""},
+		{"ready", func(context.Context) (string, string) { return sigRecipB, "" }, "", sigRecipB},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			SetSignalSender(tc.hook)
+			before := len(br.requests())
+			vErr := signalChannel{}.Validate(groupCfg())
+			_, sErr := sendGroup(t, groupCfg(), sigMsg)
+			reqs := br.requests()[before:]
+			if tc.wantErr == "" {
+				if vErr != nil || sErr != nil {
+					t.Fatalf("want ok, got validate=%v send=%v", vErr, sErr)
+				}
+				if len(reqs) != 1 {
+					t.Fatalf("want one request, got %d", len(reqs))
+				}
+				var p signalPayload
+				if err := json.Unmarshal(reqs[0].body, &p); err != nil || p.Number != tc.wantSent {
+					t.Fatalf("number in the body = %q (%v), want %q", p.Number, err, tc.wantSent)
+				}
+				return
+			}
+			for _, err := range []error{vErr, sErr} {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %v, want it to contain %q", err, tc.wantErr)
+				}
+			}
+			if !IsPermanent(sErr) {
+				t.Fatalf("a refused send must be permanent: %v", sErr)
+			}
+			if len(reqs) != 0 {
+				t.Fatalf("nothing may be sent, got %d requests", len(reqs))
 			}
 		})
 	}
 }
 
-func TestSignalValidateMessagesForMissingSender(t *testing.T) {
-	t.Cleanup(func() { LoadSignalEnv(os.Getenv) })
-	LoadSignalEnv(func(k string) string {
-		if k == SignalAPIEnv {
-			return "unix:/s/api.sock"
-		}
-		return ""
+// A problem that may clear by itself (the service is not connected, the state cannot be read) is retried; a
+// hook that does not say so, or says it is not retryable, is permanent.
+func TestSignalSenderHookRetryableProblems(t *testing.T) {
+	br := newFakeBridge(t, 201, "application/json", `[{"timestamp":"1"}]`)
+	env := map[string]string{SignalAPIEnv: "unix:" + br.sock}
+	LoadSignalEnv(func(k string) string { return env[k] })
+	t.Cleanup(func() {
+		SetSignalSender(nil)
+		LoadSignalEnv(os.Getenv)
 	})
-	err := signalChannel{}.Validate(groupCfg())
-	if err == nil || err.Error() != "Signal sender is not configured: set ARTEX_SIGNAL_NUMBER" {
-		t.Fatalf("got %v", err)
+	cases := []struct {
+		name    string
+		problem string
+		retry   bool
+	}{
+		{"service down", "Signal service is not connected", true},
+		{"state unreadable", "Signal state cannot be read: database unavailable", true},
+		{"not linked", "Signal account is not linked: link one under System, Notifications", false},
+		{"not confirmed", "confirm the linked Signal account first", false},
 	}
-	LoadSignalEnv(func(k string) string {
-		if k == SignalNumberEnv {
-			return sigSender
-		}
-		return ""
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			SetSignalSenderKind(func(context.Context) (string, string, bool) { return sigSender, tc.problem, tc.retry })
+			before := len(br.requests())
+			vErr := signalChannel{}.Validate(groupCfg())
+			_, sErr := sendGroup(t, groupCfg(), sigMsg)
+			for _, err := range []error{vErr, sErr} {
+				if err == nil || !strings.Contains(err.Error(), tc.problem) {
+					t.Fatalf("error = %v, want it to contain %q", err, tc.problem)
+				}
+			}
+			if IsPermanent(sErr) == tc.retry {
+				t.Fatalf("permanent = %v for retryable = %v: %v", IsPermanent(sErr), tc.retry, sErr)
+			}
+			if strings.Contains(sErr.Error(), sigSender) {
+				t.Fatalf("the sender number is not masked: %v", sErr)
+			}
+			if n := len(br.requests()) - before; n != 0 {
+				t.Fatalf("nothing may be sent, got %d requests", n)
+			}
+		})
+	}
+}
+
+// The sender is asked on every Validate and Send, so a change of the account
+// shows up in the next call without a restart.
+func TestSignalSenderHookIsAskedEachTime(t *testing.T) {
+	br := newFakeBridge(t, 201, "application/json", `[{"timestamp":"1"}]`)
+	useSignal(t, br.sock, sigSender)
+	var calls atomic.Int32
+	SetSignalSender(func(context.Context) (string, string) {
+		calls.Add(1)
+		return sigSender, ""
 	})
-	err = signalChannel{}.Validate(groupCfg())
-	if err == nil || !strings.Contains(err.Error(), "ARTEX_SIGNAL_API") {
-		t.Fatalf("got %v", err)
+	if err := (signalChannel{}).Validate(groupCfg()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sendGroup(t, groupCfg(), sigMsg); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() < 2 {
+		t.Fatalf("hook calls = %d, want at least 2", calls.Load())
+	}
+}
+
+// The dialer refuses a socket path that is a symlink or not a socket, before it connects.
+func TestSignalDialRefusesSymlinkAndNonSocket(t *testing.T) {
+	br := newFakeBridge(t, 201, "application/json", `[{"timestamp":"1"}]`)
+	dir := shortSockDir(t)
+
+	link := filepath.Join(dir, "link.sock")
+	if err := os.Symlink(br.sock, link); err != nil {
+		t.Fatal(err)
+	}
+	plain := filepath.Join(dir, "plain.sock")
+	if err := os.WriteFile(plain, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name, path, want string
+	}{
+		{"symlink to a live socket", link, "symlink"},
+		{"regular file", plain, "not a socket"},
+		{"directory", dir, "not a socket"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			useSignal(t, tc.path, sigSender)
+			before := len(br.requests())
+			_, err := sendGroup(t, groupCfg(), sigMsg)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want it to say %q", err, tc.want)
+			}
+			if strings.Contains(err.Error(), dir) {
+				t.Fatalf("error leaks the path: %v", err)
+			}
+			if n := len(br.requests()) - before; n != 0 {
+				t.Fatalf("nothing may reach the socket, got %d requests", n)
+			}
+		})
 	}
 }
 
@@ -549,7 +721,7 @@ func assertSocketUnreachable(t *testing.T, err error) {
 	if IsPermanent(err) {
 		t.Fatalf("an unreachable socket must be retryable: %v", err)
 	}
-	if !strings.Contains(err.Error(), "Signal bridge socket unreachable (is docker-compose.signal.yml up?)") {
+	if !strings.Contains(err.Error(), "Signal service socket unreachable (is docker-compose.signal.yml up?)") {
 		t.Fatalf("error = %q", err)
 	}
 	for _, leak := range []string{"connect:", "no such file", "connection refused", "api.sock", "absent.sock"} {
@@ -638,7 +810,7 @@ func TestSignalSend201Shapes(t *testing.T) {
 				if err == nil || !IsPermanent(err) {
 					t.Fatalf("want a permanent error, got kept=%d err=%v", kept, err)
 				}
-				if !strings.HasPrefix(err.Error(), "Signal bridge returned an unexpected success response (HTTP 201)") &&
+				if !strings.HasPrefix(err.Error(), "Signal service returned an unexpected success response (HTTP 201)") &&
 					!strings.Contains(err.Error(), "unreadable success response") {
 					t.Fatalf("error = %q", err)
 				}
@@ -662,7 +834,7 @@ func TestSignalSendUnexpectedSuccessHintIsScrubbed(t *testing.T) {
 	if err == nil || !IsPermanent(err) {
 		t.Fatalf("want a permanent error, got %v", err)
 	}
-	if !strings.HasPrefix(err.Error(), "Signal bridge returned an unexpected success response (HTTP 200): account …0100") {
+	if !strings.HasPrefix(err.Error(), "Signal service returned an unexpected success response (HTTP 200): account …0100") {
 		t.Fatalf("error = %q", err)
 	}
 	for _, leak := range []string{"5555550100", "CHALLENGE-TOKEN-XYZ", "challenge_tokens", long} {
@@ -675,28 +847,20 @@ func TestSignalSendUnexpectedSuccessHintIsScrubbed(t *testing.T) {
 	}
 }
 
-func TestSignalSendWithoutSenderIsPermanentAndSendsNothing(t *testing.T) {
+func TestSignalSendWithoutApiIsPermanentAndSendsNothing(t *testing.T) {
 	br := newFakeBridge(t, 201, "application/json", `[{"timestamp":"1"}]`)
-	env := map[string]string{SignalAPIEnv: "unix:" + br.sock}
-	LoadSignalEnv(func(k string) string { return env[k] })
-	t.Cleanup(func() { LoadSignalEnv(os.Getenv) })
-	_, err := sendGroup(t, groupCfg(), sigMsg)
-	if err == nil || !IsPermanent(err) || !strings.Contains(err.Error(), "ARTEX_SIGNAL_NUMBER") {
-		t.Fatalf("want a permanent error naming ARTEX_SIGNAL_NUMBER, got %v", err)
-	}
-	if n := len(br.requests()); n != 0 {
-		t.Fatalf("nothing may be sent without a sender, got %d requests", n)
-	}
-
-	LoadSignalEnv(func(k string) string {
-		if k == SignalNumberEnv {
-			return sigSender
-		}
-		return ""
+	SetSignalSender(func(context.Context) (string, string) { return sigSender, "" })
+	t.Cleanup(func() {
+		SetSignalSender(nil)
+		LoadSignalEnv(os.Getenv)
 	})
-	_, err = sendGroup(t, groupCfg(), sigMsg)
+	LoadSignalEnv(func(string) string { return "" })
+	_, err := sendGroup(t, groupCfg(), sigMsg)
 	if err == nil || !IsPermanent(err) || !strings.Contains(err.Error(), "ARTEX_SIGNAL_API") {
 		t.Fatalf("want a permanent error naming ARTEX_SIGNAL_API, got %v", err)
+	}
+	if n := len(br.requests()); n != 0 {
+		t.Fatalf("nothing may be sent without a socket, got %d requests", n)
 	}
 }
 
@@ -733,7 +897,7 @@ func TestSignalErrorsRedactNumbersAndGroups(t *testing.T) {
 	// (a) fixed probe numbers and the group id in the bridge's error body, as the
 	// real bridge echoes them ("Invalid identifier group.…").
 	body, _ := json.Marshal(map[string]any{"error": "Invalid identifier " + sigGroup +
-		" for +15555550100, +15555550101 and +15555550199"})
+		" for +15555550100, +15555550101 and +15555550107"})
 	br := newFakeBridge(t, 400, "application/json", string(body))
 	useSignal(t, br.sock, sigSender)
 	_, err := sendGroup(t, groupCfg(), sigMsg)
@@ -741,7 +905,7 @@ func TestSignalErrorsRedactNumbersAndGroups(t *testing.T) {
 		t.Fatal("want an error")
 	}
 	assertSignalClean(t, err.Error(), sigSender, sigRecipA, "5555550199")
-	for _, want := range []string{"group.…", "…0100", "…0101", "…0199"} {
+	for _, want := range []string{"group.…", "…0100", "…0101", "…0107"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q should contain %q", err, want)
 		}
@@ -1011,7 +1175,7 @@ func TestSignalSendEmptyMessageIsPermanent(t *testing.T) {
 	}
 }
 
-// ---- masking helpers with an empty key set (plan D2) ----
+// ---- masking helpers with an empty key set ----
 
 func TestSignalConfigIsNotMaskedAndUpdatesMerge(t *testing.T) {
 	stored := map[string]any{"recipient_type": "group", "recipients": []any{sigGroup}}
@@ -1183,5 +1347,15 @@ func TestRecheckSignalWithoutHookIsNil(t *testing.T) {
 	SetSignalRecheck(func(context.Context) error { return want })
 	if err := RecheckSignal(context.Background()); !errors.Is(err, want) {
 		t.Fatalf("err = %v, want the hook's error", err)
+	}
+}
+
+func TestSignalRateLimitTextNamesNoBridge(t *testing.T) {
+	br := newFakeBridge(t, 429, "application/json", `{"error":"Rate Limit Reached","challenge_tokens":["CHALLENGE-TOKEN-XYZ"]}`)
+	useSignal(t, br.sock, sigSender)
+	_, err := sendGroup(t, groupCfg(), sigMsg)
+	const want = "Signal rate limit: the account is rate limited by Signal (see the deployment README); delivery is retried"
+	if err == nil || err.Error() != want || IsPermanent(err) {
+		t.Fatalf("error = %v (permanent=%v), want retryable %q", err, err != nil && IsPermanent(err), want)
 	}
 }

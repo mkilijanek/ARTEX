@@ -1,7 +1,12 @@
 # ADR 0007: The Signal bridge is reached only through a private socket
 
-- **Status:** Accepted, built (option A below, approved by the project owner). Not verified yet: delivery from a real
-  Signal account and the 2000-byte message limit (verified against the bridge API without a Signal account).
+- **Status:** Accepted, built (option A below, approved by the project owner). **Amended by
+  [ADR 0011](0011-signal-sidecar-with-database-config.md):** the bridge, the nginx proxy and "account management only
+  on the host" are replaced by ARTEX's own Signal service, `artex-signal`. Item 2 now reads: the service creates the
+  socket with mode 0600 in its own 0700 directory, and the volume is still mounted in `artex` under
+  `/run/artex-private`. Item 4 now reads: `ARTEX_SIGNAL_API` stays operator configuration, but the sender account is
+  no longer `ARTEX_SIGNAL_NUMBER`; the operator links and confirms it from the UI, with a password check. C12 stays.
+  The text below describes the design as first built.
 - **Date:** 2026-11-23
 - **Runbooks:** [../../example-deployment/README.md](../../example-deployment/README.md#signal-notifications-optional)
   ("Signal notifications", including "Incident: isolation check C12 appeared"), [../tool-isolation.md](../tool-isolation.md) (C12)
@@ -81,7 +86,7 @@ Option A: **`artex` has no network path to the bridge; the server reaches it onl
 
 Run the example deployment without the override and remove the two containers, keeping `signal-data`; Signal
 deliveries then fail visibly. Without Signal support in the code, existing Signal channels are an unknown kind and
-their deliveries are marked failed. Steps: the example deployment README, "Rollback of the override".
+their deliveries are marked failed. Steps: the example deployment README, "Rollback of the Signal service".
 
 ## Outcome to check
 

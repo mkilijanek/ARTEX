@@ -1048,6 +1048,63 @@ export interface NotificationDelivery {
   severity: string;
 }
 
+// ---- Signal account (linked device used for Signal notifications) ----
+// SignalAccountStatus is the status payload of GET /api/notify/signal/account. It never carries the link
+// URI or the full phone number.
+export interface SignalAccountStatus {
+  mode: "on" | "off";
+  sidecar: {
+    alive: boolean;
+    heartbeat_age_s: number;
+    version: string;
+    signal_cli_version: string;
+  };
+  state: "unknown" | "unlinked" | "linking" | "linked" | "error";
+  gen: number;
+  account: { number_hint: string; confirmed: boolean };
+  linking: { expires_at: string } | null;
+  groups_count: number;
+  groups_at: string | null;
+  remote_unlink: "" | "removed" | "local_only";
+  last_error: string;
+  last_error_at: string | null;
+  db_role: { state: "ok" | "missing" | "error" | "unchecked"; detail: string };
+  db_auth: "ok" | "trust" | "unchecked" | "asserted";
+  warnings: { kind: string; text?: string }[];
+}
+
+// SignalLinkRequest starts a link (POST /api/notify/signal/link). device_name defaults on the server.
+export interface SignalLinkRequest {
+  password: string;
+  device_name?: string;
+  acknowledge: boolean;
+}
+
+// SignalLinkURI is the pending link code (GET /api/notify/signal/link), while it is pending and not expired.
+export interface SignalLinkURI {
+  gen: number;
+  uri: string;
+  expires_at: string;
+}
+
+// SignalConfirmRequest confirms the linked account by its last six digits.
+export interface SignalConfirmRequest {
+  gen: number;
+  last_digits: string;
+}
+
+// SignalGroup is one group the linked account can send to. masked is the display form of id.
+export interface SignalGroup {
+  id: string;
+  masked: string;
+  name: string;
+}
+
+export interface SignalGroups {
+  groups: SignalGroup[];
+  fetched_at: string | null;
+}
+
 // ---- LLM config ----
 export interface LLMProfile {
   id: string;

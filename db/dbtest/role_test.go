@@ -166,3 +166,67 @@ func TestDropDatabaseOwnedByRoleWaitsForForeignSession(t *testing.T) {
 		t.Fatalf("the owner could not drop its database after the foreign session ended: %v", err)
 	}
 }
+
+// The roles of the sidecar tests carry the canary naming, so the leftover check finds them; the cleanup drops the
+// temporary database first and then the role, whether or not the code under test created it; the owner role owns
+// the database and gets the attribute asked for.
+func TestSidecarRoleHelpersNameDeriveAndClean(t *testing.T) {
+	srv := RequireServer(t)
+	admin, err := srv.admin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	var sidecarName, ownerName, dbName string
+	t.Run("roles", func(t *testing.T) {
+		tmp := TempDatabase(t, srv, "sidecarrole")
+		dbName = tmp.Name
+		sidecar := srv.NewSidecarRole(t, tmp)
+		owner := srv.CreateOwnerRole(t, tmp, true)
+		sidecarName, ownerName = sidecar.Name, owner.Name
+		for _, r := range []*SidecarRole{sidecar, owner} {
+			if !srv.roleNameOK(r.Name) || len(r.Password) < 32 {
+				t.Errorf("role %q or its password does not follow the rule", r.Name)
+			}
+			if _, found := FindSecret(r.Password); !found {
+				t.Errorf("the password of %s is not registered as a secret", r.Name)
+			}
+		}
+		if n := countRows(t, admin, `SELECT count(*) FROM pg_roles WHERE rolname = $1`, sidecar.Name); n != 0 {
+			t.Error("NewSidecarRole created the role: the code under test does that")
+		}
+		if n := countRows(t, admin, `SELECT count(*) FROM pg_roles r JOIN pg_database d ON d.datdba = r.oid
+			WHERE r.rolname = $1 AND d.datname = $2 AND r.rolcreaterole AND r.rolcanlogin AND NOT r.rolsuper`, owner.Name, tmp.Name); n != 1 {
+			t.Error("the owner role does not own the temporary database as a plain login role with CREATEROLE")
+		}
+		dsn, err := tmp.DSNFor(owner.Name, owner.Password)
+		if err != nil {
+			t.Fatal(err)
+		}
+		u, err := url.Parse(dsn)
+		if err != nil || u.User.Username() != owner.Name || strings.TrimPrefix(u.Path, "/") != tmp.Name {
+			t.Errorf("DSNFor gave user %q and database %q", u.User.Username(), strings.TrimPrefix(u.Path, "/"))
+		}
+		if pw, _ := u.User.Password(); pw != owner.Password {
+			t.Error("DSNFor lost the password")
+		}
+	})
+	if n := countRows(t, admin, `SELECT count(*) FROM pg_roles WHERE rolname IN ($1, $2)`, sidecarName, ownerName); n != 0 {
+		t.Error("the roles are still there after the test")
+	}
+	if n := countRows(t, admin, `SELECT count(*) FROM pg_database WHERE datname = $1`, dbName); n != 0 {
+		t.Error("the temporary database is still there after the test")
+	}
+}
+
+// A role that does not follow the naming is never dropped by the sidecar helper's cleanup path.
+func TestSidecarRoleDropIfExistsRefusesForeignNames(t *testing.T) {
+	t.Setenv(EnvDSN, urlBase)
+	srv, err := FromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.dropRoleIfExists("postgres"); err == nil || !strings.Contains(err.Error(), "refusing to drop role") {
+		t.Errorf("err = %v, want a refusal before any connection", err)
+	}
+}

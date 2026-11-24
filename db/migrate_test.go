@@ -411,14 +411,14 @@ func TestOpenMigratesFreshDatabase(t *testing.T) {
 		"[schema] schema.sql sha256=",
 		"[migrate] ledger absent: adopting baseline (4)",
 		"[migrate] adopted baseline in ",
-		"[migrate] up to date (upstream=0004, fork=5003)",
+		"[migrate] up to date (upstream=0004, fork=5004)",
 	} {
 		if !strings.Contains(first, want) {
 			t.Errorf("first start: log has no %q:\n%s", want, first)
 		}
 	}
 	assertReopenIsNoop(t, tmp, applied)
-	if second := strings.TrimPrefix(logs(), first); strings.Contains(second, "adopting baseline") || !strings.Contains(second, "[migrate] up to date (upstream=0004, fork=5003)") {
+	if second := strings.TrimPrefix(logs(), first); strings.Contains(second, "adopting baseline") || !strings.Contains(second, "[migrate] up to date (upstream=0004, fork=5004)") {
 		t.Errorf("second start: want an up-to-date line and no adoption; log:\n%s", second)
 	}
 }
@@ -717,7 +717,7 @@ func TestMigrationAdoptionIsAtomic(t *testing.T) {
 }
 
 // AC6: the adoption set is frozen. A ledger-less database whose binary also ships a failing 5902
-// ends with the four baseline rows and the ledger rows of 0004, 5002 and 5003, which are ordinary pending migrations
+// ends with the four baseline rows and the ledger rows of 0004, 5002, 5003 and 5004, which are ordinary pending migrations
 // applied on their own before 5902: the extra file is not part of the adoption, and neither are they.
 func TestMigrationAdoptionSetIsFrozen(t *testing.T) {
 	tmp := migrationTemp(t, "frozen")
@@ -761,8 +761,8 @@ func TestMigrationFailureAfterAdoption(t *testing.T) {
 			t.Errorf("attempt 2: error %q differs from the first %q", err, first)
 		}
 		conn := tmp.Conn(t)
-		if got := ledgerVersions(readLedger(t, conn)); !sameInts(got, []int{1, 2, 3, 4, 5001, 5002, 5003, 5902}) {
-			t.Fatalf("attempt %d: ledger versions = %v, want 1 2 3 4 5001 5002 5003 5902", attempt, got)
+		if got := ledgerVersions(readLedger(t, conn)); !sameInts(got, []int{1, 2, 3, 4, 5001, 5002, 5003, 5004, 5902}) {
+			t.Fatalf("attempt %d: ledger versions = %v, want 1 2 3 4 5001 5002 5003 5004 5902", attempt, got)
 		}
 		if !migrationTableExists(t, conn, "migration_ok") || migrationTableExists(t, conn, "migration_bad") {
 			t.Fatalf("attempt %d: want migration_ok present and migration_bad absent", attempt)
@@ -772,7 +772,7 @@ func TestMigrationFailureAfterAdoption(t *testing.T) {
 	corrected := migrationSet(t, fstest.MapFS{"5902_ok.sql": ok, "5903_bad.sql": migrationFile("CREATE TABLE migration_bad (x integer);\n")})
 	startMigrated(t, tmp, corrected)
 	conn := tmp.Conn(t)
-	if got := ledgerVersions(readLedger(t, conn)); !sameInts(got, []int{1, 2, 3, 4, 5001, 5002, 5003, 5902, 5903}) {
+	if got := ledgerVersions(readLedger(t, conn)); !sameInts(got, []int{1, 2, 3, 4, 5001, 5002, 5003, 5004, 5902, 5903}) {
 		t.Errorf("after the correction: ledger versions = %v", got)
 	}
 	if !migrationTableExists(t, conn, "migration_bad") {
@@ -852,13 +852,13 @@ func TestMigrationForeignLedgerIsRefusedEvenWithOverride(t *testing.T) {
 }
 
 func TestMigrationOrderPerRange(t *testing.T) {
-	t.Run("fork: applied 5003, pending 5001", func(t *testing.T) {
+	t.Run("fork: applied 5004, pending 5001", func(t *testing.T) {
 		tmp := migrationTemp(t, "ordera")
 		startMigrated(t, tmp, embeddedMigrations())
 		if _, err := tmp.Conn(t).Exec(`DELETE FROM schema_migrations WHERE version = 5001`); err != nil {
 			t.Fatal(err)
 		}
-		requireRefusal(t, tmp, embeddedMigrations(), "order", migrationLLMUsageFork, "(5001)", "5003_finding_detections.sql", "(5003)", "never inserted")
+		requireRefusal(t, tmp, embeddedMigrations(), "order", migrationLLMUsageFork, "(5001)", "5004_signal_sidecar.sql", "(5004)", "never inserted")
 	})
 	t.Run("upstream: applied baseline, pending 0004 runs after 5001", func(t *testing.T) {
 		tmp := migrationTemp(t, "orderb")
@@ -866,7 +866,7 @@ func TestMigrationOrderPerRange(t *testing.T) {
 		requireBaselineLedger(t, readLedger(t, tmp.Conn(t)))
 		startMigrated(t, tmp, embeddedMigrations())
 		rows := readLedger(t, tmp.Conn(t))
-		if !sameInts(ledgerVersions(rows), []int{1, 2, 3, 4, 5001, 5002, 5003}) {
+		if !sameInts(ledgerVersions(rows), []int{1, 2, 3, 4, 5001, 5002, 5003, 5004}) {
 			t.Fatalf("ledger versions = %v", ledgerVersions(rows))
 		}
 		if !rows[3].appliedAt.After(rows[4].appliedAt) {

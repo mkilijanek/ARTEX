@@ -247,6 +247,60 @@ These are not fixed, and the destination checks above do not cover them:
 The per-class status is in
 [docs/agentic-attack-audit.md](docs/agentic-attack-audit.md).
 
+### Signal notifications (the `artex-signal` service)
+
+With the optional Signal override of the example deployment, a separate
+container, `artex-signal`, runs signal-cli as a **linked device** of one Signal
+account. Design and accepted risks:
+[docs/adr/0011-signal-sidecar-with-database-config.md](docs/adr/0011-signal-sidecar-with-database-config.md).
+
+- **The linked device can read the account's messages.** Use a dedicated Signal
+  account for ARTEX; the link dialog asks the operator to acknowledge this. The
+  service downloads no attachments, stories, avatars or stickers, and drops
+  received messages without storing, logging or forwarding them.
+- **The service is less trusted than the server.** It parses input from Signal.
+  It talks to PostgreSQL as its own role, which can read one view and execute
+  three SECURITY DEFINER functions with fixed preconditions, and nothing else in
+  ARTEX's schema: no table, no object creation, no temporary tables, at most 5
+  connections. The server creates that role and refuses `trust` authentication,
+  `CREATE` for `PUBLIC` on schema `public`, and roles it did not create or that
+  are privileged. The service refuses to run when a wrong password logs in, or
+  when a TCP connection does not verify the server (`sslmode=verify-full`).
+- **The socket can only send.** `artex` reaches the service through a Unix socket
+  under `/run/artex-private` (check C12 keeps agent tools out) that answers
+  `POST /v2/send` and `GET /v1/about` only. Linking, unlinking and the group list
+  go through the database. signal-cli gets a fixed list of calls (`version`,
+  `listAccounts`, `startLink`, `finishLink`, `listGroups`, `send`); it cannot
+  register, unregister or delete the account. Linking and unlinking from the UI
+  need the operator's password, and an account sends only after the operator has
+  typed the last 6 digits of its number.
+- **Secrets inside the container.** The supervisor reads its database password
+  once, removes it from its environment and makes itself non-dumpable, so the
+  signal-cli child (same user) cannot read it from `/proc`. The child gets four
+  environment variables and no database access.
+- **Unlink is local only.** signal-cli gives a linked device no way to remove
+  itself. Until the operator removes the device on the phone, its keys stay valid,
+  and the data volume `artex-signal-data` and any copy of it are a live credential
+  for the account.
+- **Outbound traffic of the service is not restricted.** It can reach the LAN and
+  a cloud metadata address; blocking that is the operator's firewall job. ARTEX
+  shows no warning for it.
+
+Accepted residual risks (not vulnerabilities by themselves; tell us about a way
+to go further):
+
+- A compromised service can hold PostgreSQL advisory locks that ARTEX uses with
+  fixed keys and make ARTEX hang at start or on some writes until the container
+  is stopped. There is no confidentiality or integrity impact, and stopping the
+  container releases the locks.
+- A link code can remain in old row versions, the write-ahead log, dumps and
+  PostgreSQL statement logs taken while a link is pending. It is valid for 2
+  minutes, and a stolen code links the service to the thief's account, not the
+  operator's.
+- The three functions run as the schema owner, a superuser in the shipped Compose
+  file. `ARTEX_SIGNAL_DB_PASSWORD` is visible in `.env` and `docker inspect`, like
+  `POSTGRES_PASSWORD`.
+
 ## In Scope
 
 Examples of issues we want to hear about:

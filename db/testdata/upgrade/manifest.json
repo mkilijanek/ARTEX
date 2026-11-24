@@ -44,7 +44,7 @@
   "current": {
     "schema_sql_sha256": "951f3d0c88597f494b5fc1a87ca6694daa9d35e490d3f131d4fb36a2f49f963a",
     "reference": "reference-catalog-pg16.txt",
-    "reference_sha256": "8037214f21eeb25b2a584b6d329ef0d4f57d458dfdeb50a54077e13d4255ca9f",
+    "reference_sha256": "2aba02df85b617a77286804daa46bb36e570c3bdbb00631268254a975aaa1973",
     "migrations": [
       {"version": 1, "name": "0001_llm_records.sql", "sha256": "202d1b5f84f8091f5e676526b15fb66c888f39f73ddab60f46c251f19e19aa1e"},
       {"version": 2, "name": "0002_llm_usage.sql", "sha256": "3b3aece1c4c80bceef74d15652e1c97c972275d7c738a41938945f00588c8d39"},
@@ -52,7 +52,8 @@
       {"version": 4, "name": "0004_llm_usage_ts_index.sql", "sha256": "1f27b2411ebb064b7b7cd4d0d8fdfc2021ad74082019e6c72e772f706a00d028"},
       {"version": 5001, "name": "5001_llm_usage_fork_columns.sql", "sha256": "d55ce9857b9ef9d526ecaeeeeada7750f156761d1ec6878e154c198c7c81553f"},
       {"version": 5002, "name": "5002_tool_rag_observations.sql", "sha256": "9fabb12a79280db7a102c57538bce03513feb0baa223d1d2771c28bca993a67c"},
-      {"version": 5003, "name": "5003_finding_detections.sql", "sha256": "c1587e96ca5d51ab22d013737aa48942d06e7fe7bb2c7e4e3005716227748ef7"}
+      {"version": 5003, "name": "5003_finding_detections.sql", "sha256": "c1587e96ca5d51ab22d013737aa48942d06e7fe7bb2c7e4e3005716227748ef7"},
+      {"version": 5004, "name": "5004_signal_sidecar.sql", "sha256": "058357547bd33855bb588269073b56c386898f8f4e884cd45dcc17c9039042cf"}
     ]
   }
 }

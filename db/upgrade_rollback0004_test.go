@@ -41,6 +41,7 @@ func TestUpgradeRollback0004RecipeDropsTheIndexAndTheLedgerRow(t *testing.T) {
 	if err := rollbackRun0004(t, tmp); err == nil || !errors.As(err, &pgErr) || pgErr.Code != "P0001" || !strings.Contains(pgErr.Message, "schema_migrations is not baseline + 0004") {
 		t.Fatalf("the recipe on the ledger baseline + 0004 + 5002 did not raise the guard's exception (%v)", err)
 	}
+	dropSignalSidecarMigration(t, d)
 	if err := rollbackRunScript(t, d.DB, rollbackDropDetectionsFile); err != nil {
 		t.Fatalf("the 5003 drop failed (%s)", dbtest.AtomicErrorSummary(err))
 	}

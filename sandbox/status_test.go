@@ -218,7 +218,7 @@ func TestComputeStatusReasonsAndWarnings(t *testing.T) {
 
 func sprintf(f string, a ...any) string { return fmt.Sprintf(f, a...) }
 
-// ---- C12 on the published status (plan AC10) ----
+// ---- C12 on the published status ----
 
 // c12Iso is an enforced isolation with a Signal socket configured, built without Activate so
 // that it needs no root: the check workspace falls back to a directory the test owns.
@@ -269,7 +269,7 @@ func TestRecheckSignalClearsNotVerifiedOnceTheSocketExists(t *testing.T) {
 	runs := 0
 	iso := c12Iso(t, sock, func(ctx context.Context, d, s string) (string, error) { runs++; return answer, nil })
 
-	iso.RecheckSignal(t.Context()) // the bridge has not created the socket yet
+	iso.RecheckSignal(t.Context()) // the Signal service has not created the socket yet
 	v := iso.View()
 	if v.Status != Degraded || !strings.Contains(v.Reason, "C12: not verified: socket absent") {
 		t.Fatalf("absent: %+v", v)

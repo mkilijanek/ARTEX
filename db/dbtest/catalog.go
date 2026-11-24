@@ -50,8 +50,9 @@ func Lines(entries []Entry) []string {
 // relation kind the schema is not meant to have shows up as its own line, so that
 // it differs from the reference.
 //
-// Out of scope, as the reference header states: owners, grants, comments, views,
-// user types, tablespaces. PostgreSQL 16 only.
+// Out of scope, as the reference header states: owners, grants, comments, user types,
+// tablespaces. Plain views are listed (definition and columns); other relation kinds
+// show up as "relation" lines. PostgreSQL 16 only.
 //
 // What the listing does not cover, so that a green comparison is not read as more than it is.
 // Two databases with an equal listing can still differ in:
@@ -65,7 +66,7 @@ func Lines(entries []Entry) []string {
 //   - event triggers;
 //   - the index flags indisclustered and indisreplident (CLUSTER and REPLICA IDENTITY USING INDEX),
 //     and the table's replica identity setting;
-//   - owners, grants and default privileges;
+//   - owners, grants and default privileges (the least-privilege test of the Signal sidecar role reads them);
 //   - comments (COMMENT ON ...);
 //   - tablespaces, and anything outside the public schema.
 var catalogQueries = []string{
@@ -78,10 +79,17 @@ var catalogQueries = []string{
 	`SELECT 'table', c.relname, c.relkind::text || ' ' || c.relpersistence::text
 	   FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
 	  WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')`,
-	// relation kinds that are neither tables, indexes nor sequences
+	// relation kinds that are neither tables, views, indexes nor sequences
 	`SELECT 'relation', c.relname, c.relkind::text
 	   FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-	  WHERE n.nspname = 'public' AND c.relkind NOT IN ('r', 'p', 'i', 'I', 'S')`,
+	  WHERE n.nspname = 'public' AND c.relkind NOT IN ('r', 'p', 'v', 'i', 'I', 'S')`,
+	// plain views: definition and columns (name and type, in order)
+	`SELECT 'view', c.relname,
+	        pg_get_viewdef(c.oid) || '|' ||
+	        (SELECT string_agg(a.attname || ' ' || format_type(a.atttypid, a.atttypmod), ',' ORDER BY a.attnum)
+	           FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped)
+	   FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+	  WHERE n.nspname = 'public' AND c.relkind = 'v'`,
 	// columns: type, nullability, default, collation, identity, generated
 	`SELECT 'column', c.relname || '.' || a.attname,
 	        format_type(a.atttypid, a.atttypmod) || '|' || a.attnotnull::text || '|' ||

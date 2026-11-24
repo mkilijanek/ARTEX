@@ -1,104 +1,86 @@
-# Override: send notifications through Signal (signal-cli REST bridge).
+# Override: send notifications through Signal, using the artex-signal sidecar.
 #
 #   docker compose -f docker-compose.yml -f docker-compose.signal.yml up -d
 #
-# Needs ARTEX 0.5.19m or later (set ARTEX_VERSION accordingly); older images have no Signal channel.
-# Required in .env: ARTEX_SIGNAL_NUMBER, the E.164 number the messages are sent from
-# (for example +15555550100). The account itself is registered or linked once with the
-# bridge's own API; see README.md, "Signal notifications".
+# Needs an ARTEX release that publishes the artex-signal image; both images use the same ARTEX_VERSION.
+# Required in .env: ARTEX_SIGNAL_DB_PASSWORD, a long random value (for example openssl rand -hex 24).
+# The database role of the sidecar is ARTEX_SIGNAL_DB_ROLE (default artex_signal). It must
+# never be the POSTGRES_USER role.
 #
-# Layout: artex has NO network path to the bridge. It reaches it only through a Unix
-# socket (signalsock volume, under /run/artex-private so that agent tools, which run as
-# uid 30002, cannot open it). An nginx sidecar owns the socket and forwards exactly two
-# requests to the bridge: POST /v2/send (64 KiB at most) and GET /v1/about. Everything
-# else, such as device linking, registration or group listing, gets 403 and never
-# reaches the bridge. signal-internal is `internal: true` (no Internet route) and holds
-# only the proxy and the bridge; signal-egress gives the bridge, and only the bridge,
-# access to the Signal servers. Nothing is published on the host.
+# The sidecar keeps the Signal account keys in the artex-signal-data volume: whoever can
+# read it can send as that account. Back it up like a secret and do not delete it casually.
 #
-# The bridge keeps the account keys in the signal-data volume: whoever can read it can
-# send as that number. Back it up like a secret and do not delete it casually.
-# On a host with SELinux enforcing the shared socket volume needs the shared :z label (set below);
-# signal-data is mounted by signal-cli alone and gets the private :Z label.
+# Layout:
+#   - No bridge and no proxy: the sidecar is one image (docker/signal/Dockerfile) that talks
+#     to the Signal servers itself. Nothing sits in front of it.
+#   - Socket only: the sidecar listens on a Unix socket in the artex-signal-sock volume.
+#     artex mounts that volume under /run/artex-private, so the socket is the only path
+#     between the two containers. Nothing is published on the host and there is no port.
+#   - Database read-only socket: the sidecar reaches PostgreSQL through the pgsock volume,
+#     mounted read-only. It cannot change or replace the socket directory. Its own role
+#     limits what it may do in the database.
+#   - Network: the sidecar is on signal-egress only, which has outbound access to the
+#     Signal servers. artex is not on that network, so the two share no network at all.
+#
+# On a host with SELinux enforcing, the shared volumes need the :z label (set below), and
+# the volume that only the sidecar writes gets the private :Z label.
 services:
-  signal-cli:
-    image: ${SIGNAL_CLI_IMAGE:-bbernhard/signal-cli-rest-api:0.102@sha256:6b35b3527459aec9c459398de33f4f229239b3f17b0989d4bceb5191ad71fca9}
-    environment:
-      MODE: json-rpc
-    volumes:
-      - signal-data:/home/.local/share/signal-cli:Z
-    # The image is s6-overlay and runs as uid 1000. It exits at start (s6 "cannot create
-    # /run/test: Permission denied", or "/run noexec") unless /run is writable by that
-    # user and allows exec, so give it a tmpfs with exactly those properties.
-    tmpfs:
-      - /run:exec,uid=1000,gid=1000,mode=0755
-    networks:
-      - signal-internal
-      - signal-egress
-    restart: unless-stopped
-
-  signal-proxy:
-    image: ${SIGNAL_PROXY_IMAGE:-nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236}
+  artex-signal:
+    # The image of the same release as artex. Pin by digest through ARTEX_SIGNAL_IMAGE
+    # (name@sha256:...) for an immutable image.
+    image: ${ARTEX_SIGNAL_IMAGE:-ghcr.io/mkilijanek/artex-signal:${ARTEX_VERSION:?set ARTEX_VERSION}}
+    # Not root: the same numeric user as the image's own USER line, set explicitly here.
+    user: "10001:10001"
+    # The root filesystem is read-only. The sidecar writes only to its two volumes and to /tmp.
     read_only: true
-    # nginx temp paths and the pid file live in /tmp (see signal-proxy.conf).
+    # /tmp is in memory and cannot run programs: noexec and nosuid.
     tmpfs:
-      - /tmp
-    # nginx creates the socket world-writable (0666). The script clears a stale socket
-    # from an earlier run, starts nginx, and once the socket exists sets it to 0600 (root,
-    # which is the ARTEX server's user) as a second layer behind the /run/artex-private
-    # directory. trap forwards stop signals to nginx so `docker compose stop` is quick.
-    # ($$ is Compose's escape for a literal $.)
-    command:
-      - sh
-      - -c
-      - |
-        rm -f /sock/api.sock
-        nginx -g 'daemon off;' &
-        pid=$$!
-        trap 'kill -TERM $$pid' TERM
-        trap 'kill -QUIT $$pid' QUIT
-        while [ ! -S /sock/api.sock ]; do
-          kill -0 $$pid || exit 1
-          sleep 0.1
-        done
-        chmod 0600 /sock/api.sock
-        while kill -0 $$pid 2>/dev/null; do wait $$pid; s=$$?; done
-        exit $${s:-1}
+      - /tmp:noexec,nosuid,size=64m,mode=0700,uid=10001,gid=10001
+    # Drop every Linux capability, and forbid gaining new ones through setuid binaries.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Limits for a JVM plus the supervisor: processes, memory, and a reaper for children.
+    pids_limit: 256
+    mem_limit: 768m
+    init: true
+    # No ports: nothing listens on a network address. artex reaches the sidecar through the socket only.
+    environment:
+      # Database connection over the read-only PostgreSQL socket, as the sidecar's own role.
+      ARTEX_SIGNAL_PG_DSN: "host=/var/run/postgresql user=${ARTEX_SIGNAL_DB_ROLE:-artex_signal} password=${ARTEX_SIGNAL_DB_PASSWORD:?set ARTEX_SIGNAL_DB_PASSWORD} dbname=${POSTGRES_DB:-artex} sslmode=disable"
     volumes:
-      - ./signal-proxy.conf:/etc/nginx/nginx.conf:ro,z
-      - signalsock:/sock:z
+      # Account keys and state. Written by the sidecar only.
+      - artex-signal-data:/data:Z
+      # The Unix socket that artex connects to.
+      - artex-signal-sock:/sock:z
+      # The database socket, read-only (see the layout notes above).
+      - pgsock:/var/run/postgresql:ro,z
     networks:
-      - signal-internal
+      - signal-egress
     depends_on:
-      signal-cli:
+      postgres:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "test -S /sock/api.sock && curl -fsS --max-time 5 --unix-socket /sock/api.sock http://localhost/v1/about >/dev/null"]
-      interval: 10s
-      timeout: 8s
-      retries: 6
-      start_period: 5s
     restart: unless-stopped
 
   artex:
     environment:
-      ARTEX_SIGNAL_API: unix:/run/artex-private/signal/api.sock
-      ARTEX_SIGNAL_NUMBER: ${ARTEX_SIGNAL_NUMBER:?Set ARTEX_SIGNAL_NUMBER in .env, e.g. +15555550100}
+      # Signal API over the Unix socket only: there is no network address and no bridge.
+      ARTEX_SIGNAL_API: "unix:/run/artex-private/signal/api.sock"
+      # Password of the sidecar's database role. artex creates that role with this password.
+      ARTEX_SIGNAL_DB_PASSWORD: ${ARTEX_SIGNAL_DB_PASSWORD:?set ARTEX_SIGNAL_DB_PASSWORD}
+      # The role name must be the same in both services: artex creates it, the sidecar logs in with it.
+      ARTEX_SIGNAL_DB_ROLE: ${ARTEX_SIGNAL_DB_ROLE:-artex_signal}
+      # Set to 1 only for an external PostgreSQL whose password authentication was checked by hand.
+      ARTEX_SIGNAL_DB_AUTH_ASSERTED: ${ARTEX_SIGNAL_DB_AUTH_ASSERTED:-}
     volumes:
-      - signalsock:/run/artex-private/signal:z
-    # Merged with the base file's postgres dependency. Start waits for the bridge (its JVM
-    # takes tens of seconds) so that the socket exists when the isolation self-check runs.
-    depends_on:
-      signal-proxy:
-        condition: service_healthy
+      # The socket of the sidecar. This is the only path shared between the two containers.
+      - artex-signal-sock:/run/artex-private/signal:z
 
 networks:
-  # No route out: only the proxy and the bridge are members.
-  signal-internal:
-    internal: true
-  # Internet access for the bridge only.
+  # Outbound access for the sidecar to the Signal servers. artex is not a member.
   signal-egress: {}
 
 volumes:
-  signal-data:
-  signalsock:
+  artex-signal-data:
+  artex-signal-sock:

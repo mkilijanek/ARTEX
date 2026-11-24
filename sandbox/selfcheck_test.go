@@ -348,7 +348,7 @@ func TestRunSelfCheckWithoutAWorkspaceStillRunsTheShell(t *testing.T) {
 	}
 }
 
-// ---- C12: the Signal bridge socket (plan AC10) ----
+// ---- C12: the Signal service socket ----
 
 // c12Sock listens on a unix socket in a short temp directory (a socket path is limited to 108
 // bytes) and returns its path and the directory holding it. The listener is closed with the test.

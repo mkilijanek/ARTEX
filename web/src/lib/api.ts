@@ -6,6 +6,7 @@
 import type { ChatMention } from "@/lib/chat-mentions";
 import { MOCK } from "@/lib/mock/enabled";
 import { mockHandle } from "@/lib/mock/handler";
+import { signalRequest } from "@/lib/signal-account";
 import type {
   ActiveFindingRetest,
   Activity,
@@ -29,6 +30,11 @@ import type {
   Conversation,
   ConvTokenSummary,
   CoverageAssetRefs,
+  SignalAccountStatus,
+  SignalConfirmRequest,
+  SignalGroups,
+  SignalLinkRequest,
+  SignalLinkURI,
   CoverageGraphData,
   DailyTokenBucket,
   DeleteTaskOptions,
@@ -114,6 +120,15 @@ function getToken(): string | null {
   return localStorage.getItem("artex_token");
 }
 
+// logoutOnUnauthorized ends the browser session. Only the server's 401 (no valid token) calls it.
+function logoutOnUnauthorized() {
+  if (typeof window !== "undefined") {
+    localStorage.removeItem("artex_token");
+    document.cookie = "artex_token=; path=/; max-age=0";
+    window.location.href = "/login";
+  }
+}
+
 export async function http<T>(path: string, init?: RequestInit): Promise<T> {
   if (MOCK) return mockHandle<T>(init?.method ?? "GET", path, init?.body ?? null);
   const token = getToken();
@@ -126,11 +141,7 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   if (r.status === 401) {
-    if (typeof window !== "undefined") {
-      localStorage.removeItem("artex_token");
-      document.cookie = "artex_token=; path=/; max-age=0";
-      window.location.href = "/login";
-    }
+    logoutOnUnauthorized();
     throw new Error("Unauthorized");
   }
   if (!r.ok) {
@@ -234,6 +245,20 @@ function interceptPageQuery(page: number, size: number, filter: InterceptApprova
   if (filter.decision_source) query.set("decision_source", filter.decision_source);
   return query.toString();
 }
+
+// Signal account calls use their own transport: a 403 (for example a wrong password) keeps its error code
+// and does not end the session; only a 401 does.
+const signalCall = <T>(method: string, path: string, body?: unknown) =>
+  signalRequest<T>(
+    {
+      fetch: (url, init) => fetch(url, init),
+      token: getToken(),
+      onUnauthorized: logoutOnUnauthorized,
+    },
+    method,
+    path,
+    body,
+  );
 
 export const api = {
   // Backend application version (injected via ldflags at release, default "dev").
@@ -888,6 +913,20 @@ export const api = {
     ).then((r) => ({ ...r, deliveries: arr(r.deliveries) }));
   },
   notifyRetryDelivery: (id: number) => post<{ ok: boolean }>(`/notify/deliveries/${id}/retry`),
+
+  // ---- Signal account (linked device for Signal notifications) ----
+  signalAccount: () => signalCall<SignalAccountStatus>("GET", "/notify/signal/account"),
+  // Answers 202 with the generation of the new link request.
+  signalStartLink: (payload: SignalLinkRequest) =>
+    signalCall<{ gen: number }>("POST", "/notify/signal/link", payload),
+  // The pending link code; the server answers 404 once it has expired or was cancelled.
+  signalLinkURI: () => signalCall<SignalLinkURI>("GET", "/notify/signal/link"),
+  signalCancelLink: () => signalCall<void>("DELETE", "/notify/signal/link"),
+  signalConfirm: (payload: SignalConfirmRequest) =>
+    signalCall<void>("POST", "/notify/signal/account/confirm", payload),
+  signalUnlink: (payload: { password: string }) => signalCall<void>("POST", "/notify/signal/unlink", payload),
+  signalGroups: () => signalCall<SignalGroups>("GET", "/notify/signal/groups"),
+  signalRefreshGroups: () => signalCall<void>("POST", "/notify/signal/groups/refresh", {}),
   report: async (task?: string) => {
     if (MOCK) return mockReport(task);
     const token = getToken();

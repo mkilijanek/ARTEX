@@ -36,7 +36,7 @@ type SelfCheckInput struct {
 	Sockets    []string // database socket files
 	TCP        []string // database endpoints reached over TCP, host:port
 
-	// SignalSocket is the Signal bridge socket file (ARTEX_SIGNAL_API). Empty: no C12 probe.
+	// SignalSocket is the Signal service socket file (ARTEX_SIGNAL_API). Empty: no C12 probe.
 	SignalSocket string
 
 	// WorkDirParent is where the check creates its own workspace, a fresh tool-owned directory.
@@ -345,7 +345,7 @@ func EvaluateSelfCheck(out string, in SelfCheckInput) []CheckResult {
 		add("C9", "the cloud metadata address is reachable", false)
 	}
 
-	// C12: the Signal bridge socket cannot be reached, or is not there to be verified.
+	// C12: the Signal service socket cannot be reached, or is not there to be verified.
 	if in.SignalSocket != "" {
 		if c, bad := evaluateC12(kv, in.SignalSocket); bad {
 			failed = append(failed, c)

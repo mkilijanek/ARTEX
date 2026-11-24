@@ -28,7 +28,7 @@ type Config struct {
 	DBSockets  []string // database socket files, from the DSN
 	DBTCP      []string // database host:port endpoints reached over TCP, from the DSN
 
-	// SignalSocket is the Signal bridge socket file, from ARTEX_SIGNAL_API. Empty: no C12.
+	// SignalSocket is the Signal service socket file, from ARTEX_SIGNAL_API. Empty: no C12.
 	SignalSocket string
 
 	// SecretNames are the variables main read once and removed. Activation refuses to go on
@@ -63,6 +63,7 @@ type Isolation struct {
 	runner  ScriptRunner
 	c12lock chan struct{}
 	c12once sync.Once
+	c12wait time.Duration // pause between the re-runs of watchC12; zero means c12Every
 
 	mu       sync.Mutex
 	pre      Preconditions
@@ -439,10 +440,10 @@ func (i *Isolation) ReapplyPermissions() {
 }
 
 // RecheckSignal runs check C12 alone again and publishes the result like any other check: a
-// "not verified" that was set because the bridge socket was not there yet clears once the socket
+// "not verified" that was set because the Signal service socket was not there yet clears once the socket
 // exists and the tool user is kept out of it, and a socket that turns out reachable degrades the
-// status. The self-check has no periodic loop (it runs once, at start), so the server calls this
-// after the first successful Signal send and on each Signal channel test. It does nothing (nil)
+// status. The self-check runs once, at start, and Run repeats C12 only while the socket is absent, so
+// the server also calls this after the first successful Signal send and on each Signal channel test. It does nothing (nil)
 // when the drop chain is off or no Signal socket is configured, and is safe to call concurrently.
 //
 // The result is nil only when the check ran and its result was published. It is an error when ctx
@@ -510,6 +511,7 @@ func (i *Isolation) Run(ctx context.Context) {
 	}
 	if i.on {
 		go i.leases.Run(ctx)
+		go i.watchC12(ctx)
 	}
 	warn := time.NewTicker(6 * time.Hour)
 	defer warn.Stop()
@@ -523,6 +525,36 @@ func (i *Isolation) Run(ctx context.Context) {
 			i.logWarningBlock()
 		case <-perms.C:
 			i.ReapplyPermissions()
+		}
+	}
+}
+
+const (
+	c12Every      = 15 * time.Second // pause between C12 re-runs while C12 is not verified
+	c12MaxRetries = 240              // about an hour; after that only a Signal send or test re-runs C12
+	// c12NotVerified starts the detail of every C12 result that is not a verdict (c12Precheck).
+	c12NotVerified = "not verified:"
+)
+
+// watchC12 re-runs C12 on its own while it is "not verified", mostly because the Signal service
+// socket was not there yet (a fresh deployment starts this server before the service creates it).
+// It stops when C12 is verified or has a real result, when ctx ends, or after c12MaxRetries re-runs.
+func (i *Isolation) watchC12(ctx context.Context) {
+	if i == nil || !i.on || i.c12in.SignalSocket == "" || i.runner == nil {
+		return
+	}
+	every := i.c12wait
+	if every <= 0 {
+		every = c12Every
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for n := 0; n < c12MaxRetries && strings.HasPrefix(i.checkDetail("C12"), c12NotVerified); n++ {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			_ = i.RecheckSignal(ctx) // a failure is published as the check result and retried by the next tick
 		}
 	}
 }
