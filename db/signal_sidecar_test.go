@@ -1050,3 +1050,35 @@ func TestSignalSidecarConcurrentHeartbeatsAndCommands(t *testing.T) {
 		t.Errorf("rows are inconsistent: applied %d, gen %d, handled %d", applied, st.Gen, st.HandledGen)
 	}
 }
+
+// A confirmation that arrives while an unlink is requested is refused: the account is on its way out.
+func TestSignalSidecarConfirmRefusedWhileUnlinkRequested(t *testing.T) {
+	d, _, rc := signalProvisioned(t, "sigconfunlink")
+	ctx := context.Background()
+	if err := heartbeat(rc, "unlinked", 0, "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	gen, applied, err := d.RequestSignalLink(ctx, "ARTEX", "tester")
+	if err != nil || !applied {
+		t.Fatalf("link: %v %v", applied, err)
+	}
+	if ok, err := setLink(rc, gen, testLinkURI); err != nil || !ok {
+		t.Fatalf("set_link: %v %v", ok, err)
+	}
+	if err := heartbeat(rc, "linked", gen, testNumber, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ReconcileSignalSidecar(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ugen, applied, err := d.RequestSignalUnlink(ctx, "tester")
+	if err != nil || !applied {
+		t.Fatalf("unlink: %v %v", applied, err)
+	}
+	if res, err := d.ConfirmSignalAccount(ctx, ugen, "550101"); err != nil || res != SignalConfirmStale {
+		t.Errorf("confirm while an unlink is requested = %v %v, want stale", res, err)
+	}
+	if st, _ := d.ReadSignalSidecar(ctx); st.ConfirmedAccount != "" {
+		t.Errorf("confirmed_account = %q, want empty", st.ConfirmedAccount)
+	}
+}

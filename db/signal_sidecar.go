@@ -408,8 +408,16 @@ func (d *DB) ConfirmSignalAccount(ctx context.Context, gen int64, lastDigits str
 			result = SignalConfirmMismatch
 			return nil
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE signal_sidecar_config SET confirmed_account = $1, updated_at = now() WHERE id`, number); err != nil {
+		// An unlink that was requested after the link finished is on its way: it must not be confirmed.
+		res, err := tx.ExecContext(ctx, `UPDATE signal_sidecar_config SET confirmed_account = $1, updated_at = now() WHERE id AND desired = 'idle'`, number)
+		if err != nil {
 			return err
+		}
+		if n, err := res.RowsAffected(); err != nil {
+			return err
+		} else if n == 0 {
+			result = SignalConfirmStale
+			return nil
 		}
 		result = SignalConfirmed
 		return nil
