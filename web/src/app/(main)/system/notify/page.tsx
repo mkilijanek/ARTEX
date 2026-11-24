@@ -31,6 +31,8 @@ import {
 } from "./_components/channel-fields";
 import { ConfigField, FilterSummary } from "./_components/channel-form";
 import { DeliveryList } from "./_components/delivery-list";
+import { SignalAccountCard, useSignalAccount } from "./_components/signal-account-card";
+import { SignalGroupPicker } from "./_components/signal-group-picker";
 import { formatBacklog, StatTile } from "./_components/stat-tile";
 
 // This page only orchestrates: loading data, holding form state, calling the API.
@@ -51,6 +53,7 @@ export default function NotifyPage() {
   const [globalSaving, setGlobalSaving] = React.useState(false);
   const [baseURL, setBaseURL] = React.useState("");
   const [digestMin, setDigestMin] = React.useState("");
+  const signal = useSignalAccount();
 
   const load = React.useCallback(() => {
     api
@@ -340,6 +343,8 @@ export default function NotifyPage() {
         </CardContent>
       </Card>
 
+      <SignalAccountCard signal={signal} />
+
       <Tabs value={tab} onValueChange={(v) => setTab(v as "channels" | "deliveries")} className="flex flex-col gap-4">
         <TabsList>
           <TabsTrigger value="channels">Channels</TabsTrigger>
@@ -467,15 +472,25 @@ export default function NotifyPage() {
                   The form for this channel type is not defined yet (the frontend is missing a CHANNEL_FIELDS entry); add it and retry.
                 </p>
               ) : (
-                fields.map((d) => (
-                  <ConfigField
-                    key={d.key}
-                    def={d}
-                    value={form.config[d.key]}
-                    isSecret={secretKeys.has(d.key)}
-                    onChange={(v) => setCfg(d.key, v)}
-                  />
-                ))
+                fields.map((d) =>
+                  // A Signal channel sending to a group picks it from the linked account's groups.
+                  form.kind === "signal" && d.key === "recipients" && form.config.recipient_type !== "numbers" ? (
+                    <SignalGroupPicker
+                      key={`${editing?.id ?? "new"}-${d.key}`}
+                      signal={signal}
+                      value={form.config[d.key]}
+                      onChange={(v) => setCfg(d.key, v)}
+                    />
+                  ) : (
+                    <ConfigField
+                      key={d.key}
+                      def={d}
+                      value={form.config[d.key]}
+                      isSecret={secretKeys.has(d.key)}
+                      onChange={(v) => setCfg(d.key, v)}
+                    />
+                  ),
+                )
               )}
 
               <div className="grid gap-2">
