@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -43,7 +44,7 @@ func TestWatchC12ClearsNotVerifiedOnceTheSocketAppears(t *testing.T) {
 	}
 }
 
-// A result other than "socket absent" ends the watch: a reachable socket is reported once, not retried.
+// A real result ends the watch: a reachable socket is reported once, not retried.
 func TestWatchC12StopsOnAnyOtherResult(t *testing.T) {
 	sock := filepath.Join(shortSockDir(t), "api.sock")
 	listenAt(t, sock)
@@ -53,7 +54,7 @@ func TestWatchC12StopsOnAnyOtherResult(t *testing.T) {
 		return "c12.sock=connected\nc12.dir=denied\n", nil
 	})
 	iso.c12wait = 5 * time.Millisecond
-	iso.setCheck(CheckResult{ID: "C12", Detail: c12AbsentDetail, Degrades: true})
+	iso.setCheck(CheckResult{ID: "C12", Detail: c12Precheck(filepath.Join(shortSockDir(t), "none.sock")), Degrades: true})
 	done := make(chan struct{})
 	go func() { iso.watchC12(t.Context()); close(done) }()
 	select {
@@ -80,5 +81,36 @@ func TestWatchC12EndsWithItsContext(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the watcher outlived its context")
+	}
+}
+
+// The watcher follows the detail text that c12Precheck gives for an absent socket.
+func TestWatchC12FollowsThePrecheckDetail(t *testing.T) {
+	absent := c12Precheck(filepath.Join(shortSockDir(t), "none.sock"))
+	if absent != "not verified: socket absent" || !strings.HasPrefix(absent, c12NotVerified) {
+		t.Fatalf("precheck detail %q, watcher prefix %q", absent, c12NotVerified)
+	}
+}
+
+// Another "not verified" result (the path could not be read for a moment) is retried too.
+func TestWatchC12RetriesAnyNotVerifiedResult(t *testing.T) {
+	sock := filepath.Join(shortSockDir(t), "api.sock")
+	listenAt(t, sock)
+	var runs atomic.Int32
+	iso := c12Iso(t, sock, func(ctx context.Context, d, s string) (string, error) {
+		runs.Add(1)
+		return "c12.sock=refused\nc12.dir=denied\n", nil
+	})
+	iso.c12wait = 5 * time.Millisecond
+	iso.setCheck(CheckResult{ID: "C12", Detail: "not verified: lstat failed", Degrades: true})
+	done := make(chan struct{})
+	go func() { iso.watchC12(t.Context()); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the watcher kept running")
+	}
+	if v := iso.View(); v.Status != Enforced || runs.Load() != 1 {
+		t.Fatalf("%+v after %d runs", v, runs.Load())
 	}
 }

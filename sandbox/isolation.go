@@ -530,14 +530,15 @@ func (i *Isolation) Run(ctx context.Context) {
 }
 
 const (
-	c12Every       = 15 * time.Second // pause between C12 re-runs while the Signal socket is absent
-	c12MaxRetries  = 240              // about an hour; after that only a Signal send or test re-runs C12
-	c12AbsentDetail = "not verified: socket absent"
+	c12Every      = 15 * time.Second // pause between C12 re-runs while C12 is not verified
+	c12MaxRetries = 240              // about an hour; after that only a Signal send or test re-runs C12
+	// c12NotVerified starts the detail of every C12 result that is not a verdict (c12Precheck).
+	c12NotVerified = "not verified:"
 )
 
-// watchC12 re-runs C12 on its own while it is "not verified" because the Signal service socket was
-// not there yet (a fresh deployment starts this server before the service creates it). It stops when
-// the result is anything else, when ctx ends, or after c12MaxRetries re-runs.
+// watchC12 re-runs C12 on its own while it is "not verified", mostly because the Signal service
+// socket was not there yet (a fresh deployment starts this server before the service creates it).
+// It stops when C12 is verified or has a real result, when ctx ends, or after c12MaxRetries re-runs.
 func (i *Isolation) watchC12(ctx context.Context) {
 	if i == nil || !i.on || i.c12in.SignalSocket == "" || i.runner == nil {
 		return
@@ -548,7 +549,7 @@ func (i *Isolation) watchC12(ctx context.Context) {
 	}
 	t := time.NewTicker(every)
 	defer t.Stop()
-	for n := 0; n < c12MaxRetries && i.checkDetail("C12") == c12AbsentDetail; n++ {
+	for n := 0; n < c12MaxRetries && strings.HasPrefix(i.checkDetail("C12"), c12NotVerified); n++ {
 		select {
 		case <-ctx.Done():
 			return
