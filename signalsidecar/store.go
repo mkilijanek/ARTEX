@@ -32,6 +32,10 @@ var (
 	ErrProbeInconclusive = errors.New("the password check could not be completed")
 	// ErrDBUnavailable is returned while there is no connection to the database.
 	ErrDBUnavailable = errors.New("database unavailable")
+
+	// errRowMissing marks a query that returned no row or a row that does not
+	// fit. The connection is fine, so it is kept.
+	errRowMissing = errors.New("row missing")
 )
 
 const (
@@ -76,6 +80,8 @@ func dbError(op string, err error) *DBError {
 		return &DBError{Op: op, Text: "canceled", err: err}
 	case errors.Is(err, ErrDBUnavailable):
 		return &DBError{Op: op, Text: ErrDBUnavailable.Error(), err: err}
+	case errors.Is(err, errRowMissing):
+		return &DBError{Op: op, Text: errRowMissing.Error(), err: err}
 	}
 	return &DBError{Op: op, Text: Scrub(err.Error()), err: err}
 }
@@ -206,6 +212,21 @@ func (s *Store) dropLocked() {
 	}
 }
 
+// rowErr classifies the error of a single-row query. An answer that holds no
+// row, or a row that cannot be read into the destinations, leaves the session
+// in a known state; anything else (a server error, a broken connection) is
+// returned as it is.
+func rowErr(c *pgx.Conn, err error) error {
+	var pe *pgconn.PgError
+	if err == nil || errors.As(err, &pe) || c.IsClosed() {
+		return err
+	}
+	if errors.Is(err, pgx.ErrNoRows) || strings.Contains(err.Error(), "scan") {
+		return errRowMissing
+	}
+	return err
+}
+
 func (s *Store) do(ctx context.Context, op string, fn func(context.Context, *pgx.Conn) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -230,7 +251,7 @@ func (s *Store) do(ctx context.Context, op string, fn func(context.Context, *pgx
 		return nil
 	}
 	var pe *pgconn.PgError
-	if !errors.As(err, &pe) || s.conn.IsClosed() {
+	if (!errors.As(err, &pe) && !errors.Is(err, errRowMissing)) || s.conn.IsClosed() {
 		s.dropLocked() // the connection state is unknown: reconnect on the next call
 	}
 	return dbError(op, err)
@@ -245,7 +266,7 @@ func (s *Store) Config(ctx context.Context) (v ConfigView, err error) {
 		                           FROM public.signal_sidecar_config_v`).
 			Scan(&v.Desired, &v.Gen, &v.DeviceName, &ttl, &v.ConfirmedAccount,
 				&v.GroupsRefreshGen, &v.DBAuthOK, &v.HandledGen, &v.GroupsGen); e != nil {
-			return e
+			return rowErr(c, e)
 		}
 		v.LinkTTLSeconds = int(ttl)
 		return nil
@@ -266,7 +287,7 @@ func (s *Store) Heartbeat(ctx context.Context, h Heartbeat) error {
 // database no longer wants that link; nothing is stored then.
 func (s *Store) SetLink(ctx context.Context, gen int64, uri string) (ok bool, err error) {
 	err = s.do(ctx, "store the link", func(ctx context.Context, c *pgx.Conn) error {
-		return c.QueryRow(ctx, `SELECT public.signal_sidecar_set_link($1, $2)`, gen, uri).Scan(&ok)
+		return rowErr(c, c.QueryRow(ctx, `SELECT public.signal_sidecar_set_link($1, $2)`, gen, uri).Scan(&ok))
 	})
 	return ok, err
 }
@@ -282,7 +303,7 @@ func (s *Store) SetGroups(ctx context.Context, refreshGen int64, groups []GroupE
 		return false, fmt.Errorf("encode groups: %w", err)
 	}
 	err = s.do(ctx, "store the groups", func(ctx context.Context, c *pgx.Conn) error {
-		return c.QueryRow(ctx, `SELECT public.signal_sidecar_set_groups($1, $2::jsonb)`, refreshGen, string(raw)).Scan(&ok)
+		return rowErr(c, c.QueryRow(ctx, `SELECT public.signal_sidecar_set_groups($1, $2::jsonb)`, refreshGen, string(raw)).Scan(&ok))
 	})
 	return ok, err
 }

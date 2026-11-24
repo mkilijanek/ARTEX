@@ -309,6 +309,29 @@ func TestStoreReconnectsAfterTheServerEndsTheSession(t *testing.T) {
 	}
 }
 
+func TestStoreKeepsTheConnectionWhenTheRowIsMissing(t *testing.T) {
+	r := newDBRig(t, "storenorow")
+	s := r.newStore()
+	if _, err := s.Config(ctx5(t)); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	before := s.conn
+	s.mu.Unlock()
+	r.exec(`DELETE FROM public.signal_sidecar_status`)
+	_, err := s.Config(ctx5(t))
+	var de *DBError
+	if !errors.As(err, &de) || de.SQLState != "" || de.Text != "row missing" {
+		t.Fatalf("got %v, want the fixed row missing error", err)
+	}
+	s.mu.Lock()
+	after := s.conn
+	s.mu.Unlock()
+	if after == nil || after != before {
+		t.Fatal("the connection was dropped for a missing row")
+	}
+}
+
 func TestStoreFailsFastWhileTheDatabaseIsDown(t *testing.T) {
 	dir, err := os.MkdirTemp("", "pg")
 	if err != nil {
