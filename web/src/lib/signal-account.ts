@@ -22,8 +22,8 @@ export type SignalCardState =
   | { kind: "off" }
   | { kind: "no_service" }
   | { kind: "unknown" }
-  | { kind: "preparing" }
-  | { kind: "preparing_failed" }
+  | { kind: "preparing"; lastError?: string }
+  | { kind: "preparing_failed"; lastError?: string }
   | { kind: "linking"; secondsLeft: number }
   | { kind: "linking_stale"; secondsLeft: number }
   | { kind: "expired" }
@@ -47,6 +47,18 @@ function wholeSecondsUp(ms: number): number {
   return Math.ceil(ms / 1000);
 }
 
+// warningText reads one entry of the server's warnings list ({kind, text?}) as plain text, so that an
+// object can never reach the page as a child.
+function warningText(w: unknown): string {
+  if (typeof w === "string") return w;
+  if (w && typeof w === "object") {
+    const { kind, text } = w as { kind?: unknown; text?: unknown };
+    if (typeof text === "string" && text) return text;
+    if (typeof kind === "string") return kind;
+  }
+  return "";
+}
+
 export function signalWarnings(status: SignalAccountStatus): SignalWarning[] {
   const out: SignalWarning[] = [];
   if (status.db_role.state === "missing") out.push({ kind: "db_role_missing" });
@@ -55,7 +67,10 @@ export function signalWarnings(status: SignalAccountStatus): SignalWarning[] {
   if (status.db_auth === "trust") out.push({ kind: "db_auth_trust" });
   if (status.db_auth === "unchecked") out.push({ kind: "db_auth_unchecked" });
   if (status.db_auth === "asserted") out.push({ kind: "db_auth_asserted" });
-  for (const text of status.warnings) out.push({ kind: "other", text });
+  for (const w of status.warnings as unknown[]) {
+    const text = warningText(w);
+    if (text) out.push({ kind: "other", text });
+  }
   return out;
 }
 
@@ -77,14 +92,16 @@ function cardState(status: SignalAccountStatus, nowMs: number, phase: SignalLink
   switch (status.state) {
     case "unknown":
       return { kind: "unknown" };
-    case "unlinked":
-      if (phase === "preparing") return { kind: "preparing" };
-      if (phase === "fetch_failed") return { kind: "preparing_failed" };
+    case "unlinked": {
+      const linkError = status.last_error ? { lastError: status.last_error } : {};
+      if (phase === "preparing") return { kind: "preparing", ...linkError };
+      if (phase === "fetch_failed") return { kind: "preparing_failed", ...linkError };
       return {
         kind: "unlinked",
         removedOnSignal: status.remote_unlink || null,
         lastError: status.last_error || null,
       };
+    }
     case "linked":
       if (status.account.confirmed) {
         return {
@@ -121,13 +138,16 @@ export class SignalRequestError extends Error {
   status: number;
   code: string | null;
   retryAfterS: number | null;
+  // The server's own error text. Only shown for a 400 or 503 that carries a code.
+  serverText: string | null;
 
-  constructor(status: number, code: string | null, retryAfterS: number | null) {
+  constructor(status: number, code: string | null, retryAfterS: number | null, serverText: string | null = null) {
     super(`Signal request failed: ${status}${code ? ` (${code})` : ""}`);
     this.name = "SignalRequestError";
     this.status = status;
     this.code = code;
     this.retryAfterS = retryAfterS;
+    this.serverText = serverText;
   }
 }
 
@@ -135,11 +155,19 @@ export class SignalRequestError extends Error {
 // Retry-After header (seconds only).
 export function parseSignalError(status: number, body: string, retryAfter: string | null): SignalRequestError {
   let code: string | null = null;
+  let serverText: string | null = null;
   if (body) {
     try {
       const parsed: unknown = JSON.parse(body);
       if (parsed && typeof parsed === "object" && "code" in parsed && typeof parsed.code === "string" && parsed.code) {
         code = parsed.code;
+      }
+      if (parsed && typeof parsed === "object" && "error" in parsed && typeof parsed.error === "string") {
+        const t = parsed.error
+          .replace(/[\p{Cc}\p{Cf}]/gu, " ")
+          .trim()
+          .slice(0, 200);
+        serverText = t || null;
       }
     } catch {
       // A non-JSON error body has no code. The status still reaches the caller.
@@ -147,7 +175,7 @@ export function parseSignalError(status: number, body: string, retryAfter: strin
   }
   const seconds = retryAfter ? Number(retryAfter) : Number.NaN;
   const retryAfterS = Number.isFinite(seconds) && seconds >= 0 ? Math.ceil(seconds) : null;
-  return new SignalRequestError(status, code, retryAfterS);
+  return new SignalRequestError(status, code, retryAfterS, serverText);
 }
 
 export type SignalFailureKind =
@@ -157,6 +185,13 @@ export type SignalFailureKind =
   | "already_linked"
   | "unlink_first"
   | "not_ready"
+  | "unlink_pending"
+  | "nothing_to_unlink"
+  | "not_linked"
+  | "stale"
+  | "no_link_pending"
+  | "db_role_not_ready"
+  | "busy"
   | "conflict"
   | "throttled"
   | "unavailable"
@@ -169,7 +204,13 @@ export function signalFailureKind(err: { status: number; code: string | null }):
     if (err.code === "number_mismatch") return "number_mismatch";
     return "failed";
   }
+  if (err.status === 404 && err.code === "no_link_pending") return "no_link_pending";
   if (err.status === 409) {
+    if (err.code === "unlink_pending") return "unlink_pending";
+    if (err.code === "nothing_to_unlink") return "nothing_to_unlink";
+    if (err.code === "not_linked") return "not_linked";
+    if (err.code === "stale") return "stale";
+    if (err.code === "no_link_pending") return "no_link_pending";
     if (err.code === "link_pending") return "link_pending";
     if (err.code === "already_linked") return "already_linked";
     if (err.code === "unlink_first") return "unlink_first";
@@ -177,7 +218,11 @@ export function signalFailureKind(err: { status: number; code: string | null }):
     return "conflict";
   }
   if (err.status === 429) return "throttled";
-  if (err.status === 503) return "unavailable";
+  if (err.status === 503) {
+    if (err.code === "db_role_not_ready") return "db_role_not_ready";
+    if (err.code === "busy") return "busy";
+    return "unavailable";
+  }
   return "failed";
 }
 

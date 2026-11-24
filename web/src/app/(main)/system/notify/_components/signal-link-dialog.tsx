@@ -25,6 +25,7 @@ import { formatCountdown, isLastDigits } from "./channel-fields";
 // failure, for example) keeps its own message.
 export function signalErrorText(e: unknown): string {
   if (!(e instanceof SignalRequestError)) return e instanceof Error ? e.message : "The request failed.";
+  if ((e.status === 400 || e.status === 503) && e.code && e.serverText) return e.serverText;
   switch (signalFailureKind(e)) {
     case "password_incorrect":
       return "Current password is wrong.";
@@ -38,6 +39,20 @@ export function signalErrorText(e: unknown): string {
       return "The service is in an error state. Unlink first, then link again.";
     case "not_ready":
       return "The Signal service is still starting. Try again in a moment.";
+    case "unlink_pending":
+      return "An unlink is still in progress. Try again in a moment.";
+    case "nothing_to_unlink":
+      return "There is no linked account to unlink.";
+    case "not_linked":
+      return "No account is linked.";
+    case "stale":
+      return "The account changed meanwhile; the card has been reloaded.";
+    case "no_link_pending":
+      return "No link is pending.";
+    case "db_role_not_ready":
+      return "The database role of the Signal service is not ready.";
+    case "busy":
+      return "The Signal state is locked by another session. Try again shortly.";
     case "conflict":
       return "The account changed meanwhile; the card has been reloaded.";
     case "throttled":
@@ -56,11 +71,22 @@ export function signalFailureIsStale(e: unknown): boolean {
   if (!(e instanceof SignalRequestError)) return false;
   const k = signalFailureKind(e);
   return (
-    k === "conflict" || k === "link_pending" || k === "already_linked" || k === "unlink_first" || k === "not_ready"
+    k === "conflict" ||
+    k === "link_pending" ||
+    k === "already_linked" ||
+    k === "unlink_first" ||
+    k === "not_ready" ||
+    k === "unlink_pending" ||
+    k === "nothing_to_unlink" ||
+    k === "not_linked" ||
+    k === "stale" ||
+    k === "no_link_pending"
   );
 }
 
 // The password a user types stays in this component's state only, and is dropped when the dialog closes.
+const DEVICE_NAME_RE = /^[A-Za-z0-9 ._-]{1,50}$/;
+
 export function SignalLinkStartDialog({
   open,
   onOpenChange,
@@ -113,6 +139,11 @@ export function SignalLinkStartDialog({
           <div className="grid gap-2">
             <Label htmlFor="sig-device">Device name</Label>
             <Input id="sig-device" value={deviceName} maxLength={50} onChange={(e) => setDeviceName(e.target.value)} />
+            {deviceName.trim() !== "" && !DEVICE_NAME_RE.test(deviceName.trim()) && (
+              <p className="text-destructive text-xs">
+                Use letters, digits, space, dot, underscore or hyphen (up to 50 characters).
+              </p>
+            )}
           </div>
           <div className="grid gap-2">
             <Label htmlFor="sig-link-pw">Your current password</Label>
@@ -140,7 +171,7 @@ export function SignalLinkStartDialog({
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Close
             </Button>
-            <Button type="submit" disabled={busy || !ack || password === "" || deviceName.trim() === ""}>
+            <Button type="submit" disabled={busy || !ack || password === "" || !DEVICE_NAME_RE.test(deviceName.trim())}>
               {busy && <Spinner />} Start
             </Button>
           </DialogFooter>

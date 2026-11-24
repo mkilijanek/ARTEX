@@ -1070,7 +1070,7 @@ export interface SignalAccountStatus {
   last_error_at: string | null;
   db_role: { state: "ok" | "missing" | "error" | "unchecked"; detail: string };
   db_auth: "ok" | "trust" | "unchecked" | "asserted";
-  warnings: string[];
+  warnings: { kind: string; text?: string }[];
 }
 
 // SignalLinkRequest starts a link (POST /api/notify/signal/link). device_name defaults on the server.

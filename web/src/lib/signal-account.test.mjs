@@ -155,9 +155,46 @@ test("database logins that are trusted, unchecked or asserted are reported as wa
 });
 
 test("other warnings from the server are passed through as text", () => {
-  assert.deepEqual(view(status({ warnings: ["example warning"] })).warnings, [
+  assert.deepEqual(view(status({ warnings: [{ kind: "example", text: "example warning" }] })).warnings, [
     { kind: "other", text: "example warning" },
   ]);
+});
+
+test("a warning without text shows its kind, and no warning is ever an object", () => {
+  const w = view(status({ warnings: [{ kind: "example" }, { kind: "x", text: { a: 1 } }, "plain", null, 4] })).warnings;
+  assert.deepEqual(w, [
+    { kind: "other", text: "example" },
+    { kind: "other", text: "x" },
+    { kind: "other", text: "plain" },
+  ]);
+  for (const x of w) assert.equal(typeof x.text, "string");
+});
+
+test("a failed or running link request does not hide the last link error", () => {
+  const s = status({ last_error: "link failed" });
+  assert.deepEqual(view(s, "preparing").state, { kind: "preparing", lastError: "link failed" });
+  assert.deepEqual(view(s, "fetch_failed").state, { kind: "preparing_failed", lastError: "link failed" });
+  assert.deepEqual(view(status(), "preparing").state, { kind: "preparing" });
+});
+
+test("the failure kinds of the codes the server sends", () => {
+  const k = (status, code) => signalFailureKind({ status, code });
+  assert.equal(k(409, "unlink_pending"), "unlink_pending");
+  assert.equal(k(409, "nothing_to_unlink"), "nothing_to_unlink");
+  assert.equal(k(409, "not_linked"), "not_linked");
+  assert.equal(k(409, "stale"), "stale");
+  assert.equal(k(409, "no_link_pending"), "no_link_pending");
+  assert.equal(k(404, "no_link_pending"), "no_link_pending");
+  assert.equal(k(503, "db_role_not_ready"), "db_role_not_ready");
+  assert.equal(k(503, "busy"), "busy");
+  assert.equal(k(503, "sidecar_unavailable"), "unavailable");
+});
+
+test("the server text of an error is kept for a 400 or 503 that carries a code", () => {
+  const body = JSON.stringify({ error: "Signal state is locked", code: "busy" });
+  assert.equal(parseSignalError(503, body, null).serverText, "Signal state is locked");
+  assert.equal(parseSignalError(503, "{}", null).serverText, null);
+  assert.equal(parseSignalError(503, "not json", null).serverText, null);
 });
 
 test("linking without an expiry is rejected as an inconsistent status", () => {

@@ -11,8 +11,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 const groups = [
-  { id: "AAA=", masked: "…AAA=", name: "Security alerts" },
-  { id: "BBB=", masked: "…BBB=", name: "Security alerts" },
+  { id: "group.AAA=", masked: "group.…AAA=", name: "Security alerts" },
+  { id: "group.BBB=", masked: "group.…BBB=", name: "Security alerts" },
 ];
 
 test("formatCountdown prints minutes and seconds and never goes negative", () => {
@@ -41,8 +41,8 @@ test("cleanGroupName drops control and format characters, collapses space and cu
   assert.equal(cleanGroupName("\u200B\u200B"), "");
 });
 
-test("groupRecipient prefixes the id", () => {
-  assert.equal(groupRecipient("AAA="), "group.AAA=");
+test("groupRecipient keeps the id the server sent, which already starts with group.", () => {
+  assert.equal(groupRecipient("group.AAA="), "group.AAA=");
 });
 
 test("recipientsToText joins arrays and passes strings", () => {

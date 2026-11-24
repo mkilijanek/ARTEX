@@ -394,6 +394,7 @@ export function SignalAccountCard({ signal }: { signal: SignalAccountApi }) {
             <p className="text-muted-foreground flex items-center gap-2 text-sm">
               <Spinner /> Preparing the link...
             </p>
+            {state.lastError && <Line>{state.lastError}</Line>}
             <Button size="sm" variant="outline" disabled={busy} onClick={() => run(signal.cancelLink, "Cancel failed")}>
               Cancel
             </Button>
@@ -403,6 +404,7 @@ export function SignalAccountCard({ signal }: { signal: SignalAccountApi }) {
         return (
           <div className="flex flex-wrap items-center gap-3">
             <Line>Could not load the link code.</Line>
+            {state.lastError && <Line>{state.lastError}</Line>}
             <Button size="sm" variant="outline" onClick={signal.retryLink}>
               Retry
             </Button>

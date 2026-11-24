@@ -243,7 +243,8 @@ export function cleanGroupName(name: string): string {
 }
 
 export function groupRecipient(id: string): string {
-  return `group.${id}`;
+  // The server sends the id already in the form group.<id>.
+  return id;
 }
 
 // recipientsToText renders the recipients config value (an array from the server, text while typing).
