@@ -3,7 +3,7 @@
 # artex-signal: the Signal sidecar. A static Go supervisor that starts signal-cli
 # (JVM build) directly, with a fixed command line and no shell.
 #
-#   go build -> signal-cli fetch/verify -> runtime image   (default target)
+#   go build -> signal-cli fetch/verify -> runtime image   (last stage, the default)
 #                                       -> smoke image     (--target smoke)
 #
 # Every base image is pinned by digest. signal-cli is pinned by version and sha256;
@@ -21,8 +21,6 @@ WORKDIR /src
 ENV CGO_ENABLED=0 \
     GOFLAGS=-mod=readonly \
     GOTOOLCHAIN=local
-COPY go.mod go.sum ./
-RUN go mod download
 COPY . .
 RUN mkdir -p /out \
  && go build -trimpath -ldflags "-s -w -buildid= -X main.version=${ARTEX_VERSION}" \
@@ -88,6 +86,21 @@ RUN set -eu; \
     find /opt/signal-cli -type d -exec chmod 0555 {} +; \
     find /opt/signal-cli -type f -exec chmod 0444 {} +
 
+# ----------------------------------------------------------------- smoke ---
+# The runtime image plus the scripted stand-in for signal-cli, for CI and the compose
+# smoke test. The sidecar starts /usr/bin/java with a fixed command line, so the
+# stand-in is installed at that path. There is no signal-cli and there are no native
+# libraries in this image.
+FROM gcr.io/distroless/java25-debian13@sha256:d1b024b25b9dd0a363c14e2927e8059c94bff102f2e2a645eb849ea36766292a AS smoke
+COPY --from=build --chown=0:0 --chmod=0555 /out/artex-signal /usr/local/bin/artex-signal
+COPY --from=build --chown=0:0 --chmod=0555 /out/fakecli /usr/bin/java
+ENV ARTEX_SIGNAL_SOCKET=/sock/api.sock \
+    ARTEX_SIGNAL_DATA=/data
+USER 10001:10001
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+  CMD ["/usr/local/bin/artex-signal", "healthcheck"]
+ENTRYPOINT ["/usr/local/bin/artex-signal"]
+
 # --------------------------------------------------------------- runtime ---
 FROM gcr.io/distroless/java25-debian13@sha256:d1b024b25b9dd0a363c14e2927e8059c94bff102f2e2a645eb849ea36766292a AS runtime
 ARG ARTEX_VERSION=dev
@@ -99,23 +112,14 @@ LABEL org.opencontainers.image.title="artex-signal" \
       org.opencontainers.image.version="${ARTEX_VERSION}" \
       org.opencontainers.image.base.name="gcr.io/distroless/java25-debian13" \
       io.artex.signal-cli.version="${SIGNAL_CLI_VERSION}"
-COPY --from=signal-cli --chown=0:0 /opt/signal-cli/lib /opt/signal-cli/lib
-COPY --from=signal-cli --chown=0:0 /opt/signal-cli/native /opt/signal-cli/native
+# The tree keeps the modes set in the signal-cli stage: directories 0555, files 0444.
+COPY --from=signal-cli --chown=0:0 /opt/signal-cli /opt/signal-cli
 COPY --from=build --chown=0:0 --chmod=0555 /out/artex-signal /usr/local/bin/artex-signal
-ENV ARTEX_SIGNAL_JAVA=/usr/bin/java \
-    ARTEX_SIGNAL_NATIVE_DIR=/opt/signal-cli/native \
-    ARTEX_SIGNAL_LIB_DIR=/opt/signal-cli/lib \
-    ARTEX_SIGNAL_DATA_DIR=/data
+# The java binary (/usr/bin/java), the native directory and the lib directory are
+# fixed places that the binary compiles in; only the socket and data paths are settings.
+ENV ARTEX_SIGNAL_SOCKET=/sock/api.sock \
+    ARTEX_SIGNAL_DATA=/data
 USER 10001:10001
-ENTRYPOINT ["/usr/local/bin/artex-signal"]
-
-# ----------------------------------------------------------------- smoke ---
-# The runtime image plus the scripted stand-in for signal-cli, for CI and the compose
-# smoke test. It has no signal-cli and no native libraries.
-FROM gcr.io/distroless/java25-debian13@sha256:d1b024b25b9dd0a363c14e2927e8059c94bff102f2e2a645eb849ea36766292a AS smoke
-COPY --from=build --chown=0:0 --chmod=0555 /out/artex-signal /usr/local/bin/artex-signal
-COPY --from=build --chown=0:0 --chmod=0555 /out/fakecli /opt/fakecli/fakecli
-ENV ARTEX_SIGNAL_JAVA=/opt/fakecli/fakecli \
-    ARTEX_SIGNAL_DATA_DIR=/data
-USER 10001:10001
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+  CMD ["/usr/local/bin/artex-signal", "healthcheck"]
 ENTRYPOINT ["/usr/local/bin/artex-signal"]
