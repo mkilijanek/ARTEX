@@ -10,7 +10,8 @@
 #   slim  the default. No Java, jadx or C toolchain: bbot's installer pulls them in and the
 #         build removes them again, and writes the list of removed packages to
 #         /usr/share/artex/slim-removed-packages.txt.
-#   full  (not defined yet) slim plus exactly those packages and jadx, as one more layer.
+#   full  slim plus exactly those packages and jadx, as one more layer (every slim layer is a
+#         layer of full).
 #
 # The Python base is pinned by digest. Debian packages are brought up to date with
 # `apt-get upgrade`, so a rebuild of unchanged inputs picks up security fixes; what changed is
@@ -243,3 +244,38 @@ RUN --mount=type=bind,source=check-tools.sh,target=/mnt/check-tools.sh \
     comm -13 /tmp/home.before /tmp/home.after | sort -r | while IFS= read -r f; do echo "removing $f"; rm -rf "$f"; done; \
     rm -rf /tmp/* /var/tmp/*
 ENV ARTEX_VARIANT=slim
+
+# ------------------------------------------------------------------- full ---
+FROM slim AS full
+# Java, the C toolchain and the -dev packages come back as the exact list the slim build removed
+# (bbot's installer chose them), without recommends. jadx is put where bbot's jadx module puts it
+# and looks for it ({tools}/jadx/bin/jadx); bbot downloads it without a checksum, so the release
+# zip is pinned here. The tool home gets the link for it, owned by the tool user like the others.
+# bbot's core-dependency marker in the tool home stays valid: it only says that the check has
+# been done, and gcc and make are present again.
+ARG JADX_VERSION=1.5.0
+ARG JADX_SHA256=c5a713fa4800cbb9e6df85ced1bef95ba329040c95cb87d54465f108483e4ef9
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends $(cat /usr/share/artex/slim-removed-packages.txt); \
+    curl -fsSL -o /tmp/jadx.zip "https://github.com/skylot/jadx/releases/download/v${JADX_VERSION}/jadx-${JADX_VERSION}.zip"; \
+    echo "${JADX_SHA256}  /tmp/jadx.zip" | sha256sum -c -; \
+    jd=/opt/bbot-home/.bbot/tools/jadx; \
+    mkdir -p "$jd"; \
+    unzip -q /tmp/jadx.zip -d "$jd" bin/jadx "lib/jadx-${JADX_VERSION}-all.jar"; \
+    chmod -R a+rX "$jd"; \
+    ln -s "$jd" /home/artex-tool/.bbot/tools/jadx; \
+    chown -h 30002:30002 /home/artex-tool/.bbot/tools/jadx; \
+    rm -rf /var/lib/apt/lists/* /var/cache/debconf/*-old /tmp/*
+# The tool matrix of the full variant, including the setuid list: the files must be the ones the
+# slim variant has, so a package that brings a setuid file fails the build.
+RUN --mount=type=bind,source=check-tools.sh,target=/mnt/check-tools.sh \
+    --mount=type=bind,source=setuid-expected.txt,target=/mnt/setuid-expected.txt \
+    set -eux; \
+    th=/home/artex-tool; \
+    find "$th" | sort >/tmp/home.before; \
+    CHECK_BUILD_SANDBOX=1 bash /mnt/check-tools.sh full; \
+    find "$th" | sort >/tmp/home.after; \
+    comm -13 /tmp/home.before /tmp/home.after | sort -r | while IFS= read -r f; do echo "removing $f"; rm -rf "$f"; done; \
+    rm -rf /tmp/* /var/tmp/*
+ENV ARTEX_VARIANT=full

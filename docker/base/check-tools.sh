@@ -419,8 +419,8 @@ main_checks() {
     both "java -version" java -version
     both "jadx --version" f_tool_bin jadx/bin/jadx --version
     row tool "gcc builds and runs a program" f_hello
-    row root "gcc present" command -v gcc
-    row root "make present" command -v make
+    both "gcc --version" gcc --version
+    both "make --version" make --version
   fi
 
   echo "== libraries"
