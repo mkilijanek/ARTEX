@@ -261,7 +261,31 @@ It never fails the start. The outcome is one log line and a line on the card:
 `ARTEX_SIGNAL_DB_ROLE` and `ARTEX_SIGNAL_DB_PASSWORD` are set once in `.env`; the override gives both to `artex`,
 which creates the role, and to the service, which logs in with it.
 
-**External PostgreSQL.** The service's connection string must be a Unix socket or use `sslmode=verify-full`.
+**External PostgreSQL.** The service's connection string must be a Unix socket or use `sslmode=verify-full`. The
+shipped override hard-wires the bundled database (the `pgsock` socket and `depends_on: postgres`), so an external
+database needs an override file of your own, added to the file set after `docker-compose.signal.yml`. Its shape
+(host, port, database name and the CA volume are examples):
+
+```yaml
+services:
+  artex-signal:
+    environment:
+      ARTEX_SIGNAL_PG_DSN: "host=db.example.internal port=5432 dbname=artex user=${ARTEX_SIGNAL_DB_ROLE:-artex_signal} password=${ARTEX_SIGNAL_DB_PASSWORD:?set ARTEX_SIGNAL_DB_PASSWORD} sslmode=verify-full sslrootcert=/pg-ca/root.crt"
+    volumes: !override
+      - artex-signal-data:/data:Z
+      - artex-signal-sock:/sock:z
+      - artex-pg-ca:/pg-ca:ro,z
+    depends_on: !reset {}
+
+volumes:
+  artex-pg-ca:
+    external: true
+```
+
+The CA certificate that signed the database server's certificate goes into the named volume `artex-pg-ca` (create it
+with `docker volume create artex-pg-ca` and copy `root.crt` in, readable by uid 10001), or into a Compose secret.
+Do not bind-mount a host directory such as a repository checkout. The service reaches the database through
+`signal-egress`. `artex` needs its own `ARTEX_PG_DSN` for that database as well.
 
 - When ARTEX's database user may not create roles, run the role statements once as a user who may, with the
   **same password** as `ARTEX_SIGNAL_DB_PASSWORD`, then restart `artex`. ARTEX finds its marker, checks the login and
@@ -298,7 +322,8 @@ which creates the role, and to the service, which logs in with it.
 
 **Optional: admit the role only to the ARTEX database.** The two lines below, placed first in `pg_hba.conf` (the
 first matching line wins), let the role log in to the ARTEX database with a password and refuse it everywhere else.
-For the bundled PostgreSQL, run this once, after the rules require passwords:
+For the bundled PostgreSQL, run this once, after the rules require passwords (replace both `artex_signal` with your
+`ARTEX_SIGNAL_DB_ROLE` if you set one):
 
 ```bash
 docker compose exec -T -u postgres postgres sh -c 'f="$PGDATA/pg_hba.conf"; { printf "local %s artex_signal scram-sha-256\nlocal all artex_signal reject\n" "$POSTGRES_DB"; cat "$f"; } > /tmp/pg_hba.new && cat /tmp/pg_hba.new > "$f" && rm /tmp/pg_hba.new && pg_ctl reload -D "$PGDATA"'
@@ -336,8 +361,12 @@ services:
   cd /path/to/example-deployment && [ "$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose ps -q artex-signal)")" = unhealthy ] && docker compose restart artex-signal
   ```
 
-- The card shows "Service: not connected" when the service has not reported for 30 seconds. Deliveries made then
-  fail with `Signal service is not connected` and are retried.
+- The card shows "Service: not connected" when the service has not reported for 30 seconds. That happens when the
+  container is down, and also when signal-cli has been down for more than about 30 seconds: the service stops its
+  heartbeats while it has no account state to report, although Docker still shows the container as `healthy` for up
+  to 120 seconds more. Deliveries made then fail with `Signal service is not connected` and are retried. The reason
+  is in `docker compose logs artex-signal` (`[signal] signal-cli exited: ...`, `[signal] signal-cli did not start:
+  ...`).
 
 ### Channel rules
 
@@ -361,7 +390,7 @@ services:
 | The error contains (delivery history, test result, `[notify]` log) | Meaning | Retried |
 |---|---|---|
 | `Signal service socket unreachable (is docker-compose.signal.yml up?)` | the service is not running or has not opened its socket yet, or the override is not in the file set | yes |
-| `Signal service is not connected` | the service has not reported to the database for 30 seconds | yes |
+| `Signal service is not connected` | the service has not reported to the database for 30 seconds: the container is down, or signal-cli has been down for more than about 30 seconds (Docker may still show `healthy`); see `docker compose logs artex-signal` | yes |
 | `Signal state cannot be read: database unavailable` | ARTEX could not read the Signal state | yes |
 | `peer server error (HTTP 503): ...` | the service runs, but signal-cli is not running, its view of the configuration is stale, or Signal's servers could not be reached | yes |
 | `Signal rate limit: ...` | Signal rate-limits the account; wait. ARTEX cannot answer a rate-limit challenge | yes |
@@ -414,32 +443,46 @@ docker run --rm --security-opt label=disable -v example-deployment_artex-signal-
 ```
 
 **Database dumps** (see [Backups](#backups)) carry the grants to the service's role, but not the role itself (roles
-belong to the cluster). Restored into a fresh database volume, the four `GRANT ... TO artex_signal` lines fail with
-`ERROR:  role "artex_signal" does not exist` and the rest of the restore goes on. That is harmless: at its next start
-with `ARTEX_SIGNAL_DB_PASSWORD` set, ARTEX creates the role and grants again. To restore without those errors, create
-the role first, with the same password:
+belong to the cluster). **Before you restore a dump into a fresh database volume, create the role**, with the same
+name and password as in `.env`. This reads both from `.env` (the name defaults to `artex_signal`):
 
 ```bash
 set -a; . ./.env; set +a
-PGPASSWORD="$POSTGRES_PASSWORD" docker compose exec -T -e PGPASSWORD -e ARTEX_SIGNAL_DB_PASSWORD postgres \
-  sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1' <<'SQL'
+export ARTEX_SIGNAL_DB_ROLE="${ARTEX_SIGNAL_DB_ROLE:-artex_signal}"
+PGPASSWORD="$POSTGRES_PASSWORD" docker compose exec -T -e PGPASSWORD -e ARTEX_SIGNAL_DB_PASSWORD -e ARTEX_SIGNAL_DB_ROLE \
+  postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1' <<'SQL'
 \getenv pw ARTEX_SIGNAL_DB_PASSWORD
-CREATE ROLE artex_signal LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 5 PASSWORD :'pw';
-COMMENT ON ROLE artex_signal IS 'artex signal sidecar';
-ALTER ROLE artex_signal SET idle_in_transaction_session_timeout = '10s';
-ALTER ROLE artex_signal SET search_path = public;
+\getenv role ARTEX_SIGNAL_DB_ROLE
+CREATE ROLE :"role" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 5 PASSWORD :'pw';
+COMMENT ON ROLE :"role" IS 'artex signal sidecar';
+ALTER ROLE :"role" SET idle_in_transaction_session_timeout = '10s';
+ALTER ROLE :"role" SET search_path = public;
 SQL
 ```
 
-**Do not restore with `--no-acl`** (`pg_restore`), and do not dump with `--no-acl` or `-x`: that also drops the
-`REVOKE ... FROM PUBLIC` lines, and every role of the cluster could then run the service's functions. If it happened,
-run as `POSTGRES_USER` in the ARTEX database:
+Then restore; the dump's grant lines apply without errors.
+
+**A restore without the role is not harmless.** The dump then fails on the lines that grant to the role (`ERROR:
+role "artex_signal" does not exist`). With `pg_restore` (a custom-format dump), the `REVOKE ... FROM PUBLIC` of a
+function and its `GRANT` to the role are sent as one command, so the failure takes the `REVOKE` with it, and three
+SECURITY DEFINER functions stay executable by every role of the cluster. ARTEX re-creates the role and the grants at
+its next start, but it does not revoke `PUBLIC` again. The same holds for a restore with `--no-acl`, or a dump made
+with `--no-acl` or `-x`, which drop the `REVOKE` lines altogether: do not use them. **After any restore without the
+role, run** as `POSTGRES_USER` in the ARTEX database:
 
 ```sql
 REVOKE ALL ON FUNCTION public.signal_sidecar_heartbeat(text, bigint, text, text, text, text, text, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.signal_sidecar_set_link(bigint, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.signal_sidecar_set_groups(bigint, jsonb) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.signal_sidecar_grant(regrole) FROM PUBLIC;
+```
+
+Check: every row must show `f` in `public_can_execute`, and `proacl` must not be empty:
+
+```sql
+SELECT p.proname, p.proacl, has_function_privilege('public', p.oid, 'EXECUTE') AS public_can_execute
+  FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+ WHERE n.nspname = 'public' AND p.proname LIKE 'signal\_sidecar\_%' ORDER BY 1;
 ```
 
 ### Upgrade from the signal-cli REST API override
@@ -490,7 +533,8 @@ records.
      psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 < rollback-drop-5004.sql
    ```
 
-   Then remove `ARTEX_SCHEMA_ALLOW_NEWER` from `.env` and `docker compose up -d`.
+   If you set `ARTEX_SIGNAL_DB_ROLE`, first change `v_role text := 'artex_signal';` in the file to that name: the
+   recipe drops only the role it names. Then remove `ARTEX_SCHEMA_ALLOW_NEWER` from `.env` and `docker compose up -d`.
 5. Remove the device you linked (the name you chose) under Linked devices on the phone, then delete the new volumes
    once you are sure: `docker volume rm example-deployment_artex-signal-data example-deployment_artex-signal-sock`.
 
@@ -505,10 +549,17 @@ deliveries failed; disable or delete them before going back to it.
 ### Incident: isolation check C12 appeared
 
 Symptom: the isolation status is `degraded` with C12 in the log (`[isolation] WARNING ...`), in `/api/stats` and in
-the UI banner. `not verified: socket absent` after a start, while the service has not opened its socket yet, is
-expected: ARTEX checks again every 15 seconds for about an hour, after the first successful send and on every
-**Send test message**, and the entry clears once the socket is there. Any other C12 detail means the tool user may reach the socket, and with it
-send messages as the linked account:
+the UI banner. What to do depends on the detail:
+
+- `not verified: socket absent` after a start, while the service has not opened its socket yet, is expected. ARTEX
+  checks again every 15 seconds for about an hour, after the first successful send and on every **Send test
+  message**, and the entry clears once the socket is there.
+- `... could not be verified` means the probe proved nothing (for example the tool shell failed). It is not a
+  finding that tools can reach the socket, but it is not a pass either. The 15-second re-runs do not repeat it; only the
+  re-run after the first successful send, or the one of a **Send test message**, can clear it. Press **Send test message**;
+  if the detail stays, read the `[isolation]` lines in `docker compose logs artex`.
+- `tool user can connect to <path>` or `tool user can list <dir>, which holds <path>` means the tool user can reach
+  the socket, and with it send messages as the linked account. Follow these steps:
 
 1. **Cut the path now:** `docker compose stop artex-signal`. Signal deliveries fail (retried) until it is back.
 2. **Find the cause:** the `artex-signal-sock` volume must be mounted in `artex` at `/run/artex-private/signal` only,
@@ -524,7 +575,7 @@ send messages as the linked account:
 
 Every database role can take PostgreSQL advisory locks, and ARTEX uses fixed lock keys, for example while it starts.
 A compromised service could hold them, and ARTEX then waits: at start, on company-scope changes, on finding evidence
-writes and on retest scheduling. Statements on the Signal tables give up after 3 seconds with a lock timeout error
+writes, on retest scheduling, and when it archives a task or restores a task archive. Statements on the Signal tables give up after 3 seconds with a lock timeout error
 instead. If ARTEX hangs in one of those places with the Signal override in use, run `docker compose stop artex-signal`:
 its database sessions end, the locks are released, and ARTEX goes on. Then look at `docker compose logs artex-signal`
 before you start it again.

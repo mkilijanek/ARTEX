@@ -72,14 +72,16 @@ This block supersedes them. Design: `docs/adr/0011-signal-sidecar-with-database-
   works; it is not used by the service. `example-deployment/README.md`, "Upgrade from the signal-cli REST API
   override".
 - **A database volume that still trusts local connections** (created before 0.5.18m) makes provisioning refuse the
-  role: follow the steps in `.env.example` to require passwords first.
+  role: follow the steps in `example-deployment/example.env` ("To require the password on an existing volume") to
+  require passwords first.
 - **Use a dedicated Signal account**: a linked device can read all messages of the account. The volume
   `artex-signal-data` is a live credential until the device is removed on the phone.
 - **Docker does not restart an `unhealthy` container.** The service's health check fails when signal-cli has been
   down for more than 120 seconds; monitoring has to act on it.
-- **Database dumps** now carry grants to the service's role. Restored into a fresh volume, those lines fail until
-  ARTEX creates the role again at its next start; do not restore with `--no-acl`, which also opens the service's
-  functions to every role.
+- **Database dumps** now carry grants to the service's role, but not the role. Create the role before restoring
+  into a fresh volume. A `pg_restore` without the role, or any restore with `--no-acl`, leaves the service's
+  SECURITY DEFINER functions executable by every role, and ARTEX does not revoke that: run the four `REVOKE`
+  statements in `example-deployment/README.md`, "Backup of the account", and check with its query.
 - **Rollback:** the previous release's images and `docker-compose.signal.yml`, `signal-proxy.conf` and `.env` values,
   with `ARTEX_SCHEMA_ALLOW_NEWER=5004`; the optional clean-up is the guarded recipe in `docs/schema-upgrade.md`,
   "Migration 5004". Then remove the linked device on the phone.

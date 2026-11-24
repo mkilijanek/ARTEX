@@ -119,7 +119,10 @@ service parses hostile input (messages, group names, Signal server answers).
   `SIGNAL_PROXY_IMAGE`, `signal-proxy.conf`.
 - The database gains a role, one view and four functions. Migration `5004` is additive: the previous release runs
   on the migrated database with `ARTEX_SCHEMA_ALLOW_NEWER=5004`, and a guarded drop recipe exists. A dump carries
-  grants to the role; restoring it without `--no-acl` keeps the functions closed to `PUBLIC`.
+  grants to the role but not the role, so the role is created before a restore into a fresh cluster. A
+  custom-format restore without it fails on commands that hold a function's `REVOKE ... FROM PUBLIC` together with
+  its `GRANT`, which leaves those SECURITY DEFINER functions executable by `PUBLIC`; provisioning does not revoke
+  `PUBLIC` again, so the operator runs the documented `REVOKE` statements after such a restore.
 - A new function in the schema is executable by `PUBLIC` unless its migration revokes that; a catalog test pins the
   list.
 - "Service not connected" and "database unavailable" are retried deliveries; "not linked", "not confirmed" and an

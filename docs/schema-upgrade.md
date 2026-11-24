@@ -439,12 +439,13 @@ the server creates and checks it at start when `ARTEX_SIGNAL_DB_PASSWORD` is set
 - **Order.** Run this drop **first** of all the recipes (see "Order of the recipes"). All the others refuse while
   `5004` is recorded.
 - **Restore.** A dump taken after the upgrade holds `GRANT` lines for the role, but not the role (roles belong to the
-  cluster). Restored into a cluster without the role, those lines fail with `role "artex_signal" does not exist` and
-  the rest of the restore goes on; ARTEX creates the role and grants again at its next start with
-  `ARTEX_SIGNAL_DB_PASSWORD` set. Or create the role first (statements in the example deployment README, "Backup of
-  the account"). **Do not restore with `--no-acl`** (or dump with `--no-acl` / `-x`): that also drops the
-  `REVOKE ALL ON FUNCTION ... FROM PUBLIC` lines, so every role could execute the four functions; the same README
-  has the statements that close them again.
+  cluster). **Create the role first** (statements in the example deployment README, "Backup of the account"), then
+  restore. Without the role, the grant lines fail with `role "artex_signal" does not exist`, and with `pg_restore`
+  a function's `REVOKE ALL ... FROM PUBLIC` is sent in the same command as its `GRANT`, so it fails too: three
+  SECURITY DEFINER functions stay executable by `PUBLIC`. ARTEX re-creates the role and its grants at the next start,
+  but does not revoke `PUBLIC` again. After any restore without the role, and after a restore with `--no-acl` or of a
+  dump made with `--no-acl` / `-x` (which drop the `REVOKE` lines; do not use them), run the four `REVOKE`
+  statements and the check query from the same README section.
 
 ### Restores
 
