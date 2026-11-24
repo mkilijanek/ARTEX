@@ -741,6 +741,36 @@ func TestSignalConfirmWrongDigitsBackOffProgressively(t *testing.T) {
 	}
 }
 
+// With the map full, a key that is already tracked keeps counting, and a new key evicts the oldest one.
+func TestSignalConfirmBackoffAtTheBoundKeepsTrackedKeys(t *testing.T) {
+	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	b := &signalConfirmBackoffState{now: clk.now, m: map[string]*signalConfirmEntry{}, max: 2}
+	logs := &syncBuf{}
+	oldOut := log.Writer()
+	log.SetOutput(logs)
+	t.Cleanup(func() { log.SetOutput(oldOut) })
+
+	b.wrong("a")
+	clk.advance(time.Second)
+	b.wrong("b")
+	clk.advance(time.Second)
+	b.wrong("a")
+	clk.advance(time.Second)
+	b.wrong("a") // the map is full and "a" is tracked: this is its 3rd wrong attempt
+	if left := b.left("a"); left != signalConfirmBaseWait {
+		t.Fatalf("left(a) = %s, want %s", left, signalConfirmBaseWait)
+	}
+	clk.advance(time.Second)
+	b.wrong("c") // new key: "b" failed longest ago
+	if _, ok := b.m["b"]; ok || len(b.m) != 2 || b.m["a"] == nil || b.m["c"] == nil {
+		t.Fatalf("keys after eviction: %v", b.m)
+	}
+	b.wrong("d")
+	if n := strings.Count(logs.String(), "confirm back-off"); n != 1 {
+		t.Fatalf("%d log lines, want 1: %q", n, logs.String())
+	}
+}
+
 func TestSignalLinkAndUnlinkClearTheConfirmation(t *testing.T) {
 	g := newSignalRig(t)
 	g.exec(`UPDATE signal_sidecar_config SET gen=1, confirmed_account=$1 WHERE id`, sigTestNumber)

@@ -613,9 +613,11 @@ type signalConfirmEntry struct {
 // the wait doubles with each further wrong attempt, up to signalConfirmMaxWait. A right answer or a new
 // link request clears it.
 type signalConfirmBackoffState struct {
-	mu  sync.Mutex
-	now func() time.Time
-	m   map[string]*signalConfirmEntry
+	mu   sync.Mutex
+	now  func() time.Time
+	m    map[string]*signalConfirmEntry
+	max  int  // bound on the keys remembered; zero means signalConfirmMaxKeys
+	full bool // the bound was reached and logged
 }
 
 var signalConfirmBackoff = &signalConfirmBackoffState{now: time.Now, m: map[string]*signalConfirmEntry{}}
@@ -642,18 +644,26 @@ func (b *signalConfirmBackoffState) wrong(key string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	now := b.now()
-	if len(b.m) >= signalConfirmMaxKeys {
-		for k, e := range b.m {
-			if now.Sub(e.last) > 2*signalConfirmMaxWait {
-				delete(b.m, k)
-			}
-		}
-		if len(b.m) >= signalConfirmMaxKeys {
-			return
-		}
-	}
 	e, ok := b.m[key]
 	if !ok {
+		limit := b.max
+		if limit <= 0 {
+			limit = signalConfirmMaxKeys
+		}
+		if len(b.m) >= limit { // evict the key that failed longest ago
+			var oldest string
+			var at time.Time
+			for k, o := range b.m {
+				if at.IsZero() || o.last.Before(at) {
+					oldest, at = k, o.last
+				}
+			}
+			delete(b.m, oldest)
+			if !b.full {
+				b.full = true
+				log.Printf("[signal] confirm back-off: more than %d sources are tracked; the oldest are dropped", limit)
+			}
+		}
 		e = &signalConfirmEntry{}
 		b.m[key] = e
 	} else if now.Sub(e.last) > 2*signalConfirmMaxWait {
