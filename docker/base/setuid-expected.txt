@@ -1,0 +1,11 @@
+/usr/bin/chage
+/usr/bin/chfn
+/usr/bin/chsh
+/usr/bin/expiry
+/usr/bin/gpasswd
+/usr/bin/mount
+/usr/bin/newgrp
+/usr/bin/passwd
+/usr/bin/su
+/usr/bin/umount
+/usr/sbin/unix_chkpwd

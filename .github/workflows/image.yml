@@ -1,0 +1,516 @@
+name: image
+
+# The tools base image (docker/base): built and checked on every change, published from main only.
+#
+#   pull_request                    build both targets and check them; never pushes
+#   push to main, schedule, dispatch  the same, then publish (job base-publish, after approval)
+#
+# Tags are write-once by this workflow: <variant>-<YYYYMMDD>-<short sha>, no moving tag.
+# Runbook: docker/base/README.md
+
+on:
+  pull_request:
+    paths:
+      - "docker/base/**"
+      - ".github/workflows/image.yml"
+  push:
+    branches: [main]
+    paths:
+      - "docker/base/**"
+      - ".github/workflows/image.yml"
+  schedule:
+    # Monthly rebuild of unchanged inputs: picks up Debian security updates (apt-get upgrade in the base).
+    - cron: "0 5 1 * *"
+  workflow_dispatch:
+    inputs:
+      push:
+        description: Publish both variants (only from main; any other branch fails the run)
+        type: boolean
+        default: false
+      reason:
+        description: Why this run was started (shown in the run summary)
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-${{ github.ref }}
+  # A newer push to a PR replaces the older run; runs on main are never cancelled, so an approved
+  # publish is not lost.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE: ghcr.io/mkilijanek/artex-base
+  # The build summary and record upload of the build action add artifacts and no information here.
+  DOCKER_BUILD_RECORD_UPLOAD: "false"
+
+jobs:
+  # Builds and checks both variants. No registry write, no package permission: a pull request and a
+  # run from a branch get exactly this and nothing more.
+  base-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    outputs:
+      epoch: ${{ steps.meta.outputs.epoch }}
+      date: ${{ steps.meta.outputs.date }}
+      sha7: ${{ steps.meta.outputs.sha7 }}
+      slim_tag: ${{ steps.meta.outputs.slim_tag }}
+      full_tag: ${{ steps.meta.outputs.full_tag }}
+      labels_slim: ${{ steps.meta.outputs.labels_slim }}
+      labels_full: ${{ steps.meta.outputs.labels_full }}
+      annotations_slim: ${{ steps.meta.outputs.annotations_slim }}
+      annotations_full: ${{ steps.meta.outputs.annotations_full }}
+    steps:
+      - name: Refuse a publish request from another branch
+        if: github.event_name == 'workflow_dispatch' && inputs.push
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          if [ "$REF" != "refs/heads/main" ]; then
+            echo "::error::Publishing is only allowed from refs/heads/main; this run is on $REF. Nothing was built or pushed."
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The commit time of docker/base (SOURCE_DATE_EPOCH) needs the history of that path.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Compute build identity (epoch, date, tags, labels)
+        id: meta
+        run: |
+          set -euo pipefail
+          epoch=$(git log -1 --format=%ct -- docker/base)
+          [[ "$epoch" =~ ^[0-9]+$ ]] || { echo "::error::cannot read the commit time of docker/base (got '$epoch')"; exit 1; }
+          # The date is taken once, here, and handed to the publish job: an approval that is
+          # given after midnight UTC must not change the tags.
+          date=$(date -u +%Y%m%d)
+          sha7=${GITHUB_SHA::7}
+          created=$(date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ)
+          # The base image of the first stage, by name and digest.
+          from=$(grep -m1 '^FROM ' docker/base/Dockerfile)
+          re='^FROM ([^@ ]+)@(sha256:[0-9a-f]{64}) AS core$'
+          [[ "$from" =~ $re ]] || { echo "::error::the first FROM of docker/base/Dockerfile is not name@sha256:<digest> AS core"; exit 1; }
+          base_name=${BASH_REMATCH[1]}
+          base_digest=${BASH_REMATCH[2]}
+          url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+
+          # No personal data in labels or annotations: no author, vendor or maintainer fields.
+          common=$(printf '%s\n' \
+            "org.opencontainers.image.licenses=AGPL-3.0-only" \
+            "org.opencontainers.image.url=$url" \
+            "org.opencontainers.image.documentation=$url/tree/main/docker/base" \
+            "org.opencontainers.image.source=$url" \
+            "org.opencontainers.image.revision=$GITHUB_SHA" \
+            "org.opencontainers.image.created=$created" \
+            "org.opencontainers.image.base.name=$base_name" \
+            "org.opencontainers.image.base.digest=$base_digest")
+
+          {
+            echo "epoch=$epoch"
+            echo "date=$date"
+            echo "sha7=$sha7"
+            echo "slim_tag=slim-$date-$sha7"
+            echo "full_tag=full-$date-$sha7"
+            for v in slim full; do
+              case $v in
+                slim) desc="ARTEX tools base image, slim variant: recon tools, Node, Playwright and bbot without Java, jadx or a C toolchain. It does not contain ARTEX itself." ;;
+                full) desc="ARTEX tools base image, full variant: the slim variant plus Java, jadx and the C toolchain. It does not contain ARTEX itself." ;;
+              esac
+              labels=$(printf '%s\n' "$common" \
+                "org.opencontainers.image.title=ARTEX tools base ($v)" \
+                "org.opencontainers.image.description=$desc" \
+                "org.opencontainers.image.version=$v-$date-$sha7")
+              echo "labels_$v<<__EOF__"
+              printf '%s\n' "$labels"
+              echo "__EOF__"
+              echo "annotations_$v<<__EOF__"
+              printf '%s\n' "$labels" | sed 's/^/index,manifest:/'
+              echo "__EOF__"
+            done
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Free space on the disposable build runner
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # The full variant is built first: it contains every layer of slim, so its cache covers both and
+      # the slim build below is a cache hit. Output is type=docker (the image is loaded into the
+      # runner's daemon to be checked) with the same rewrite-timestamp the published image gets, so
+      # the image that is checked has the layers that the publish job rebuilds and compares against.
+      - name: Build full
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: docker/base
+          target: full
+          tags: artex-base:full
+          build-args: SOURCE_DATE_EPOCH=${{ steps.meta.outputs.epoch }}
+          outputs: type=docker,rewrite-timestamp=true
+          provenance: false
+          sbom: false
+          labels: ${{ steps.meta.outputs.labels_full }}
+          cache-from: type=gha,scope=artex-base
+          # Pull requests only read the cache: they would fill the repository's cache quota with
+          # throw-away layers.
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,scope=artex-base,mode=max' || '' }}
+
+      - name: Build slim
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: docker/base
+          target: slim
+          tags: artex-base:slim
+          build-args: SOURCE_DATE_EPOCH=${{ steps.meta.outputs.epoch }}
+          outputs: type=docker,rewrite-timestamp=true
+          provenance: false
+          sbom: false
+          labels: ${{ steps.meta.outputs.labels_slim }}
+          cache-from: type=gha,scope=artex-base
+
+      # The check runs again in a container, as root: the build-time run skips the ping row because the
+      # build sandbox has no ping_group_range. Zero skipped rows is required here.
+      - name: Check the tools in a container (slim and full)
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          for v in slim full; do
+            rc=0
+            docker run --rm -v "$PWD/docker/base:/mnt/base:ro" --entrypoint bash "artex-base:$v" \
+              /mnt/base/check-tools.sh "$v" > "evidence/check-$v.log" 2>&1 || rc=$?
+            cat "evidence/check-$v.log"
+            [ "$rc" -eq 0 ] || { echo "::error::check-tools.sh failed for $v (exit $rc)"; exit 1; }
+            grep -qE "^check-tools: [0-9]+ passed, 0 failed, 0 skipped \(variant $v\)$" "evidence/check-$v.log" \
+              || { echo "::error::the $v check reported skipped rows or no result line"; exit 1; }
+          done
+
+      - name: Inventory and diff against the pinned base inventory
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          {
+            echo "## Tools base image"
+            echo
+            echo "Planned tags: \`$IMAGE:$SLIM_TAG\`, \`$IMAGE:$FULL_TAG\`"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          for v in slim full; do
+            docker run --rm -i --entrypoint sh "artex-base:$v" -s < docker/base/inventory.sh > "evidence/inventory-$v.txt"
+            [ -s "evidence/inventory-$v.txt" ] || { echo "::error::empty inventory for $v"; exit 1; }
+            # The layers and the configuration of the checked image. The publish job rebuilds the
+            # image and refuses to push when its fingerprint differs from this one.
+            docker image inspect -f '{{json .RootFS.Layers}}' "artex-base:$v" > "evidence/layers-$v.json"
+            { cat "evidence/layers-$v.json"; docker image inspect -f '{{json .Config}}' "artex-base:$v"; } \
+              | sha256sum | cut -d' ' -f1 > "evidence/fingerprint-$v.txt"
+            pinned="docker/base-inventory/$v.txt"
+            {
+              echo "### $v: $(tail -n1 "evidence/check-$v.log")"
+              echo
+              echo "Layers and configuration fingerprint: \`$(cat "evidence/fingerprint-$v.txt")\`"
+              echo
+            } >> "$GITHUB_STEP_SUMMARY"
+            if [ ! -f "$pinned" ]; then
+              {
+                echo "No pinned inventory yet (\`$pinned\` does not exist): there is nothing to compare with."
+                echo "The full inventory is in the \`base-evidence\` artifact."
+                echo
+              } >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            rc=0
+            diff -u "$pinned" "evidence/inventory-$v.txt" > "evidence/inventory-diff-$v.txt" || rc=$?
+            [ "$rc" -le 1 ] || { echo "::error::diff failed for $v (exit $rc)"; exit 1; }
+            if [ "$rc" -eq 0 ]; then
+              echo "Inventory of $v is identical to \`$pinned\`." >> "$GITHUB_STEP_SUMMARY"
+              echo >> "$GITHUB_STEP_SUMMARY"
+            else
+              lines=$(wc -l < "evidence/inventory-diff-$v.txt")
+              {
+                echo "Inventory of $v differs from \`$pinned\` ($lines diff lines; the first 300 are shown, the whole diff is in the \`base-evidence\` artifact):"
+                echo
+                echo '```diff'
+                head -n 300 "evidence/inventory-diff-$v.txt"
+                echo '```'
+                echo
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+        env:
+          SLIM_TAG: ${{ steps.meta.outputs.slim_tag }}
+          FULL_TAG: ${{ steps.meta.outputs.full_tag }}
+
+      - name: Run summary
+        env:
+          EVENT: ${{ github.event_name }}
+          PUSH_INPUT: ${{ inputs.push }}
+          REASON: ${{ inputs.reason }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Event: \`$EVENT\`, ref: \`$REF\`"
+            if [ "$EVENT" = workflow_dispatch ]; then
+              clean=$(printf '%s' "$REASON" | tr '\n`' '  ')
+              echo
+              echo "Dispatch: push=\`$PUSH_INPUT\`, reason: \`$clean\`"
+            fi
+            echo
+            if [ "$EVENT" = pull_request ]; then
+              echo "Pull request: build and check only, nothing is published."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: base-evidence
+          path: evidence/
+          retention-days: 30
+          if-no-files-found: warn
+
+  # Pushes both variants and attests them. It needs the approval of the base-publish environment
+  # (owner as reviewer, main only) and runs only for a non-PR run on main. It is the only job with a
+  # package or attestation permission.
+  #
+  # Choice: rebuild here instead of exporting the images from base-build. Both variants together
+  # are more than 2 GB of layers, and an OCI archive pushed with a separate tool would carry the
+  # SBOM and provenance of the wrong job; build-push-action must make them here so that the
+  # attestation below is about the pushed digest. The rebuild is the same build with the same
+  # SOURCE_DATE_EPOCH, labels and cache scope, so every step is a cache hit. Because the inputs that
+  # are not pinned (apt, bbot's downloads) could change if the cache was evicted, the rebuilt image
+  # is loaded first and its layers and configuration must equal those of the image base-build
+  # checked; a difference fails the run before anything is pushed.
+  base-publish:
+    needs: base-build
+    if: >-
+      github.repository == 'mkilijanek/ARTEX' &&
+      github.ref == 'refs/heads/main' &&
+      github.event_name != 'pull_request' &&
+      (github.event_name != 'workflow_dispatch' || inputs.push)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment:
+      name: base-publish
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      SLIM_TAG: ${{ needs.base-build.outputs.slim_tag }}
+      FULL_TAG: ${{ needs.base-build.outputs.full_tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: base-evidence
+          path: evidence
+
+      - name: Free space on the disposable build runner
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Both tags must be free before either variant is pushed. GHCR does not stop an overwrite, so this
+      # is what makes the tags write-once. Only the registry's answer for a missing tag counts as free:
+      # buildx prints exactly "ERROR: <ref>: not found" for it (checked against ghcr.io and registry:2).
+      # Everything else (no access, a 403 token error, network, an unknown repository) fails closed.
+      - name: Both tags are free
+        run: |
+          set -euo pipefail
+          taken=0
+          for tag in "$SLIM_TAG" "$FULL_TAG"; do
+            rc=0
+            out=$(docker buildx imagetools inspect "$IMAGE:$tag" 2>&1) || rc=$?
+            if [ "$rc" -eq 0 ]; then
+              echo "::error::The tag $IMAGE:$tag already exists. Nothing was pushed."
+              taken=1
+            elif [ "$out" = "ERROR: $IMAGE:$tag: not found" ]; then
+              echo "free: $IMAGE:$tag"
+            else
+              echo "::error::Cannot tell whether $IMAGE:$tag is free; nothing was pushed."
+              echo "$out"
+              exit 1
+            fi
+          done
+          [ "$taken" -eq 0 ]
+
+      - name: Rebuild full (loaded, to compare)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: docker/base
+          target: full
+          tags: artex-base:full
+          build-args: SOURCE_DATE_EPOCH=${{ needs.base-build.outputs.epoch }}
+          outputs: type=docker,rewrite-timestamp=true
+          provenance: false
+          sbom: false
+          labels: ${{ needs.base-build.outputs.labels_full }}
+          cache-from: type=gha,scope=artex-base
+
+      - name: Rebuild slim (loaded, to compare)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: docker/base
+          target: slim
+          tags: artex-base:slim
+          build-args: SOURCE_DATE_EPOCH=${{ needs.base-build.outputs.epoch }}
+          outputs: type=docker,rewrite-timestamp=true
+          provenance: false
+          sbom: false
+          labels: ${{ needs.base-build.outputs.labels_slim }}
+          cache-from: type=gha,scope=artex-base
+
+      - name: The rebuilt images are the checked images
+        run: |
+          set -euo pipefail
+          for v in slim full; do
+            got=$({ docker image inspect -f '{{json .RootFS.Layers}}' "artex-base:$v"; docker image inspect -f '{{json .Config}}' "artex-base:$v"; } \
+              | sha256sum | cut -d' ' -f1)
+            want=$(cat "evidence/fingerprint-$v.txt")
+            if [ "$got" != "$want" ]; then
+              echo "::error::The rebuilt $v image (fingerprint $got) is not the image that was checked ($want). Nothing was pushed. The build cache may have been evicted; start the run again."
+              exit 1
+            fi
+            echo "$v: $got"
+          done
+
+      - name: Push slim (by digest, no tag)
+        id: push_slim
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: docker/base
+          target: slim
+          # Pushed by digest and without a tag: nothing can pull this by name until the checks below
+          # have passed. push is requested through the output, not the push input, so that
+          # rewrite-timestamp is part of the same output definition.
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true,rewrite-timestamp=true
+          build-args: SOURCE_DATE_EPOCH=${{ needs.base-build.outputs.epoch }}
+          sbom: true
+          provenance: mode=max
+          labels: ${{ needs.base-build.outputs.labels_slim }}
+          annotations: ${{ needs.base-build.outputs.annotations_slim }}
+          cache-from: type=gha,scope=artex-base
+
+      - name: Push full (by digest, no tag)
+        id: push_full
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: docker/base
+          target: full
+          # Pushed by digest and without a tag: nothing can pull this by name until the checks below
+          # have passed. push is requested through the output, not the push input, so that
+          # rewrite-timestamp is part of the same output definition.
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true,rewrite-timestamp=true
+          build-args: SOURCE_DATE_EPOCH=${{ needs.base-build.outputs.epoch }}
+          sbom: true
+          provenance: mode=max
+          labels: ${{ needs.base-build.outputs.labels_full }}
+          annotations: ${{ needs.base-build.outputs.annotations_full }}
+          cache-from: type=gha,scope=artex-base
+
+      # Nothing is tagged or attested before this step passes.
+      - name: The pushed images are the checked images
+        env:
+          SLIM_DIGEST: ${{ steps.push_slim.outputs.digest }}
+          FULL_DIGEST: ${{ steps.push_full.outputs.digest }}
+        run: |
+          set -euo pipefail
+          for v in slim full; do
+            case $v in
+              slim) digest=$SLIM_DIGEST ;;
+              full) digest=$FULL_DIGEST ;;
+            esac
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no digest for $v ('$digest')"; exit 1; }
+            ref="$IMAGE@$digest"
+            docker buildx imagetools inspect "$ref"
+            # The pushed layers are the checked layers.
+            pushed=$(docker buildx imagetools inspect "$ref" --format '{{json .Image.RootFS.DiffIDs}}' | jq -c .)
+            checked=$(jq -c . "evidence/layers-$v.json")
+            [ "$pushed" = "$checked" ] || { echo "::error::the pushed $v layers differ from the checked layers; the image was not tagged or attested"; echo "$pushed"; echo "$checked"; exit 1; }
+            # The SBOM and the provenance are attached to the pushed digest. Written to a file first:
+            # the SBOM is several MB, and a reader that quits early would fail the pipe (pipefail).
+            attestations=$(mktemp)
+            docker buildx imagetools inspect "$ref" --format '{{ json .SBOM }}' > "$attestations"
+            jq -e '.SPDX.SPDXID == "SPDXRef-DOCUMENT"' "$attestations" > /dev/null \
+              || { echo "::error::no SPDX SBOM attestation on $ref"; exit 1; }
+            docker buildx imagetools inspect "$ref" --format '{{ json .Provenance }}' > "$attestations"
+            jq -e '.SLSA.buildDefinition' "$attestations" > /dev/null \
+              || { echo "::error::no provenance attestation on $ref"; exit 1; }
+            rm -f "$attestations"
+          done
+
+      - name: Tag the verified digests
+        env:
+          SLIM_DIGEST: ${{ steps.push_slim.outputs.digest }}
+          FULL_DIGEST: ${{ steps.push_full.outputs.digest }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create -t "$IMAGE:$SLIM_TAG" "$IMAGE@$SLIM_DIGEST"
+          docker buildx imagetools create -t "$IMAGE:$FULL_TAG" "$IMAGE@$FULL_DIGEST"
+
+      - name: Attest slim (build provenance)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push_slim.outputs.digest }}
+          push-to-registry: true
+          # Storage records need an organization-owned repository and another permission.
+          create-storage-record: false
+
+      - name: Attest full (build provenance)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push_full.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Write the digests
+        env:
+          SLIM_DIGEST: ${{ steps.push_slim.outputs.digest }}
+          FULL_DIGEST: ${{ steps.push_full.outputs.digest }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Published tools base"
+            echo
+            echo "| variant | tag | digest |"
+            echo "|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for v in slim full; do
+            case $v in
+              slim) tag=$SLIM_TAG; digest=$SLIM_DIGEST ;;
+              full) tag=$FULL_TAG; digest=$FULL_DIGEST ;;
+            esac
+            # The tag resolves to the verified digest.
+            [ "$(docker buildx imagetools inspect "$IMAGE:$tag" --format '{{ .Manifest.Digest }}')" = "$digest" ] \
+              || { echo "::error::$IMAGE:$tag does not resolve to $digest"; exit 1; }
+            echo "| $v | \`$tag\` | \`$digest\` |" >> "$GITHUB_STEP_SUMMARY"
+          done
+          {
+            echo
+            echo "Pin in the release Dockerfile as \`$IMAGE:<tag>@<digest>\`. Verify with:"
+            echo
+            echo '```'
+            echo "gh attestation verify oci://$IMAGE@<digest> --repo $GITHUB_REPOSITORY --signer-workflow $GITHUB_REPOSITORY/.github/workflows/image.yml --source-ref refs/heads/main --deny-self-hosted-runners"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
