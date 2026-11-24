@@ -148,7 +148,7 @@ func run() int {
 		return 1
 	}
 	sandbox.Set(iso)
-	notify.SetSignalRecheck(iso.RecheckSignal) // the self-check runs once: C12 is re-run after a Signal send or test
+	notify.SetSignalRecheck(iso.RecheckSignal) // C12 is also re-run after a Signal send or test; Run repeats it while the socket is absent
 	go iso.Run(ctx)
 	agent.SweepSpill(absData) // old spill directories, before any session runs
 
