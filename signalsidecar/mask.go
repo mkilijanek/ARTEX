@@ -55,11 +55,11 @@ func maskTail(s string) string {
 // IsStripped reports whether a code point is removed from group names. The
 // set is a fixed list, not "every format character", so that the database
 // side can use the same list in a regular expression:
-// U+0001-U+001F, U+007F-U+009F, U+00AD, U+061C, U+180E, U+200B-U+200F,
+// U+0000-U+001F, U+007F-U+009F, U+00AD, U+061C, U+180E, U+200B-U+200F,
 // U+2028-U+202E, U+2060-U+206F, U+FEFF, U+FFF9-U+FFFB, U+E0000-U+E007F.
 func IsStripped(r rune) bool {
 	switch {
-	case r >= 0x0001 && r <= 0x001F,
+	case r >= 0x0000 && r <= 0x001F,
 		r >= 0x007F && r <= 0x009F,
 		r == 0x00AD, r == 0x061C, r == 0x180E,
 		r >= 0x200B && r <= 0x200F,

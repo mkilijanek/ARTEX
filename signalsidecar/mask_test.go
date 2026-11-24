@@ -76,7 +76,7 @@ func TestMaskHelpers(t *testing.T) {
 
 // strippedRanges is the stripped set written out independently of the code.
 var strippedRanges = [][2]rune{
-	{0x0001, 0x001F}, {0x007F, 0x009F}, {0x00AD, 0x00AD}, {0x061C, 0x061C}, {0x180E, 0x180E},
+	{0x0000, 0x001F}, {0x007F, 0x009F}, {0x00AD, 0x00AD}, {0x061C, 0x061C}, {0x180E, 0x180E},
 	{0x200B, 0x200F}, {0x2028, 0x202E}, {0x2060, 0x206F}, {0xFEFF, 0xFEFF}, {0xFFF9, 0xFFFB},
 	{0xE0000, 0xE007F},
 }
@@ -103,6 +103,7 @@ func TestCleanGroupName(t *testing.T) {
 	cases := []struct{ name, in, want string }{
 		{"plain", "Ops team", "Ops team"},
 		{"controls and bidi removed", "Ops\u202Eteam\u200B\x01\x1f\u2066x\uFEFF\U000E0041", "Opsteamx"},
+		{"nul removed", "a\x00b\u0000c", "abc"},
 		{"newline removed", "a\nb\tc", "abc"},
 		{"nbsp and normal unicode kept", "a\u00A0b za\u017c\u00f3\u0142\u0107 \u65e5\u672c", "a\u00A0b za\u017c\u00f3\u0142\u0107 \u65e5\u672c"},
 		{"empty", "", ""},
