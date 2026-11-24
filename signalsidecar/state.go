@@ -53,6 +53,9 @@ type MachineConfig struct {
 	GroupsEvery time.Duration
 	// GroupsRetry is the wait after a failed group refresh (default 30 s).
 	GroupsRetry time.Duration
+	// ProbeEvery is how often signal-cli is asked for its version to see that
+	// it still answers (default 30 s).
+	ProbeEvery time.Duration
 	// Logf receives single log lines without secrets. Default: discard.
 	Logf func(format string, args ...any)
 
@@ -72,6 +75,7 @@ func (c *MachineConfig) setDefaults() {
 	def(&c.StaleAfter, 60*time.Second)
 	def(&c.GroupsEvery, 10*time.Minute)
 	def(&c.GroupsRetry, 30*time.Second)
+	def(&c.ProbeEvery, 30*time.Second)
 	if c.Logf == nil {
 		c.Logf = func(string, ...any) {}
 	}
@@ -105,6 +109,7 @@ type Machine struct {
 	aci       string
 	errText   string // the reason of state error
 	childDown bool
+	downSince time.Time // when childDown last became true
 	view      ConfigView
 	viewAt    time.Time
 
@@ -121,6 +126,9 @@ type Machine struct {
 	groupsAt   time.Time
 	groupsNext time.Time // no group refresh before this time
 	dbDown     bool
+	probeAt    time.Time
+	probeErr   string // signal-cli does not answer; shown while linked
+	groupsErr  string // the last group refresh failed; shown while linked
 	warned     map[string]time.Time
 }
 
@@ -170,6 +178,13 @@ func (m *Machine) lastView() ConfigView {
 	return m.view
 }
 
+// dbUnreachable reports whether a store error means that the database cannot be
+// reached: the error carries no SQLSTATE and is not a missing row.
+func dbUnreachable(err error) bool {
+	var de *DBError
+	return errors.As(err, &de) && de.SQLState == "" && !errors.Is(err, errRowMissing)
+}
+
 func (m *Machine) dbFailed(err error) {
 	if !m.dbDown {
 		m.dbDown = true
@@ -203,7 +218,7 @@ func (m *Machine) AwaitAuth(ctx context.Context) error {
 		default:
 			m.dbOK()
 			m.setView(v)
-			m.setState(StateError, "", "", "the server has not confirmed password authentication")
+			m.setState(StateUnknown, "", "", "the server has not confirmed password authentication")
 			m.beat(ctx)
 		}
 		select {
@@ -259,9 +274,7 @@ func (m *Machine) step(ctx context.Context) {
 		m.childLost(stat)
 		// An unlink does not need a running child, and it is the way out of a
 		// data directory that signal-cli cannot start with.
-		if v.Desired == "unlink" && v.Gen > max(m.handled, v.HandledGen) {
-			m.unlink(ctx, v.Gen)
-		}
+		m.unlinkIfDue(ctx, v)
 		m.beatIfDue(ctx)
 		return
 	}
@@ -270,6 +283,12 @@ func (m *Machine) step(ctx context.Context) {
 	// never resumed.
 	resumed := m.isChildDown() || stat.Starts != m.seenStarts
 	if resumed && !m.observe(ctx) {
+		m.unlinkIfDue(ctx, v)
+		m.beatIfDue(ctx)
+		return
+	}
+	if !resumed && !m.probe(ctx) {
+		m.unlinkIfDue(ctx, v)
 		m.beatIfDue(ctx)
 		return
 	}
@@ -281,6 +300,44 @@ func (m *Machine) step(ctx context.Context) {
 	m.beatIfDue(ctx)
 }
 
+// unlinkIfDue runs a pending unlink although signal-cli cannot be asked.
+func (m *Machine) unlinkIfDue(ctx context.Context, v ConfigView) {
+	if v.Desired == "unlink" && v.Gen > max(m.handled, v.HandledGen) {
+		m.unlink(ctx, v.Gen)
+	}
+}
+
+// probe asks signal-cli for its version, at most every ProbeEvery. A child that
+// is running but does not answer is reported like a child that is gone: sends
+// are refused and the last error says why. It returns false on a failure.
+func (m *Machine) probe(ctx context.Context) bool {
+	if time.Since(m.probeAt) < m.cfg.ProbeEvery {
+		return true
+	}
+	_, err := m.sup.Version(ctx)
+	m.probeAt = time.Now()
+	if err == nil {
+		m.probeErr = ""
+		return true
+	}
+	if ctx.Err() != nil {
+		return true
+	}
+	text := "signal-cli does not answer: " + Scrub(err.Error())
+	m.mu.Lock()
+	if !m.childDown {
+		m.downSince = time.Now()
+	}
+	m.childDown = true
+	m.mu.Unlock()
+	if m.probeErr != text {
+		m.probeErr = text
+		m.dirty = true
+	}
+	m.warn("probe", "[signal] %s", text)
+	return false
+}
+
 func (m *Machine) isChildDown() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -290,6 +347,9 @@ func (m *Machine) isChildDown() bool {
 func (m *Machine) childLost(stat Status) {
 	m.mu.Lock()
 	first := !m.childDown
+	if first {
+		m.downSince = time.Now()
+	}
 	m.childDown = true
 	m.mu.Unlock()
 	if first {
@@ -299,7 +359,9 @@ func (m *Machine) childLost(stat Status) {
 	if stat.LastError != "" {
 		text += ": " + stat.LastError
 	}
-	m.setState(StateError, "", "", text)
+	// A child that is starting or in backoff is a transient condition, not a
+	// problem of the account.
+	m.setState(StateUnknown, "", "", text)
 }
 
 // observe sets the state from listAccounts: none means unlinked, one means
@@ -309,15 +371,17 @@ func (m *Machine) observe(ctx context.Context) bool {
 	accts, err := m.sup.ListAccounts(ctx)
 	if err != nil {
 		if ctx.Err() == nil {
-			m.setState(StateError, "", "", "cannot list the accounts: "+Scrub(err.Error()))
+			m.setState(StateUnknown, "", "", "cannot list the accounts: "+Scrub(err.Error()))
 		}
 		return false
 	}
 	m.mu.Lock()
 	m.childDown = false
+	m.downSince = time.Time{}
 	prev := m.state
 	m.mu.Unlock()
 	m.seenStarts = m.sup.Status().Starts
+	m.probeErr = ""
 	switch {
 	case len(accts) == 0:
 		m.setState(StateUnlinked, "", "", "")
@@ -367,7 +431,11 @@ type finishOpts struct {
 // advances and the heartbeat goes out. It is the one place where a command
 // ends, so a command always advances handled_gen.
 func (m *Machine) finish(ctx context.Context, o finishOpts) {
-	m.observe(ctx)
+	// A command is acknowledged even when the state cannot be read afterwards:
+	// that is reported as its failure.
+	if !m.observe(ctx) && o.failure == "" && ctx.Err() == nil {
+		o.failure = "the account state could not be read after the command"
+	}
 	if o.failure != "" {
 		m.setState(StateError, "", "", o.failure)
 	}
@@ -384,6 +452,7 @@ func (m *Machine) finish(ctx context.Context, o finishOpts) {
 
 // restartChild restarts signal-cli, which aborts a pending finishLink.
 func (m *Machine) restartChild(ctx context.Context) {
+	defer m.keepAlive(ctx)()
 	rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if err := m.sup.Restart(rctx); err != nil && ctx.Err() == nil {
@@ -404,7 +473,11 @@ func (m *Machine) startLink(ctx context.Context, v ConfigView) {
 		note := "the link request is no longer current"
 		if err != nil {
 			note = "the link address could not be stored"
-			m.dbFailed(err)
+			if dbUnreachable(err) {
+				m.dbFailed(err)
+			}
+		} else {
+			m.logf("[signal] the database refused the link address of generation %d", v.Gen)
 		}
 		m.restartChild(ctx)
 		m.finish(ctx, finishOpts{gen: v.Gen, note: note})
@@ -471,6 +544,7 @@ func (m *Machine) onLinkDone(ctx context.Context, r linkResult) {
 	if r.err == nil && numberRe.MatchString(r.acct.Number) {
 		m.setState(StateLinked, r.acct.Number, r.acct.ACI, "")
 		m.needGroups = true
+		m.groupsErr = ""
 		m.handled = max(m.handled, op.gen)
 		m.note = ""
 		m.seenStarts = m.sup.Status().Starts
@@ -514,6 +588,7 @@ func (m *Machine) unlink(ctx context.Context, gen int64) {
 		m.abortLink(ctx)
 	}
 	failure := ""
+	stopBeats := m.keepAlive(ctx)
 	if err := m.sup.Pause(ctx); err != nil {
 		failure = "could not stop signal-cli: " + Scrub(err.Error())
 	} else {
@@ -531,6 +606,7 @@ func (m *Machine) unlink(ctx context.Context, gen int64) {
 		}
 		cancel()
 	}
+	stopBeats()
 	m.finish(ctx, finishOpts{gen: gen, failure: failure, remote: remoteLocalOnly})
 }
 
@@ -582,9 +658,13 @@ func (m *Machine) groupsStep(ctx context.Context, v ConfigView) {
 	if !(m.needGroups || v.GroupsRefreshGen > v.GroupsGen || time.Since(m.groupsAt) >= m.cfg.GroupsEvery) {
 		return
 	}
-	retry := func(format string, args ...any) {
+	retry := func(text, format string, args ...any) {
 		m.groupsNext = time.Now().Add(m.cfg.GroupsRetry)
 		m.warn("groups", format, args...)
+		if m.groupsErr != text {
+			m.groupsErr = text
+			m.dirty = true
+		}
 	}
 	groups, err := m.sup.ListGroups(ctx, number)
 	if err != nil {
@@ -592,40 +672,48 @@ func (m *Machine) groupsStep(ctx context.Context, v ConfigView) {
 		if errors.As(err, &re) && re.Code == -32602 {
 			m.setState(StateError, "", "", "the account is no longer linked; unlink and link again")
 		}
-		retry("[signal] listing the groups failed: %s", Scrub(err.Error()))
+		retry("the group list could not be read from signal-cli", "[signal] listing the groups failed: %s", Scrub(err.Error()))
 		return
 	}
-	ok, err := m.st.SetGroups(ctx, v.GroupsRefreshGen, groupEntries(groups))
+	entries, dropped := groupEntries(groups)
+	if dropped > 0 {
+		m.warn("groups-dropped", "[signal] %d groups were not stored: invalid id or over the limit", dropped)
+	}
+	ok, err := m.st.SetGroups(ctx, v.GroupsRefreshGen, entries)
 	switch {
 	case err != nil:
-		retry("[signal] storing the groups failed: %s", Scrub(err.Error()))
+		retry("the group list could not be stored", "[signal] storing the groups failed: %s", Scrub(err.Error()))
 	case !ok:
-		retry("[signal] the database did not take the group list")
+		retry("the database did not take the group list", "[signal] the database did not take the group list")
 	default:
 		m.needGroups = false
 		m.groupsAt = time.Now()
+		if m.groupsErr != "" {
+			m.groupsErr = ""
+			m.dirty = true
+		}
 	}
 }
 
 // groupEntries turns listGroups into the stored form: member, non-blocked
-// groups with a 32-byte id, in ARTEX's id form, names cleaned and cut.
-func groupEntries(groups []Group) []GroupEntry {
-	out := make([]GroupEntry, 0, len(groups))
+// groups with a 32-byte id, in ARTEX's id form, names cleaned and cut. The
+// second result counts the groups that qualified but were left out: an invalid
+// id, or more than the limit allows.
+func groupEntries(groups []Group) (out []GroupEntry, dropped int) {
+	out = make([]GroupEntry, 0, len(groups))
 	for _, g := range groups {
 		if !g.IsMember || g.IsBlocked {
 			continue
 		}
 		raw, err := base64.StdEncoding.DecodeString(g.ID)
-		if err != nil || len(raw) != 32 {
+		if err != nil || len(raw) != 32 || len(out) == maxGroups {
+			dropped++
 			continue
 		}
 		out = append(out, GroupEntry{
 			ID:   "group." + base64.StdEncoding.EncodeToString([]byte(g.ID)),
 			Name: CleanGroupName(g.Name),
 		})
-		if len(out) == maxGroups {
-			break
-		}
 	}
 	for len(out) > 0 {
 		raw, err := json.Marshal(out)
@@ -633,8 +721,9 @@ func groupEntries(groups []Group) []GroupEntry {
 			break
 		}
 		out = out[:len(out)-1]
+		dropped++
 	}
-	return out
+	return out, dropped
 }
 
 func (m *Machine) beatIfDue(ctx context.Context) {
@@ -651,8 +740,14 @@ func (m *Machine) beat(ctx context.Context) {
 		return
 	}
 	text := m.note
-	if state == StateError {
+	switch state {
+	case StateError:
 		text = errText
+	case StateLinked:
+		// A linked account that has a problem still reports it.
+		if text = m.probeErr; text == "" {
+			text = m.groupsErr
+		}
 	}
 	v := m.lastView()
 	hb := Heartbeat{
@@ -666,15 +761,20 @@ func (m *Machine) beat(ctx context.Context) {
 		CLIVersion:     m.sup.Status().Version,
 	}
 	if err := m.st.Heartbeat(ctx, hb); err != nil {
+		var de *DBError
 		m.dirty = true
 		if ctx.Err() != nil {
 			return
 		}
-		var de *DBError
-		if errors.As(err, &de) && de.SQLState == "" {
+		if dbUnreachable(err) {
 			m.dbFailed(err)
 		} else {
 			m.warn("heartbeat", "[signal] heartbeat refused: %s", err.Error())
+			// The database does not know the generation (a reset, or a newer
+			// handled one): start again from what the view says.
+			if errors.As(err, &de) && de.SQLState == "55000" {
+				m.handled = v.HandledGen
+			}
 		}
 		return
 	}
@@ -739,5 +839,49 @@ func innerGroupID(id string) (string, error) {
 // About implements Backend.
 func (m *Machine) About(context.Context) About {
 	state, _, _, _ := m.current()
-	return About{Service: "artex-signal", Version: m.cfg.SidecarVersion, SignalCLI: m.sup.Status().Version, State: state}
+	a := About{Service: "artex-signal", Version: m.cfg.SidecarVersion, SignalCLI: m.sup.Status().Version, State: state}
+	m.mu.Lock()
+	if m.childDown && !m.downSince.IsZero() {
+		a.ChildDownSeconds = int64(time.Since(m.downSince) / time.Second)
+	}
+	m.mu.Unlock()
+	return a
+}
+
+// keepAlive sends the heartbeat every HeartbeatEvery until the returned
+// function is called, for an operation that holds the state loop for long
+// (a restart, an unlink). It reports the state as it is and the generation
+// handled before the operation began.
+func (m *Machine) keepAlive(ctx context.Context) (stop func()) {
+	handled := max(m.handled, m.lastView().HandledGen)
+	kctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		t := time.NewTicker(m.cfg.HeartbeatEvery)
+		defer t.Stop()
+		for {
+			select {
+			case <-kctx.Done():
+				return
+			case <-t.C:
+			}
+			state, number, aci, errText := m.current()
+			if state == StateUnknown {
+				continue
+			}
+			text := ""
+			if state == StateError {
+				text = Scrub(errText)
+			}
+			_ = m.st.Heartbeat(kctx, Heartbeat{
+				State: state, HandledGen: handled, Number: number, ACI: aci, Error: text,
+				SidecarVersion: m.cfg.SidecarVersion, CLIVersion: m.sup.Status().Version,
+			})
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
 }

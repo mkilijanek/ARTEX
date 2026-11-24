@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -60,6 +61,9 @@ type scenario struct {
 	CrashOn string `json:"crash_on"`
 	// HangOn never answers this method.
 	HangOn string `json:"hang_on"`
+	// HangVersionAfterMS stops answering version this long after start (0:
+	// always answer), the way a JVM that is up but stuck does.
+	HangVersionAfterMS int `json:"hang_version_after_ms"`
 	// ExitAfterStartMS exits with status 4 this long after start (0: never).
 	ExitAfterStartMS int `json:"exit_after_start_ms"`
 	// StartDelayMS waits before reading the first request.
@@ -90,8 +94,9 @@ type server struct {
 	dataDir string
 	args    []string
 
-	out sync.Mutex
-	w   io.Writer
+	started time.Time
+	out     sync.Mutex
+	w       io.Writer
 
 	mu      sync.Mutex
 	pending int // finishLink requests in flight
@@ -116,6 +121,14 @@ func main() {
 		}
 	}
 	s := &server{dataDir: dataDir, args: args, w: os.Stdout, issued: map[string]bool{}}
+	// An image that fixes the command line has no scenario flag: take the
+	// scenario from a file in the data directory when there is one. Only this
+	// stand-in reads it; the real signal-cli has no such file.
+	if scPath == "" && dataDir != "" {
+		if _, err := os.Stat(filepath.Join(dataDir, "fake-scenario.json")); err == nil {
+			scPath = filepath.Join(dataDir, "fake-scenario.json")
+		}
+	}
 	if scPath != "" {
 		raw, err := os.ReadFile(scPath)
 		if err != nil {
@@ -133,6 +146,7 @@ func main() {
 	if s.sc.LinkURI == "" {
 		s.sc.LinkURI = "sgnl://linkdevice?uuid=ZmFrZS11dWlkLWZvci10ZXN0cw&pub_key=BQabcdefghijklmnopqrstuvwxyz0123456789%2BABCDEF&capabilities=a,b"
 	}
+	s.started = time.Now()
 	if s.sc.StartsFile != "" {
 		appendLine(s.sc.StartsFile, fmt.Sprintf("%d %d", os.Getpid(), time.Now().UnixNano()))
 	}
@@ -307,6 +321,10 @@ func (s *server) handle(req request) {
 		s.writeRaw(line)
 	}
 	if req.Method == s.sc.HangOn {
+		select {}
+	}
+	if req.Method == "version" && s.sc.HangVersionAfterMS > 0 &&
+		time.Since(s.started) > time.Duration(s.sc.HangVersionAfterMS)*time.Millisecond {
 		select {}
 	}
 	switch req.Method {

@@ -866,3 +866,30 @@ func TestSendToNumbersReachesTheChildWithTheAccount(t *testing.T) {
 		t.Fatal("an account the child does not know must fail")
 	}
 }
+
+// The stand-in takes its scenario from a file in its data directory when the
+// command line carries no scenario flag (the smoke image has none).
+func TestFakeCLIReadsTheScenarioFromItsDataDirectory(t *testing.T) {
+	r := newRig(t, nil)
+	raw := `{"version":"9.8.7","finish":{"mode":"after","after_ms":50,"number":"` + testNumber + `"}}`
+	if err := os.WriteFile(filepath.Join(r.data, "fake-scenario.json"), []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := r.config()
+	cfg.Args = []string{"-c", r.data}
+	s, _ := r.run(cfg)
+	r.waitUp(s)
+	if v := s.Status().Version; v != "9.8.7" {
+		t.Fatalf("version %q: the scenario file in the data directory was not used", v)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	uri, err := s.StartLink(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acct, err := s.FinishLink(ctx, uri, "ARTEX")
+	if err != nil || acct.Number != testNumber {
+		t.Fatalf("finishLink: %+v, %v", acct, err)
+	}
+}

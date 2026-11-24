@@ -503,14 +503,19 @@ func TestKilledChildIsReportedAndSendsAreRefusedUntilItIsBack(t *testing.T) {
 	mr.waitStatus("ready", 10*time.Second, func(statusRow) bool { _, why := sc.m.ready(); return why == "" })
 
 	killChild(t, mr)
-	st := mr.waitState("error")
-	if !strings.Contains(st.Err, "signal-cli is not running") {
-		t.Fatalf("error text %q", st.Err)
-	}
+	// A child that is gone is a transient condition: the state is unknown, not
+	// error, and the status row is not given the error text.
+	mr.waitStatus("the child to be down", 10*time.Second, func(statusRow) bool {
+		state, _, _, text := sc.m.current()
+		return state == StateUnknown && strings.Contains(text, "signal-cli is not running")
+	})
 	if _, why := sc.m.ready(); why != "child_down" {
 		t.Fatalf("while the child is down: %q", why)
 	}
-	st = mr.waitState("linked")
+	if st := mr.status(); st.State == "error" || st.Err != "" {
+		t.Fatalf("the status row shows %v for a restarting child", st)
+	}
+	st := mr.waitState("linked")
 	if st.Number != testNumber {
 		t.Fatalf("after the restart: %v", st)
 	}
@@ -681,9 +686,13 @@ func TestAwaitAuthHoldsBackUntilThePasswordCheckIsConfirmed(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- m.AwaitAuth(ctx) }()
 
-	st := d.waitStatus("the error", 10*time.Second, func(s statusRow) bool { return s.State == "error" })
-	if !strings.Contains(st.Err, "has not confirmed password authentication") {
-		t.Fatalf("error text %q", st.Err)
+	// A transient condition: no error is reported, the state stays unknown.
+	time.Sleep(500 * time.Millisecond)
+	if st := d.status(); st.State != "unknown" || st.Err != "" {
+		t.Fatalf("status %v, want unknown without an error", st)
+	}
+	if state, _, _, text := m.current(); state != StateUnknown || !strings.Contains(text, "has not confirmed password authentication") {
+		t.Fatalf("local state %q %q", state, text)
 	}
 	select {
 	case err := <-done:
@@ -710,13 +719,18 @@ func TestGroupEntriesKeepMemberGroupsWithA32ByteIdOnly(t *testing.T) {
 	for i := 0; i < 250; i++ {
 		in = append(in, Group{ID: idOf(byte(i)), Name: "g", IsMember: true})
 	}
-	got := groupEntries(append([]Group{
+	got, dropped := groupEntries(append([]Group{
 		{ID: "not base64!", Name: "a", IsMember: true},
 		{ID: idOf(1), Name: "blocked", IsMember: true, IsBlocked: true},
 		{ID: idOf(2), Name: "left"},
 	}, in...))
 	if len(got) != maxGroups {
 		t.Fatalf("%d groups, want the cap of %d", len(got), maxGroups)
+	}
+	// One invalid id and the 50 groups over the cap; blocked and left groups
+	// are not counted.
+	if dropped != 51 {
+		t.Fatalf("%d groups reported as dropped, want 51", dropped)
 	}
 	for _, g := range got {
 		if !strings.HasPrefix(g.ID, "group.") || g.Name != "g" {
@@ -728,10 +742,13 @@ func TestGroupEntriesKeepMemberGroupsWithA32ByteIdOnly(t *testing.T) {
 	for i := 0; i < 200; i++ {
 		big = append(big, Group{ID: idOf(byte(i)), Name: strings.Repeat("😀", 128), IsMember: true})
 	}
-	out := groupEntries(big)
+	out, cut := groupEntries(big)
 	raw, _ := json.Marshal(out)
 	if len(out) == 0 || len(raw) > maxGroupsJSON {
 		t.Fatalf("%d groups, %d bytes", len(out), len(raw))
+	}
+	if cut != len(big)-len(out) {
+		t.Fatalf("%d reported as dropped, want %d", cut, len(big)-len(out))
 	}
 }
 
@@ -903,5 +920,138 @@ func TestInnerGroupID(t *testing.T) {
 		if _, err := innerGroupID(bad); err == nil {
 			t.Errorf("%q accepted", bad)
 		}
+	}
+}
+
+// An unlink does not need signal-cli to answer: it must run, and be
+// acknowledged, when listing the accounts hangs.
+func TestSidecarUnlinksWhileTheChildDoesNotAnswerListAccounts(t *testing.T) {
+	sc := map[string]any{"hang_on": "listAccounts"}
+	mr := newMRig(t, "scunlinkhang", sc)
+	mr.r.seedAccounts(testNumber)
+	gen := mr.requestUnlink()
+	mr.start(nil, func(c *Config) {
+		c.CallTimeout = 300 * time.Millisecond
+		c.TimeoutLimit = 1000
+	})
+	st := mr.waitStatus("the unlink", 20*time.Second, func(s statusRow) bool { return s.Handled == gen })
+	if names := mr.dataEntries(); len(names) != 0 {
+		t.Fatalf("the data directory still holds %v (status %v)", names, st)
+	}
+	if st.State != "error" || !strings.Contains(st.Err, "could not be read") {
+		t.Fatalf("a command whose end state is unknown must be reported as failed: %v", st)
+	}
+}
+
+// A child that runs but no longer answers is reported with its last error and
+// refused for sends, until it answers again.
+func TestSidecarReportsAChildThatStopsAnswering(t *testing.T) {
+	sc := completes(100)
+	sc["hang_version_after_ms"] = 1500
+	mr := newMRig(t, "scprobe", sc)
+	s := mr.start(func(c *MachineConfig) { c.ProbeEvery = 100 * time.Millisecond }, func(c *Config) {
+		c.CallTimeout = 300 * time.Millisecond
+		c.TimeoutLimit = 3
+	})
+	mr.link()
+	mr.confirm(testNumber)
+	mr.waitStatus("ready", 10*time.Second, func(statusRow) bool { _, why := s.m.ready(); return why == "" })
+	st := mr.waitStatus("the probe failure", 20*time.Second, func(st statusRow) bool {
+		return strings.Contains(st.Err, "signal-cli does not answer")
+	})
+	if st.State != "linked" {
+		t.Fatalf("the account is still linked: %v", st)
+	}
+	if _, why := s.m.ready(); why != "child_down" && why != "" {
+		t.Fatalf("while the child is silent: %q", why)
+	}
+}
+
+func TestAboutReportsHowLongTheChildHasBeenDown(t *testing.T) {
+	m := NewMachine(MachineConfig{}, nil, NewSupervisor(Config{}))
+	if got := m.About(context.Background()).ChildDownSeconds; got != 0 {
+		t.Fatalf("child_down_seconds %d for a child that was never down", got)
+	}
+	m.mu.Lock()
+	m.childDown, m.downSince = true, time.Now().Add(-130*time.Second)
+	m.mu.Unlock()
+	if got := m.About(context.Background()).ChildDownSeconds; got < 130 {
+		t.Fatalf("child_down_seconds %d, want at least 130", got)
+	}
+}
+
+// A long operation must not leave the status row without heartbeats.
+func TestKeepAliveHeartbeatsWhileALongOperationRuns(t *testing.T) {
+	r := newDBRig(t, "sckeepalive")
+	m := NewMachine(MachineConfig{HeartbeatEvery: 50 * time.Millisecond}, r.newStore(), NewSupervisor(Config{}))
+	m.setState(StateUnlinked, "", "", "")
+	stop := m.keepAlive(context.Background())
+	defer stop()
+	seen := map[time.Time]bool{}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(seen) < 3 {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d heartbeats in 5 s while the operation ran", len(seen))
+		}
+		if st := r.status(); st.HeartbeatAt.Valid {
+			seen[st.HeartbeatAt.Time] = true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	stop()
+}
+
+func TestSidecarCountsDroppedGroupsAndReportsAFailedRefresh(t *testing.T) {
+	sc := completes(100)
+	sc["groups"] = []map[string]any{
+		{"id": testGroup, "name": "ok", "isMember": true},
+		{"id": "c2hvcnQ=", "name": "short id", "isMember": true},
+	}
+	mr := newMRig(t, "scgroupsdrop", sc)
+	mr.start(nil, nil)
+	mr.link()
+	mr.waitStatus("the groups", 10*time.Second, func(s statusRow) bool { return s.GroupsAt.Valid })
+	if logs := mr.r.logs.all(); !strings.Contains(logs, "1 groups were not stored") {
+		t.Fatalf("no count of dropped groups in the log:\n%s", logs)
+	}
+
+	fail := completes(100)
+	fail["list_groups_error"] = true
+	mr2 := newMRig(t, "scgroupsfail", fail)
+	mr2.start(nil, nil)
+	mr2.link()
+	st := mr2.waitStatus("the failed refresh", 10*time.Second, func(s statusRow) bool {
+		return strings.Contains(s.Err, "group list could not be read")
+	})
+	if st.State != "linked" {
+		t.Fatalf("status %v", st)
+	}
+}
+
+// A refused link address is logged with its generation, and a refused
+// heartbeat (generation ahead of the database) rewinds the handled generation.
+func TestRefusedLinkAddressAndRefusedHeartbeatAreHandled(t *testing.T) {
+	mr := newMRig(t, "screfused", completes(100))
+	sup, stop := mr.r.run(mr.r.config())
+	defer stop()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := sup.WaitUp(ctx); err != nil {
+		t.Fatal(err)
+	}
+	store := mr.newStore()
+	m := NewMachine(MachineConfig{SidecarVersion: "v", Logf: mr.r.logs.logf}, store, sup)
+	real := mr.requestLink()
+	ahead := real + 5
+	m.startLink(ctx, ConfigView{Desired: "link", Gen: ahead, DeviceName: "ARTEX", LinkTTLSeconds: 5})
+	want := fmt.Sprintf("refused the link address of generation %d", ahead)
+	if logs := mr.r.logs.all(); !strings.Contains(logs, want) {
+		t.Fatalf("log lacks %q:\n%s", want, logs)
+	}
+	if strings.Contains(mr.r.logs.all(), "database is not reachable") {
+		t.Fatal("a refused link address was reported as an unreachable database")
+	}
+	if m.handled != 0 {
+		t.Fatalf("handled %d after the database refused the generation, want it rewound to 0", m.handled)
 	}
 }

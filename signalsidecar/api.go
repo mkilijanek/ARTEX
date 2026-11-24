@@ -55,6 +55,9 @@ type About struct {
 	Version   string `json:"version"`
 	SignalCLI string `json:"signal_cli"`
 	State     string `json:"state"`
+	// ChildDownSeconds is how long signal-cli has been down or silent; zero
+	// (and absent) while it works.
+	ChildDownSeconds int64 `json:"child_down_seconds,omitempty"`
 }
 
 // Backend is what the API needs from the rest of the sidecar.
