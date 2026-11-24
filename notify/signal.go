@@ -242,25 +242,28 @@ func newSignalClient(socket string) *http.Client {
 		Transport: &signalTransport{base: &http.Transport{
 			Proxy: nil,
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				if err := signalCheckSocket(socket); err != nil {
-					return nil, err
-				}
-				conn, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "unix", socket)
-				if err != nil {
-					// The raw error carries "connect: no such file or directory" and
-					// the socket path; say what the operator can act on instead.
-					if errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ECONNREFUSED) {
-						return nil, errors.New(signalUnreachable)
-					}
-					return nil, err
-				}
-				return conn, nil
+				return signalDialSocket(ctx, socket)
 			},
 			MaxIdleConns:    2,
 			IdleConnTimeout: 30 * time.Second,
 		}},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
+}
+
+// signalDialPath connects to a unix socket path and maps the errors an operator can act on. The messages do
+// not carry the path.
+func signalDialPath(ctx context.Context, path string) (net.Conn, error) {
+	conn, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "unix", path)
+	if err != nil {
+		// The raw error carries "connect: no such file or directory" and the path; say what the operator
+		// can act on instead.
+		if errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ECONNREFUSED) {
+			return nil, errors.New(signalUnreachable)
+		}
+		return nil, err
+	}
+	return conn, nil
 }
 
 // signalCheckSocket refuses a socket path that is a symlink or not a socket. The check runs
