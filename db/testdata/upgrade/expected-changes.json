@@ -25,7 +25,10 @@
       {"kind": "added", "table": "schema_migrations", "pk": {"version": "5001"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"},
       {"kind": "added", "table": "schema_migrations", "pk": {"version": "4"}, "cause": "db/migrate.go:681; db/migrate.go:715-733", "class": "intended"},
       {"kind": "added", "table": "schema_migrations", "pk": {"version": "5002"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"},
-      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5003"}, "cause": "db/migrate.go:681; db/migrate.go:715-733", "class": "intended"}
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5003"}, "cause": "db/migrate.go:681; db/migrate.go:715-733", "class": "intended"},
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5004"}, "cause": "db/migrate.go:681; db/migrate.go:715-733", "class": "intended"},
+      {"kind": "added", "table": "signal_sidecar_config", "count": 1, "cause": "db/migrations/5004_signal_sidecar.sql:38", "class": "intended"},
+      {"kind": "added", "table": "signal_sidecar_status", "count": 1, "cause": "db/migrations/5004_signal_sidecar.sql:39", "class": "intended"}
     ],
     "r0512": [
       {"kind": "deleted", "table": "agent_prompt_vars", "pk": {"id": "9"}, "cause": "db/db.go:280", "class": "intended"},
@@ -51,7 +54,10 @@
       {"kind": "added", "table": "schema_migrations", "pk": {"version": "5001"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"},
       {"kind": "added", "table": "schema_migrations", "pk": {"version": "4"}, "cause": "db/migrate.go:681; db/migrate.go:715-733", "class": "intended"},
       {"kind": "added", "table": "schema_migrations", "pk": {"version": "5002"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"},
-      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5003"}, "cause": "db/migrate.go:681; db/migrate.go:715-733", "class": "intended"}
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5003"}, "cause": "db/migrate.go:681; db/migrate.go:715-733", "class": "intended"},
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5004"}, "cause": "db/migrate.go:681; db/migrate.go:715-733", "class": "intended"},
+      {"kind": "added", "table": "signal_sidecar_config", "count": 1, "cause": "db/migrations/5004_signal_sidecar.sql:38", "class": "intended"},
+      {"kind": "added", "table": "signal_sidecar_status", "count": 1, "cause": "db/migrations/5004_signal_sidecar.sql:39", "class": "intended"}
     ],
     "r0513": [
       {"kind": "deleted", "table": "agent_prompt_vars", "pk": {"id": "9"}, "cause": "db/db.go:280", "class": "intended"},
@@ -75,7 +81,10 @@
       {"kind": "added", "table": "schema_migrations", "pk": {"version": "5001"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"},
       {"kind": "added", "table": "schema_migrations", "pk": {"version": "4"}, "cause": "db/migrate.go:681; db/migrate.go:715-733", "class": "intended"},
       {"kind": "added", "table": "schema_migrations", "pk": {"version": "5002"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"},
-      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5003"}, "cause": "db/migrate.go:681; db/migrate.go:715-733", "class": "intended"}
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5003"}, "cause": "db/migrate.go:681; db/migrate.go:715-733", "class": "intended"},
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5004"}, "cause": "db/migrate.go:681; db/migrate.go:715-733", "class": "intended"},
+      {"kind": "added", "table": "signal_sidecar_config", "count": 1, "cause": "db/migrations/5004_signal_sidecar.sql:38", "class": "intended"},
+      {"kind": "added", "table": "signal_sidecar_status", "count": 1, "cause": "db/migrations/5004_signal_sidecar.sql:39", "class": "intended"}
     ],
     "s2a": [
       {"kind": "deleted", "table": "agent_prompt_vars", "pk": {"id": "9"}, "cause": "db/db.go:280", "class": "intended"},
@@ -95,7 +104,10 @@
       {"kind": "added", "table": "task_asset_links", "pk": {"task_id": "1", "asset_id": "3"}, "cause": "db/schema.sql:712-717", "class": "accepted", "note": "Accepted by the owner on 2026-11-19. Insert-only: re-creates a link that was deleted by hand while assets.task_ids still lists the task; assets.task_ids is the source of truth."},
       {"kind": "added", "table": "schema_migrations", "pk": {"version": "4"}, "cause": "db/migrate.go:681; db/migrate.go:715-733", "class": "intended"},
       {"kind": "added", "table": "schema_migrations", "pk": {"version": "5002"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"},
-      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5003"}, "cause": "db/migrate.go:681; db/migrate.go:715-733", "class": "intended"}
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5003"}, "cause": "db/migrate.go:681; db/migrate.go:715-733", "class": "intended"},
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5004"}, "cause": "db/migrate.go:681; db/migrate.go:715-733", "class": "intended"},
+      {"kind": "added", "table": "signal_sidecar_config", "count": 1, "cause": "db/migrations/5004_signal_sidecar.sql:38", "class": "intended"},
+      {"kind": "added", "table": "signal_sidecar_status", "count": 1, "cause": "db/migrations/5004_signal_sidecar.sql:39", "class": "intended"}
     ],
     "s3a": [
       {"kind": "deleted", "table": "agent_prompt_vars", "pk": {"id": "9"}, "cause": "db/db.go:280", "class": "intended"},
@@ -113,7 +125,10 @@
       {"kind": "value", "table": "tasks", "pk": {"id": "4"}, "column": "updated_at", "before": "2026-01-01T00:00:00.000000Z", "after": "@startup", "cause": "db/schema.sql:751-755; db/schema.sql:557-559", "class": "intended"},
       {"kind": "added", "table": "task_llm_profiles", "pk": {"task_id": "4", "profile_id": "2"}, "cause": "db/schema.sql:745-750", "class": "intended"},
       {"kind": "added", "table": "task_asset_links", "pk": {"task_id": "1", "asset_id": "3"}, "cause": "db/schema.sql:712-717", "class": "accepted", "note": "Accepted by the owner on 2026-11-19. Insert-only: re-creates a link that was deleted by hand while assets.task_ids still lists the task; assets.task_ids is the source of truth."},
-      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5003"}, "cause": "db/migrate.go:681; db/migrate.go:715-733", "class": "intended"}
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5003"}, "cause": "db/migrate.go:681; db/migrate.go:715-733", "class": "intended"},
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5004"}, "cause": "db/migrate.go:681; db/migrate.go:715-733", "class": "intended"},
+      {"kind": "added", "table": "signal_sidecar_config", "count": 1, "cause": "db/migrations/5004_signal_sidecar.sql:38", "class": "intended"},
+      {"kind": "added", "table": "signal_sidecar_status", "count": 1, "cause": "db/migrations/5004_signal_sidecar.sql:39", "class": "intended"}
     ],
     "legacy": [
       {"kind": "deleted", "table": "agent_prompt_vars", "pk": {"id": "9"}, "cause": "db/db.go:280", "class": "intended"},
@@ -149,7 +164,10 @@
       {"kind": "added", "table": "schema_migrations", "pk": {"version": "5001"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"},
       {"kind": "added", "table": "schema_migrations", "pk": {"version": "4"}, "cause": "db/migrate.go:681; db/migrate.go:715-733", "class": "intended"},
       {"kind": "added", "table": "schema_migrations", "pk": {"version": "5002"}, "cause": "db/migrate.go:681; db/migrate.go:690-701", "class": "intended"},
-      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5003"}, "cause": "db/migrate.go:681; db/migrate.go:715-733", "class": "intended"}
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5003"}, "cause": "db/migrate.go:681; db/migrate.go:715-733", "class": "intended"},
+      {"kind": "added", "table": "schema_migrations", "pk": {"version": "5004"}, "cause": "db/migrate.go:681; db/migrate.go:715-733", "class": "intended"},
+      {"kind": "added", "table": "signal_sidecar_config", "count": 1, "cause": "db/migrations/5004_signal_sidecar.sql:38", "class": "intended"},
+      {"kind": "added", "table": "signal_sidecar_status", "count": 1, "cause": "db/migrations/5004_signal_sidecar.sql:39", "class": "intended"}
     ]
   }
 }

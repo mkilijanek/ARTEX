@@ -81,7 +81,8 @@ func TestUpgradeCatalogDetectsValidityStateAndOwnership(t *testing.T) {
 		{"collation", `ALTER TABLE parent ALTER COLUMN note TYPE TEXT COLLATE "C"`, "changed column parent.note"},
 		{"unlogged table", `ALTER TABLE child SET UNLOGGED`, "changed table child"},
 		{"extension", `CREATE EXTENSION IF NOT EXISTS pg_trgm`, "unexpected extension pg_trgm"},
-		{"view", `CREATE VIEW v_parent AS SELECT id FROM parent`, "unexpected relation v_parent"},
+		{"view", `CREATE VIEW v_parent AS SELECT id FROM parent`, "unexpected view v_parent"},
+		{"materialized view", `CREATE MATERIALIZED VIEW v_parent AS SELECT id FROM parent`, "unexpected relation v_parent"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -240,5 +241,31 @@ func TestUpgradeLeftoverTemporaryDatabaseIsReported(t *testing.T) {
 	drop()
 	if err := CheckNoLeftovers(); err != nil {
 		t.Fatalf("still reported after the drop: %v", err)
+	}
+}
+
+// A view is listed by its definition and its columns: a changed definition and a changed column are both
+// reported, an unchanged view is not.
+func TestCatalogListsViewsByDefinitionAndColumns(t *testing.T) {
+	srv := RequireServer(t)
+	tmp := TempDatabase(t, srv, "viewdef")
+	tmp.Load(t, "mini schema", miniDDL)
+	tmp.Load(t, "view", `CREATE VIEW v_parent AS SELECT id FROM parent`)
+	conn := tmp.Conn(t)
+	base := Lines(tmp.Catalog(t, conn))
+	if n := Count(tmp.Catalog(t, conn), "view"); n != 1 {
+		t.Fatalf("the catalog lists %d views, want 1", n)
+	}
+	if diff := DiffLines(base, Lines(tmp.Catalog(t, conn))); len(diff) != 0 {
+		t.Fatalf("an unchanged view differs: %v", diff)
+	}
+	for _, c := range []struct{ name, stmt string }{
+		{"definition", `CREATE OR REPLACE VIEW v_parent AS SELECT id FROM parent WHERE id > 0`},
+		{"columns", `CREATE OR REPLACE VIEW v_parent AS SELECT id, id AS id2 FROM parent`},
+	} {
+		tmp.Load(t, c.name, c.stmt)
+		if diff := DiffLines(base, Lines(tmp.Catalog(t, conn))); !contains(diff, "changed view v_parent") {
+			t.Errorf("a changed view %s was not reported: %v", c.name, diff)
+		}
 	}
 }

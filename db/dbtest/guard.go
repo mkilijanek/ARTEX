@@ -35,8 +35,9 @@ const TempMarker = "_upg_"
 const maxIdentifier = 63
 
 // packageSuffixes are the suffixes the package TestMain functions add to the
-// database name (db.SuffixTestDatabase, #80; SuffixEnv for this package).
-var packageSuffixes = []string{"_db", "_dbtest", "_server"}
+// database name (db.SuffixTestDatabase, #80; SuffixEnv for this package; the sidecar package uses
+// _signalsidecar).
+var packageSuffixes = []string{"_db", "_dbtest", "_server", "_signalsidecar"}
 
 var caseName = regexp.MustCompile(`^[a-z0-9]+(_[a-z0-9]+)*$`)
 
@@ -111,7 +112,7 @@ func ParsedDatabase(dsn string) (string, error) {
 //   - the database name pgconn resolves from dsn agrees with the URL path (URL form);
 //   - that name matches [a-z0-9_]+ (it becomes part of the names of temporary databases and
 //     roles, which are quoted as identifiers all the same);
-//   - that name ends in a package suffix (_db, _dbtest, _server), so it is a test
+//   - that name ends in a package suffix (_db, _dbtest, _server, _signalsidecar), so it is a test
 //     database of a package and never the operator's database;
 //   - target is empty (a connection to the server only), or is exactly
 //     <parsed name>_upg_<case> with <case> in [a-z0-9_] and a total length of at

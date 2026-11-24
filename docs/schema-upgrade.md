@@ -259,15 +259,16 @@ error and changes nothing: it **refuses while `0004`, `5002` or `5003` is record
 was edited; then the right way back is the pre-upgrade dump. The next start of the new binary adopts the baseline
 again.
 
-**Order of the recipes.** On a database that this release started (ledger `0001 0002 0003 0004 5001 5002 5003`) run them in
+**Order of the recipes.** On a database that this release started (ledger `0001 0002 0003 0004 5001 5002 5003 5004`) run them in
 this order, each only after the one before it succeeded, and stop at the first one that raises:
 
 | Step | Recipe | Ledger it accepts | What it refuses |
 |---|---|---|---|
-| 1 | drop `5003` (`rollback-drop-5003.sql`, see "Migration 5003") | any ledger whose newest fork version (5000 and above) is `5003` and whose `5003` row has the shipped name; on a started database `1 2 3 4 5001 5002 5003`, afterwards `1 2 3 4 5001 5002` | a ledger without `5003`, with a fork version above it, or with `5003` recorded under another name |
-| 2 | drop `5002` (`rollback-drop-5002.sql`, see "Migration 5002") | any ledger whose newest fork version (5000 and above) is `5002` and whose `5002` row has the shipped name; afterwards `1 2 3 4 5001` | a ledger without `5002`, with a fork version above it (so `5003` recorded), or with `5002` recorded under another name |
-| 3 | `0004` (`rollback-0004-index.sql`) | exactly `1 2 3 4 5001`, `0004` under the shipped name; afterwards `1 2 3 5001` | `5002` or `5003` recorded, `0004` not recorded, or anything else |
-| 4 | ledger cleanup (`rollback-cleanup-ledger.sql`) | exactly `1 2 3 5001`; afterwards no ledger table | `0004`, `5002` or `5003` recorded, or anything else |
+| 1 | drop `5004` (`rollback-drop-5004.sql`, see "Migration 5004") | any ledger whose newest fork version (5000 and above) is `5004` and whose `5004` row has the shipped name; on a started database `1 2 3 4 5001 5002 5003 5004`, afterwards `1 2 3 4 5001 5002 5003` | a ledger without `5004`, with a fork version above it, or with `5004` recorded under another name |
+| 2 | drop `5003` (`rollback-drop-5003.sql`, see "Migration 5003") | any ledger whose newest fork version (5000 and above) is `5003` and whose `5003` row has the shipped name; afterwards `1 2 3 4 5001 5002` | a ledger without `5003`, with a fork version above it (so `5004` recorded), or with `5003` recorded under another name |
+| 3 | drop `5002` (`rollback-drop-5002.sql`, see "Migration 5002") | any ledger whose newest fork version (5000 and above) is `5002` and whose `5002` row has the shipped name; afterwards `1 2 3 4 5001` | a ledger without `5002`, with a fork version above it (so `5003` or `5004` recorded), or with `5002` recorded under another name |
+| 4 | `0004` (`rollback-0004-index.sql`) | exactly `1 2 3 4 5001`, `0004` under the shipped name; afterwards `1 2 3 5001` | `5002`, `5003` or `5004` recorded, `0004` not recorded, or anything else |
+| 5 | ledger cleanup (`rollback-cleanup-ledger.sql`) | exactly `1 2 3 5001`; afterwards no ledger table | `0004`, `5002`, `5003` or `5004` recorded, or anything else |
 
 Steps 3 and 4 are only needed to go back without the override; 0.5.14m and older start with none of them. A
 database that has `5002` but not `0004` (it never ran a release with the index) skips step 3. A database whose
@@ -401,8 +402,40 @@ start of this release applies the migration; no step is needed from the operator
   COMMIT;
   ```
 
-- **Order.** Run this drop **first** of all the recipes (see "Order of the recipes"). The drops of `5002`, the `0004`
-  recipe and the cleanup all refuse while `5003` is recorded.
+- **Order.** Run this drop right after the drop of `5004` (see "Order of the recipes"). The drops of `5002`, the
+  `0004` recipe and the cleanup all refuse while `5003` is recorded, and this recipe refuses while `5004` is recorded.
+
+### Migration 5004 (Signal sidecar)
+
+`db/migrations/5004_signal_sidecar.sql` (first line `-- downgrade-safe: yes: additive (two tables, one view, four
+functions); earlier releases never reference them`) creates the tables `signal_sidecar_config` and
+`signal_sidecar_status` (one row each, inserted by the migration), the view `signal_sidecar_config_v` and four
+functions: `signal_sidecar_heartbeat`, `signal_sidecar_set_link` and `signal_sidecar_set_groups`, which the sidecar's
+database role calls, and the grant helper `signal_sidecar_grant`. The role itself is not created by the migration:
+the server creates and checks it at start when `ARTEX_SIGNAL_DB_PASSWORD` is set.
+
+- **Ledger.** After a start the ledger holds eight rows and ends with `5004`. The reference catalog has two more
+  tables (65 tables) and one view.
+- **Downgrade-safe: yes.** Older binaries never read these objects. A binary that does not ship `5004` refuses the
+  database unless it is started with `ARTEX_SCHEMA_ALLOW_NEWER=5004`; set it in `.env`, restart, remove it when the
+  right binary runs. Read the risk in "The override" above.
+- **Drop recipe (destructive for the stored Signal state).** Stop every ARTEX instance and the sidecar, take a dump,
+  and run `db/testdata/upgrade/rollback-drop-5004.sql` with `ON_ERROR_STOP` (change the role name in the file when
+  `ARTEX_SIGNAL_DB_ROLE` named another one). It acts only when `5004` is the newest fork migration and its row has
+  the shipped name, and raises, changing nothing, on any other ledger. In one transaction it:
+  1. reads `signal_sidecar_config.public_temp_revoked` first;
+  2. drops the role (only a role that carries the comment `artex signal sidecar`; any other role of that name makes
+     the recipe raise) and everything it owns or was granted in this database;
+  3. drops the view, the four functions and the two tables;
+  4. runs `GRANT TEMPORARY ON DATABASE <database> TO PUBLIC` **only when the flag was true**: provisioning sets the
+     flag when it took `TEMPORARY` away from `PUBLIC`, so a database where `PUBLIC` never held it, or where an
+     operator removed it, ends as it was;
+  5. deletes the ledger row last.
+  The sidecar's own data volume is not touched.
+- **Order.** Run this drop **first** of all the recipes (see "Order of the recipes"). All the others refuse while
+  `5004` is recorded.
+- **Restore.** A dump taken after the upgrade holds `GRANT` lines for the role: create the role first, or restore
+  with `--no-acl` and start ARTEX, which grants again.
 
 ### Restores
 
@@ -693,6 +726,25 @@ Then run the gate.
 - Test databases: the cleanup of a temporary database that a role owns waits for a server-user session to end before
   the drop (`db/dbtest/server.go`).
 - Raise `MIN_UPGRADE_TESTS` (now 166) and the counts in its comment.
+
+**What migration `5004` (Signal sidecar tables, one view, four functions) added to those steps:**
+
+- **A new function is executable by `PUBLIC` the moment it is created.** PostgreSQL grants `EXECUTE` to `PUBLIC` by
+  default, and the database role of the Signal sidecar must be able to run exactly three functions and nothing else.
+  A migration that creates a function therefore ends the same statement list with
+  `REVOKE ALL ON FUNCTION <name>(<types>) FROM PUBLIC` and grants only to the roles that need it, or it names the
+  function on purpose in the pinned list of `PUBLIC`-executable functions of `db/signal_privilege_test.go` and in
+  `signalRoleFunctions` (`db/signal_role.go`). The catalog-enumerating test
+  `TestSignalRoleCatalogPublicExecutableFunctionsArePinned` fails for any other new function.
+- The reference catalog now lists views (definition and columns) and allows exactly one, `signal_sidecar_config_v`
+  (`db/schema_fresh_test.go`); a second view fails `TestUpgradeFreshDatabaseMatchesReference`. Two tables raise
+  `expectedTables` from 63 to 65, and each of those two tables has one row after the migration (an `added` entry with
+  a count in `expected-changes.json` per shape).
+- A regular expression inside PostgreSQL repeats at most 255 times: a longer bound goes into a `char_length` check.
+- The drop recipe is `db/testdata/upgrade/rollback-drop-5004.sql`. It acts only when `5004` is the newest fork
+  migration, reads `signal_sidecar_config.public_temp_revoked` first, drops the sidecar role (only a role that carries
+  the ownership comment), the view, the four functions and the two tables, grants `TEMPORARY` on the database to
+  `PUBLIC` again only when that flag is true, and deletes the ledger row last. It runs before the recipe of `5003`.
 
 Rollback of the first release with the ledger needs no step (see "Rollback" above). The `0004` recipe is
 `db/testdata/upgrade/rollback-0004-index.sql`, run by `TestUpgradeRollback0004RecipeDropsTheIndexAndTheLedgerRow` and

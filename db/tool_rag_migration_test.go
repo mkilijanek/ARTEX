@@ -49,6 +49,7 @@ func TestMigrationToolRagDropRecipeIsGuardedAndReversible(t *testing.T) {
 		t.Fatalf("the recipe with 5003 on record: err = %v, want the guard's exception (P0001)", err)
 	}
 	requireMigrationStateUnchanged(t, "after the recipe refused by 5003", before5003, captureMigrationState(t, tmp))
+	dropSignalSidecarMigration(t, d)
 	if err := rollbackRunScript(t, d.DB, rollbackDropDetectionsFile); err != nil {
 		t.Fatalf("the 5003 drop failed (%s)", dbtest.AtomicErrorSummary(err))
 	}

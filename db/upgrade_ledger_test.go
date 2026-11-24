@@ -77,7 +77,7 @@ func TestUpgradeLedgerTableIsInTheReference(t *testing.T) {
 }
 
 // AC3: a fresh Open, with no Ensure call and no helper, leaves exactly the ledger versions of the embedded set
-// (0001, 0002, 0003, 0004, 5001, 5002 and 5003) with the names and sha256 of the embedded files, and the catalog of the reference.
+// (0001, 0002, 0003, 0004, 5001, 5002, 5003 and 5004) with the names and sha256 of the embedded files, and the catalog of the reference.
 func TestUpgradeLedgerFreshOpenAdoptsTheBaselineWithoutEnsure(t *testing.T) {
 	logs := dbtest.CaptureLog(t)
 	srv := dbtest.RequireServer(t)
@@ -97,7 +97,7 @@ func TestUpgradeLedgerFreshOpenAdoptsTheBaselineWithoutEnsure(t *testing.T) {
 			t.Errorf("Open alone did not create %s", table)
 		}
 	}
-	for _, want := range []string{"[migrate] ledger absent: adopting baseline (4)", "[migrate] adopted baseline in", "[migrate] up to date (upstream=0004, fork=5003)"} {
+	for _, want := range []string{"[migrate] ledger absent: adopting baseline (4)", "[migrate] adopted baseline in", "[migrate] up to date (upstream=0004, fork=5004)"} {
 		if !strings.Contains(logs(), want) {
 			t.Errorf("the log has no %q line", want)
 		}

@@ -16,7 +16,7 @@ import (
 // historical Go DDL of the old releases is pinned per recorded shape (TestUpgradeFixtureChecksums).
 const (
 	currentSchemaSQLSHA256 = "951f3d0c88597f494b5fc1a87ca6694daa9d35e490d3f131d4fb36a2f49f963a"
-	currentReferenceSHA256 = "8037214f21eeb25b2a584b6d329ef0d4f57d458dfdeb50a54077e13d4255ca9f"
+	currentReferenceSHA256 = "2aba02df85b617a77286804daa46bb36e570c3bdbb00631268254a975aaa1973"
 )
 
 const referenceFile = "reference-catalog-pg16.txt"

@@ -34,10 +34,10 @@ const (
 	detectionNewLines       = 146
 )
 
-// releaseBefore5003Migrations is the migration set of the release 0.5.17m: the embedded set without 5003.
+// releaseBefore5003Migrations is the migration set of the release 0.5.17m: the embedded set without 5003 and 5004.
 func releaseBefore5003Migrations(t *testing.T) fstest.MapFS {
 	t.Helper()
-	return migrationSet(t, fstest.MapFS{migrationDetections: nil})
+	return migrationSet(t, fstest.MapFS{migrationDetections: nil, sidecarMigration: nil})
 }
 
 // requireGuardRefusal checks that err is the exception a rollback recipe raises: P0001 with the message.
@@ -130,16 +130,16 @@ func TestMigrationDetectionLoaderAcceptsTheFileAndRejectsTheNegativeControls(t *
 // kept: its content is identified by the sha256 of its lines.
 func TestMigrationDetectionReferenceDiffersFromThePreviousOnlyByTheNewObjects(t *testing.T) {
 	all := loadReference(t)
-	old := referenceWithoutDetections(all)
-	if n := len(all) - len(old); n != detectionNewLines {
+	old := referenceWithoutDetections(all) // also without the objects of 5004
+	if n := len(referenceWithoutSignalSidecar(all)) - len(old); n != detectionNewLines {
 		t.Errorf("the reference holds %d lines of the objects of 5003, want %d", n, detectionNewLines)
 	}
 	sum := sha256.Sum256([]byte(strings.Join(old, "\n")))
 	if got := hex.EncodeToString(sum[:]); got != detectionPreviousSHA256 {
 		t.Errorf("the reference without the objects of 5003 has sha256 %s, the reference of 0.5.17m had %s: a line that is not of 5003 changed", got, detectionPreviousSHA256)
 	}
-	if n := len(referenceTables(t)); n != expectedTables || expectedTables != 63 {
-		t.Errorf("the reference lists %d tables and expectedTables is %d, want 63", n, expectedTables)
+	if n := len(referenceTables(t)); n != expectedTables || expectedTables != 65 {
+		t.Errorf("the reference lists %d tables and expectedTables is %d, want 65", n, expectedTables)
 	}
 }
 
@@ -157,8 +157,11 @@ func TestMigrationDetectionAppliesOnEveryShapeAndAFreshDatabase(t *testing.T) {
 		requireDetectionObjects(t, "after the first start", d.DB)
 		first := readLedger(t, d.DB)
 		requireEmbeddedLedger(t, first)
-		if last := first[len(first)-1]; last.version != 5003 || last.name != migrationDetections {
-			t.Errorf("the ledger ends with %d %s, want 5003 %s", last.version, last.name, migrationDetections)
+		if row := first[len(first)-2]; row.version != 5003 || row.name != migrationDetections {
+			t.Errorf("the ledger has %d %s before its last row, want 5003 %s", row.version, row.name, migrationDetections)
+		}
+		if last := first[len(first)-1]; last.version != 5004 || last.name != sidecarMigration {
+			t.Errorf("the ledger ends with %d %s, want 5004 %s", last.version, last.name, sidecarMigration)
 		}
 		if !strings.Contains(logs(), "[migrate] applied "+migrationDetections+" in ") {
 			t.Errorf("the first start did not log the application of 5003:\n%s", logs())
@@ -259,8 +262,8 @@ func TestMigrationDetectionShapeS3aIsWhatItClaims(t *testing.T) {
 	d := startup(t, tmp.DSN)
 	after := readLedger(t, d.DB)
 	requireEmbeddedLedger(t, after)
-	if len(after) != len(before)+1 || after[len(after)-1].version != 5003 || !sameLedgerRows(before, after[:len(before)]) {
-		t.Errorf("the start on s3a: ledger %v -> %v, want exactly one new row (5003) and the six as they were", ledgerVersions(before), ledgerVersions(after))
+	if len(after) != len(before)+2 || after[len(after)-2].version != 5003 || after[len(after)-1].version != 5004 || !sameLedgerRows(before, after[:len(before)]) {
+		t.Errorf("the start on s3a: ledger %v -> %v, want exactly two new rows (5003, 5004) and the six as they were", ledgerVersions(before), ledgerVersions(after))
 	}
 }
 
@@ -417,6 +420,7 @@ func TestMigrationDetectionDropRecipeIsGuardedAndReversible(t *testing.T) {
 	d := startup(t, tmp.DSN)
 	ctx := context.Background()
 	requireEmbeddedLedger(t, readLedger(t, d.DB))
+	dropSignalSidecarMigration(t, d)
 	seedDetectionRows(t, d.DB)
 	full := readLedger(t, d.DB)
 	last := full[len(full)-1]
@@ -505,6 +509,7 @@ func TestMigrationDetectionRecipesRunInTheDocumentedOrder(t *testing.T) {
 	requireEmbeddedLedger(t, readLedger(t, d.DB))
 
 	const (
+		msg5004    = "5004 is not the newest fork migration"
 		msg5003    = "5003 is not the newest fork migration"
 		msg5002    = "5002 is not the newest fork migration"
 		msg0004    = "schema_migrations is not baseline + 0004"
@@ -515,12 +520,13 @@ func TestMigrationDetectionRecipesRunInTheDocumentedOrder(t *testing.T) {
 		run    func() error
 		refuse string // message of the guard while the recipe is not yet its turn
 	}
+	drop5004 := step{"drop 5004", func() error { return rollbackRunScript(t, d.DB, rollbackDropSignalSidecarFile) }, msg5004}
 	drop5003 := step{"drop 5003", func() error { return rollbackRunScript(t, d.DB, rollbackDropDetectionsFile) }, msg5003}
 	drop5002 := step{"drop 5002", func() error { return rollbackRunScript(t, d.DB, rollbackDropToolRagFile) }, msg5002}
 	recipe0004 := step{"the 0004 recipe", func() error { return rollbackRun0004(t, tmp) }, msg0004}
 	cleanup := step{"the ledger cleanup", func() error { return rollbackRunCleanup(t, d.DB) }, msgCleanup}
 
-	order := []step{drop5003, drop5002, recipe0004, cleanup}
+	order := []step{drop5004, drop5003, drop5002, recipe0004, cleanup}
 	for i, turn := range order {
 		// Every recipe after this one is refused now.
 		for _, later := range order[i+1:] {
@@ -557,7 +563,8 @@ func TestMigrationDetectionRecipesRunInTheDocumentedOrder(t *testing.T) {
 func TestMigrationDetectionOlderBinaryRefusesUnlessAllowed(t *testing.T) {
 	tmp := migrationTemp(t, "detolder")
 	startMigrated(t, tmp, embeddedMigrations())
-	older := releaseBefore5003Migrations(t)
+	// The embedded set without 5003 only: 5004 stays shipped, so 5003 is the one unknown row.
+	older := migrationSet(t, fstest.MapFS{migrationDetections: nil})
 
 	t.Setenv("ARTEX_SCHEMA_ALLOW_NEWER", "")
 	requireRefusal(t, tmp, older, "unknown", "5003", migrationDetections, "ARTEX_SCHEMA_ALLOW_NEWER")

@@ -45,8 +45,9 @@ func loadReference(t *testing.T) []string {
 // 0001 and 0002), the ledger schema_migrations (docs/phase-d2-plan.md 2.1, docs/phase-d2-stage2-plan.md 3.2),
 // tool_rag_observations (migration 5002, docs/phase-d3-plan.md 3.6) and the four detection tables
 // finding_detections, detection_rules, detection_steps and detection_query_results (migration 5003,
-// docs/detector-plan.md section 5).
-const expectedTables = 63
+// docs/detector-plan.md section 5), and the two tables signal_sidecar_config and signal_sidecar_status (migration 5004),
+// which come with exactly one view, signal_sidecar_config_v.
+const expectedTables = 65
 
 // AC2: startup on an empty database succeeds and the catalog listing equals the
 // committed reference.
@@ -58,6 +59,14 @@ func TestUpgradeFreshDatabaseMatchesReference(t *testing.T) {
 
 	if n := dbtest.Count(entries, "table"); n != expectedTables {
 		t.Errorf("fresh database has %d tables, want %d", n, expectedTables)
+	}
+	if n := dbtest.Count(entries, "view"); n != 1 {
+		t.Errorf("fresh database has %d views, want exactly signal_sidecar_config_v", n)
+	}
+	for _, e := range entries {
+		if e.Kind == "view" && e.Name != "signal_sidecar_config_v" {
+			t.Errorf("fresh database has the unexpected view %s", e.Name)
+		}
 	}
 	for _, kind := range []string{"extension", "schema", "relation"} {
 		if n := dbtest.Count(entries, kind); n != 0 {
@@ -109,14 +118,16 @@ func TestUpgradeFailedComparisonDoesNotLeakRowsOrPassword(t *testing.T) {
 
 const referenceHeader = `# ARTEX schema reference catalog, PostgreSQL 16 only (docs/phase-d2-plan.md section 5.2).
 # State listed: a fresh database after Open alone (schema.sql, the embedded migrations 0001, 0002, 0003, 0004, 5001, 5002,
-# 5003 and the ledger table schema_migrations; no Ensure call).
+# 5003, 5004 and the ledger table schema_migrations; no Ensure call).
 # One line per object: kind name sha256(definition). Sorted. Column order is not listed on purpose
 # (restore uses the same row type on both sides of INSERT ... SELECT *).
 # Listed: tables (kind, persistence), columns (type, nullability, default, collation, identity,
 # generated), constraints (definition, validity), indexes (definition, validity, readiness),
-# non-internal triggers (definition, enabled state), functions, sequences (owner column, parameters).
-# Asserted absent: extensions other than plpgsql, schemas other than public, views and other relations.
-# Not listed: owners, grants, comments, views, user types, tablespaces.
+# non-internal triggers (definition, enabled state), functions, sequences (owner column, parameters), views
+# (definition, columns).
+# Asserted absent: extensions other than plpgsql, schemas other than public, other relation kinds, and every
+# view but signal_sidecar_config_v.
+# Not listed: owners, grants, comments, user types, tablespaces.
 # Regenerate only through the schema-change procedure (docs/schema-upgrade.md):
 #   ARTEX_UPGRADE_REGENERATE=1 go test ./db -run TestRegenerateUpgradeReference
 `

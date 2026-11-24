@@ -138,6 +138,7 @@ func TestMigrationDetectionDropRecipeRefusesAVersionUnderAnotherName(t *testing.
 	tmp := dbtest.TempDatabase(t, dbtest.RequireServer(t), "detname")
 	d := startup(t, tmp.DSN)
 	requireEmbeddedLedger(t, readLedger(t, d.DB))
+	dropSignalSidecarMigration(t, d)
 	if _, err := d.Exec(`UPDATE schema_migrations SET name = '5003_renamed.sql' WHERE version = 5003`); err != nil {
 		t.Fatal(err)
 	}
@@ -164,6 +165,7 @@ func TestMigrationToolRagDropRecipeRefusesAVersionUnderAnotherName(t *testing.T)
 	tmp := dbtest.TempDatabase(t, dbtest.RequireServer(t), "ragname")
 	d := startup(t, tmp.DSN)
 	requireEmbeddedLedger(t, readLedger(t, d.DB))
+	dropSignalSidecarMigration(t, d)
 	if err := rollbackRunScript(t, d.DB, rollbackDropDetectionsFile); err != nil {
 		t.Fatalf("the 5003 drop failed (%s)", dbtest.AtomicErrorSummary(err))
 	}

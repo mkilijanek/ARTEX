@@ -34,12 +34,13 @@ const rollbackDropDetectionsFile = "rollback-drop-5003.sql"
 var detectionObjectTokens = []string{"finding_detections", "detection_rules", "detection_steps", "detection_query_results",
 	"stop_deleted_conversation_detection", "trg_conversation_detection_delete"}
 
-// referenceWithoutDetections removes the lines of the objects that migration 5003 creates.
+// referenceWithoutDetections removes the lines of the objects that migration 5003 creates, and those of 5004, which
+// is dropped before 5003 on a database that this release started.
 func referenceWithoutDetections(lines []string) []string {
 	var out []string
 next:
 	for _, l := range lines {
-		for _, tok := range detectionObjectTokens {
+		for _, tok := range append([]string{signalSidecarObjectToken}, detectionObjectTokens...) {
 			if strings.Contains(l, tok) {
 				continue next
 			}
@@ -87,11 +88,13 @@ func rollbackRunScript(t *testing.T, pool *sql.DB, file string) error {
 	return err
 }
 
-// rollbackRowsWithoutLedger is the snapshot without the ledger table: its rows are new after every adoption.
+// rollbackRowsWithoutLedger is the snapshot without the ledger table: its rows are new after every adoption. The two
+// signal sidecar tables are left out as well: the migration of 5004 writes their one row each, so a drop and a start
+// give them new timestamps.
 func rollbackRowsWithoutLedger(s *dbtest.RowSnapshot) *dbtest.RowSnapshot {
 	out := &dbtest.RowSnapshot{Tables: map[string]*dbtest.TableRows{}}
 	for name, rows := range s.Tables {
-		if name != "schema_migrations" {
+		if name != "schema_migrations" && name != "signal_sidecar_config" && name != "signal_sidecar_status" {
 			out.Tables[name] = rows
 		}
 	}
@@ -104,6 +107,7 @@ func rollbackRowsWithoutLedger(s *dbtest.RowSnapshot) *dbtest.RowSnapshot {
 // 0004 (its guard wants exactly baseline and 0004). The ledger is the baseline set afterwards.
 func rollbackToBaseline(t *testing.T, tmp *dbtest.Temp, d *DB) {
 	t.Helper()
+	dropSignalSidecarMigration(t, d)
 	if err := rollbackRunScript(t, d.DB, rollbackDropDetectionsFile); err != nil {
 		t.Fatalf("the 5003 drop failed (%s)", dbtest.AtomicErrorSummary(err))
 	}

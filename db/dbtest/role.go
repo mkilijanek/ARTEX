@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 	"testing"
@@ -143,4 +144,108 @@ func (s *Server) LeftoverRoles(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("list canary roles failed (%s)", sqlState(err))
 	}
 	return out, nil
+}
+
+// dropRoleIfExists drops a role of this package's naming when it exists. A role that a test never got to
+// create (a refused provisioning) is not an error.
+func (s *Server) dropRoleIfExists(name string) error {
+	if err := Guard(OpDropRole, s.dsn, ""); err != nil {
+		return err
+	}
+	if !s.roleNameOK(name) {
+		return fmt.Errorf("refusing to drop role %q: it is not %s<8 hex>", name, s.rolePrefix())
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return s.execAdmin(ctx, OpDropRole, name, `DROP ROLE IF EXISTS `+quoteIdent(name))
+}
+
+// DSNFor is the DSN of the temporary database for another user: the endpoint and the database of tmp.DSN, with
+// the user and the password replaced.
+func (tmp *Temp) DSNFor(user, password string) (string, error) {
+	if !isURL(tmp.DSN) {
+		return "", fmt.Errorf("the test DSN is not a URL: a DSN for another user cannot be derived")
+	}
+	u, err := url.Parse(tmp.DSN)
+	if err != nil {
+		return "", fmt.Errorf("DSN cannot be parsed")
+	}
+	u.User = url.UserPassword(user, password)
+	return u.String(), nil
+}
+
+// SidecarRole is the name and the password a test gives to the database role of the Signal sidecar. The role
+// itself is created by the code under test.
+type SidecarRole struct {
+	Name     string
+	Password string
+}
+
+// NewSidecarRole picks a role name that satisfies the guard (<package database>_upgrole_<8 hex>) and a random
+// password, registered as a secret. When the test ends, the temporary database is dropped first (the role's grants
+// live in it) and then the role, if the code under test created it. The leftover check covers the name.
+func (s *Server) NewSidecarRole(t testing.TB, tmp *Temp) *SidecarRole {
+	t.Helper()
+	name, password := s.newRoleIdentity(t)
+	t.Cleanup(func() { s.cleanupRole(t, tmp, name) })
+	return &SidecarRole{Name: name, Password: password}
+}
+
+// CreateOwnerRole creates a LOGIN role that owns the temporary database tmp, with CREATEROLE when createRole is
+// true, a random password and the name rule of the canary roles. It is how a test runs the server as a database
+// user that is neither a superuser nor the bootstrap user. Cleanup as for NewSidecarRole.
+func (s *Server) CreateOwnerRole(t testing.TB, tmp *Temp, createRole bool) *SidecarRole {
+	t.Helper()
+	if err := Guard(OpCreateRole, s.dsn, ""); err != nil {
+		t.Fatalf("%v", err)
+	}
+	name, password := s.newRoleIdentity(t)
+	t.Cleanup(func() { s.cleanupRole(t, tmp, name) })
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	attrs := "NOCREATEROLE"
+	if createRole {
+		attrs = "CREATEROLE"
+	}
+	stmt := `CREATE ROLE ` + quoteIdent(name) + ` LOGIN ` + attrs + ` PASSWORD ` + quoteLiteral(password)
+	if err := s.execAdmin(ctx, OpCreateRole, name, stmt); err != nil {
+		t.Fatalf("%v", err)
+	}
+	if err := s.execAdmin(ctx, OpCreateRole, name, `ALTER DATABASE `+quoteIdent(tmp.Name)+` OWNER TO `+quoteIdent(name)); err != nil {
+		t.Fatalf("%v", err)
+	}
+	return &SidecarRole{Name: name, Password: password}
+}
+
+func (s *Server) newRoleIdentity(t testing.TB) (name, password string) {
+	t.Helper()
+	suffix, err := randomHex(4)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	password, err = randomHex(16)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	name = s.rolePrefix() + suffix
+	if len(name) > maxIdentifier || !s.roleNameOK(name) {
+		t.Fatalf("role name %q is not a valid role name of this package (limit %d bytes)", name, maxIdentifier)
+	}
+	remove, err := RegisterSecret("test role password", password)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	t.Cleanup(remove)
+	return name, password
+}
+
+func (s *Server) cleanupRole(t testing.TB, tmp *Temp, name string) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if err := s.DropDatabase(ctx, tmp.Name); err != nil {
+		t.Errorf("%v", err)
+	}
+	if err := s.dropRoleIfExists(name); err != nil {
+		t.Errorf("%v", err)
+	}
 }

@@ -61,6 +61,20 @@ const noDetections = "the releases of every shape predate migration 5003; the fi
 // the older shapes was written before that migration and holds no observation row.
 const noToolRagRows = "the data fixture predates migration 5002 and holds no observation row; the rows of the table are the business of the TestToolRag tests"
 
+// noSignalSidecar: the two tables of migration 5004 are created after every recorded release; the migration
+// inserts one row into each, which the expected changes list as added rows.
+const noSignalSidecar = "the releases of every shape predate migration 5004; the first start creates the two signal sidecar tables, each with its one row"
+
+var signalSidecarTables = []string{"signal_sidecar_config", "signal_sidecar_status"}
+
+// withSignalSidecar adds the two tables of migration 5004 to the exemptions of a shape.
+func withSignalSidecar(exempt map[string]string) map[string]string {
+	for _, tbl := range signalSidecarTables {
+		exempt[tbl] = noSignalSidecar
+	}
+	return exempt
+}
+
 var detectionTables = []string{"finding_detections", "detection_rules", "detection_steps", "detection_query_results"}
 
 // withDetections adds the four tables of migration 5003 to the exemptions of a shape.
@@ -73,19 +87,19 @@ func withDetections(exempt map[string]string) map[string]string {
 
 var matrixShapes = []matrixShape{
 	{name: "r0509", recorded: "r0509", data: "data-r0509.sql",
-		exempt: withDetections(map[string]string{"finding_comments": noFindingComments, "schema_migrations": noLedger, "tool_rag_observations": noToolRag})},
+		exempt: withSignalSidecar(withDetections(map[string]string{"finding_comments": noFindingComments, "schema_migrations": noLedger, "tool_rag_observations": noToolRag}))},
 	{name: "r0512", recorded: "r0512", data: "data-r0512.sql",
-		exempt: withDetections(map[string]string{"schema_migrations": noLedger, "tool_rag_observations": noToolRag})},
+		exempt: withSignalSidecar(withDetections(map[string]string{"schema_migrations": noLedger, "tool_rag_observations": noToolRag}))},
 	{name: "r0513", recorded: "r0513", data: "data-r0513.sql",
-		exempt: withDetections(map[string]string{"schema_migrations": noLedger, "tool_rag_observations": noToolRag})},
+		exempt: withSignalSidecar(withDetections(map[string]string{"schema_migrations": noLedger, "tool_rag_observations": noToolRag}))},
 	// s2a has a ledger before startup, so its table schema_migrations has rows and no exemption.
 	{name: "s2a", recorded: "s2a", data: "data-r0513.sql",
-		exempt: withDetections(map[string]string{"tool_rag_observations": noToolRag})},
+		exempt: withSignalSidecar(withDetections(map[string]string{"tool_rag_observations": noToolRag}))},
 	// s3a has a ledger and the tool RAG table before startup: only the four detection tables are missing.
 	{name: "s3a", recorded: "s3a", data: "data-r0513.sql",
-		exempt: withDetections(map[string]string{"tool_rag_observations": noToolRagRows})},
+		exempt: withSignalSidecar(withDetections(map[string]string{"tool_rag_observations": noToolRagRows}))},
 	{name: "legacy", recorded: "r0509", mutations: "legacy-mutations.sql", data: "data-legacy.sql",
-		exempt: withDetections(map[string]string{"finding_comments": noFindingComments, "schema_migrations": noLedger, "tool_rag_observations": noToolRag})},
+		exempt: withSignalSidecar(withDetections(map[string]string{"finding_comments": noFindingComments, "schema_migrations": noLedger, "tool_rag_observations": noToolRag}))},
 }
 
 func readUpgradeFile(t *testing.T, name string) string {

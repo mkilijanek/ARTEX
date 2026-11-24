@@ -224,3 +224,18 @@ func TestUpgradeServerOperationsAreGuardedBeforeAnyStatement(t *testing.T) {
 		t.Fatalf("dsn: %v", err)
 	}
 }
+
+// The package of the Signal sidecar has its own database suffix; the suffix alone is no database name.
+func TestGuardAcceptsTheSignalSidecarPackageSuffix(t *testing.T) {
+	good := "postgres://upg@db.invalid/artextest_signalsidecar"
+	t.Setenv(EnvDSN, good)
+	if err := Guard(OpCreate, good, "artextest_signalsidecar_upg_case1"); err != nil {
+		t.Fatalf("a database with the sidecar package suffix is refused: %v", err)
+	}
+	bare := "postgres://upg@db.invalid/_signalsidecar"
+	t.Setenv(EnvDSN, bare)
+	mustRefuse(t, Guard(OpCreate, bare, "_signalsidecar_upg_case1"), "package suffix")
+	other := "postgres://upg@db.invalid/artextest_signalsidecars"
+	t.Setenv(EnvDSN, other)
+	mustRefuse(t, Guard(OpCreate, other, "artextest_signalsidecars_upg_case1"), "package suffix")
+}
