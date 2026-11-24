@@ -6,8 +6,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -521,7 +524,7 @@ func TestReadyRefusesUntilTheAccountIsLinkedAndConfirmed(t *testing.T) {
 	mr := newMRig(t, "scready", completes(100))
 	sc := mr.start(nil, nil)
 	mr.waitState("unlinked")
-	waitWhy := func(want string) {
+	waitWhy := func(want Refusal) {
 		t.Helper()
 		deadline := time.Now().Add(10 * time.Second)
 		for {
@@ -631,7 +634,7 @@ func TestSidecarSurvivesTheLossOfTheDatabase(t *testing.T) {
 	sc := mr.start(func(c *MachineConfig) { fastIntervals(c); c.StaleAfter = 1500 * time.Millisecond }, nil)
 	mr.link()
 	mr.confirm(testNumber)
-	waitWhy := func(want string, d time.Duration) {
+	waitWhy := func(want Refusal, d time.Duration) {
 		t.Helper()
 		deadline := time.Now().Add(d)
 		for {
@@ -797,5 +800,108 @@ func TestWipeDirRefusesWhatIsNotAPlainDataDirectory(t *testing.T) {
 	}
 	if _, err := os.Stat(file); err != nil {
 		t.Fatalf("the file is gone: %v", err)
+	}
+}
+
+// sentCalls returns the params of every send the fake CLI received.
+func (mr *mrig) sentCalls() []map[string]any {
+	mr.t.Helper()
+	raw, _ := os.ReadFile(mr.r.calls)
+	var out []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		var c struct {
+			Method string
+			Params map[string]any
+		}
+		if json.Unmarshal([]byte(line), &c) == nil && c.Method == "send" {
+			out = append(out, c.Params)
+		}
+	}
+	return out
+}
+
+func TestSendThroughTheSocketApiNeedsAConfirmedAccount(t *testing.T) {
+	mr := newMRig(t, "scsend", completes(100))
+	sc := mr.start(nil, nil)
+	mr.link()
+	srv := httptest.NewServer(NewAPI(sc.m, mr.r.logs.logf))
+	defer srv.Close()
+	post := func(recipients ...string) (int, string) {
+		t.Helper()
+		body, _ := json.Marshal(map[string]any{"number": testNumber, "recipients": recipients,
+			"message": "hello-SENTINEL-TEXT", "text_mode": "normal"})
+		resp, err := http.Post(srv.URL+"/v2/send", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		out, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(out)
+	}
+	waitReady := func(want Refusal) {
+		t.Helper()
+		mr.waitStatus("the readiness", 10*time.Second, func(statusRow) bool { _, why := sc.m.ready(); return why == want })
+	}
+
+	waitReady(RefuseNotConfirmed)
+	if status, body := post(testOuterGroup); status != 400 {
+		t.Fatalf("unconfirmed: %d %s", status, body)
+	}
+	if n := len(mr.sentCalls()); n != 0 {
+		t.Fatalf("%d sends reached signal-cli", n)
+	}
+
+	mr.confirm(testNumber)
+	waitReady(RefuseNone)
+	if status, body := post(testOuterGroup); status != 201 {
+		t.Fatalf("group: %d %s", status, body)
+	}
+	if status, body := post("+48600100202", "+48600100303"); status != 201 {
+		t.Fatalf("numbers: %d %s", status, body)
+	}
+	sent := mr.sentCalls()
+	if len(sent) != 2 {
+		t.Fatalf("sends: %v", sent)
+	}
+	if sent[0]["account"] != testNumber || sent[0]["message"] != "hello-SENTINEL-TEXT" ||
+		fmt.Sprint(sent[0]["groupIds"]) != "["+testGroup+"]" || sent[0]["recipient"] != nil {
+		t.Fatalf("group send: %v", sent[0])
+	}
+	if fmt.Sprint(sent[1]["recipient"]) != "[+48600100202 +48600100303]" || sent[1]["groupIds"] != nil {
+		t.Fatalf("numbers send: %v", sent[1])
+	}
+
+	// A group id that does not decode twice to 32 bytes never reaches signal-cli.
+	if status, _ := post("group." + base64.StdEncoding.EncodeToString([]byte("short"))); status != 400 {
+		t.Fatalf("bad group id: %d", status)
+	}
+	if n := len(mr.sentCalls()); n != 2 {
+		t.Fatalf("%d sends reached signal-cli", n)
+	}
+
+	resp, err := http.Get(srv.URL + "/v1/about")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var about About
+	if err := json.NewDecoder(resp.Body).Decode(&about); err != nil {
+		t.Fatal(err)
+	}
+	if about != (About{Service: "artex-signal", Version: "test-version", SignalCLI: "0.14.10", State: "linked"}) {
+		t.Fatalf("about: %+v", about)
+	}
+	mr.logsHold("SENTINEL-TEXT", "+48600100202")
+}
+
+func TestInnerGroupID(t *testing.T) {
+	if got, err := innerGroupID(testOuterGroup); err != nil || got != testGroup {
+		t.Fatalf("%q %v", got, err)
+	}
+	for _, bad := range []string{"", "group.", "group.!!!", "group." + base64.StdEncoding.EncodeToString([]byte("short")),
+		"group." + base64.StdEncoding.EncodeToString([]byte("not base64 inside!!"))} {
+		if _, err := innerGroupID(bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
 	}
 }

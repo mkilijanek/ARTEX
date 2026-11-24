@@ -686,18 +686,58 @@ func (m *Machine) beat(ctx context.Context) {
 
 // ready reports the confirmed account the sidecar may send from, or the reason
 // it may not.
-func (m *Machine) ready() (account string, reason string) {
+func (m *Machine) ready() (account string, reason Refusal) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	switch {
 	case m.childDown || !m.sup.Status().Up:
-		return "", "child_down"
+		return "", RefuseChildDown
 	case time.Since(m.viewAt) > m.cfg.StaleAfter:
-		return "", "config_stale"
+		return "", RefuseConfigStale
 	case m.state != StateLinked:
-		return "", "not_linked"
+		return "", RefuseNotLinked
 	case m.view.ConfirmedAccount == "" || m.view.ConfirmedAccount != m.number:
-		return "", "not_confirmed"
+		return "", RefuseNotConfirmed
 	}
-	return m.number, ""
+	return m.number, RefuseNone
+}
+
+var _ Backend = (*Machine)(nil)
+
+// Ready implements Backend: a send needs a linked account that the operator
+// confirmed, a configuration that is not older than StaleAfter and a running
+// signal-cli.
+func (m *Machine) Ready(context.Context) (string, Refusal) { return m.ready() }
+
+// Send implements Backend. A group arrives in ARTEX's form, group. followed by
+// the id signal-cli uses, encoded once more.
+func (m *Machine) Send(ctx context.Context, account string, to SendTarget, message string) (SendResult, error) {
+	if len(to.Numbers) > 0 {
+		return m.sup.SendNumbers(ctx, account, to.Numbers, message)
+	}
+	inner, err := innerGroupID(to.GroupID)
+	if err != nil {
+		return SendResult{}, &RPCError{Code: -1, Message: err.Error()}
+	}
+	return m.sup.Send(ctx, account, inner, message)
+}
+
+// innerGroupID undoes the encoding of ARTEX's group id: base64 that decodes,
+// and whose result decodes again to 32 bytes.
+func innerGroupID(id string) (string, error) {
+	once, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(id, "group."))
+	if err != nil {
+		return "", errors.New("the group id is not valid")
+	}
+	twice, err := base64.StdEncoding.DecodeString(string(once))
+	if err != nil || len(twice) != 32 {
+		return "", errors.New("the group id is not valid")
+	}
+	return string(once), nil
+}
+
+// About implements Backend.
+func (m *Machine) About(context.Context) About {
+	state, _, _, _ := m.current()
+	return About{Service: "artex-signal", Version: m.cfg.SidecarVersion, SignalCLI: m.sup.Status().Version, State: state}
 }
