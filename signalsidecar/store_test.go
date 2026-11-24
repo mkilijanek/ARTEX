@@ -2,8 +2,8 @@ package signalsidecar
 
 import (
 	"context"
-	"encoding/base64"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net"
