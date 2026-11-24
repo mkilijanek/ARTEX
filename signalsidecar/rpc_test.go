@@ -448,3 +448,30 @@ func TestSendFailureResultsReadsErrorData(t *testing.T) {
 		t.Fatal("plain error must not be ok")
 	}
 }
+
+func TestSendToNumbersUsesTheRecipientParameterAndNeedsAnAccount(t *testing.T) {
+	c, s := newPipeClient(t, ClientOptions{})
+	if _, err := c.SendNumbers(context.Background(), "", []string{"+48600100102"}, "m"); !errors.Is(err, ErrNoAccount) {
+		t.Fatalf("no account: %v", err)
+	}
+	if _, err := c.SendNumbers(context.Background(), "+48600100101", nil, "m"); !errors.Is(err, ErrNoRecipient) {
+		t.Fatalf("no recipient: %v", err)
+	}
+	got := make(chan reqLine, 1)
+	go func() {
+		r := s.readReq()
+		got <- r
+		s.result(r.ID, `{"timestamp":7,"results":[{"type":"SUCCESS"}]}`)
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := c.SendNumbers(ctx, "+48600100101", []string{"+48600100102", "+48600100103"}, "hi")
+	if err != nil || res.Timestamp != 7 {
+		t.Fatalf("send: %+v %v", res, err)
+	}
+	r := <-got
+	const want = `{"account":"+48600100101","message":"hi","recipient":["+48600100102","+48600100103"]}`
+	if r.Method != "send" || string(r.Params) != want {
+		t.Fatalf("%s %s, want send %s", r.Method, r.Params, want)
+	}
+}

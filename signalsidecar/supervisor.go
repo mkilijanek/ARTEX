@@ -284,6 +284,15 @@ func (s *Supervisor) Send(ctx context.Context, account, groupID, message string)
 	return
 }
 
+// SendNumbers sends a text message to phone numbers.
+func (s *Supervisor) SendNumbers(ctx context.Context, account string, numbers []string, message string) (r SendResult, err error) {
+	err = s.do(ctx, func(ctx context.Context, c *Client) (e error) {
+		r, e = c.SendNumbers(ctx, account, numbers, message)
+		return
+	})
+	return
+}
+
 // FinishLink waits for the phone. Until it returns, every other call is
 // refused with ErrLinkPending. Its own timeout is the context the caller
 // passes and never counts towards restarting the child. Only one link can be

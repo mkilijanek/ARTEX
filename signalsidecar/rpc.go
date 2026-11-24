@@ -146,6 +146,9 @@ var allowedMethods = map[string]bool{
 // ErrMethodNotAllowed is returned for a method outside the allowlist.
 var ErrMethodNotAllowed = errors.New("signal-cli method not allowed")
 
+// ErrNoRecipient is returned for a send to numbers with an empty list.
+var ErrNoRecipient = errors.New("signal-cli send without a recipient")
+
 // ErrNoAccount is returned for a listGroups or send without an account: in
 // multi-account mode signal-cli would silently pick the single loaded one.
 var ErrNoAccount = errors.New("signal-cli call without an account")
@@ -439,6 +442,24 @@ func (c *Client) Send(ctx context.Context, account, groupID, message string) (Se
 		"account":  account,
 		"groupIds": []string{groupID},
 		"message":  message,
+	}, &out)
+	return out, err
+}
+
+// SendNumbers sends a text message to phone numbers (E.164). Results and
+// errors are as for Send.
+func (c *Client) SendNumbers(ctx context.Context, account string, numbers []string, message string) (SendResult, error) {
+	if account == "" {
+		return SendResult{}, ErrNoAccount
+	}
+	if len(numbers) == 0 {
+		return SendResult{}, ErrNoRecipient
+	}
+	var out SendResult
+	err := c.call(ctx, "send", map[string]any{
+		"account":   account,
+		"recipient": numbers,
+		"message":   message,
 	}, &out)
 	return out, err
 }

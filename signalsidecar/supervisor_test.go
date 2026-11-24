@@ -848,3 +848,21 @@ func TestStartFailureIsReportedAndRetried(t *testing.T) {
 		t.Fatalf("log:\n%s", r.logs.all())
 	}
 }
+
+func TestSendToNumbersReachesTheChildWithTheAccount(t *testing.T) {
+	r := newRig(t, nil)
+	r.seedAccounts(testNumber)
+	s, _ := r.run(r.config())
+	r.waitUp(s)
+	res, err := s.SendNumbers(ctx5(t), testNumber, []string{"+48600100102"}, "hello")
+	if err != nil || len(res.Results) != 1 || res.Results[0].Type != "SUCCESS" {
+		t.Fatalf("send: %+v %v", res, err)
+	}
+	raw, _ := os.ReadFile(r.calls)
+	if !strings.Contains(string(raw), `"recipient":["+48600100102"]`) || !strings.Contains(string(raw), `"account":"`+testNumber+`"`) {
+		t.Fatalf("calls: %s", raw)
+	}
+	if _, err := s.SendNumbers(ctx5(t), "+48600199999", []string{"+48600100102"}, "hi"); err == nil {
+		t.Fatal("an account the child does not know must fail")
+	}
+}
