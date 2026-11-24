@@ -321,7 +321,12 @@ func TestSignalRoleProvisionRefuses(t *testing.T) {
 	}
 	cases := []refusal{
 		{name: "the role is the connected user",
-			cfg:    func(u *serverUser, c *SignalRoleConfig) { c.Role = "postgres" },
+			cfg: func(u *serverUser, c *SignalRoleConfig) {
+				// The user ARTEX is connected as, whatever the test server calls it.
+				if err := u.d.QueryRow(`SELECT current_user`).Scan(&c.Role); err != nil {
+					panic(err)
+				}
+			},
 			detail: "connected as"},
 		{name: "the role exists without the marker",
 			prep:   func(t *testing.T, u *serverUser, super *DB) { signalExec(t, super, `CREATE ROLE `+r(u)+` LOGIN`) },

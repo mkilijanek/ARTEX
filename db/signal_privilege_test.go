@@ -105,7 +105,7 @@ func requireLeastPrivilege(t *testing.T, tmp *dbtest.Temp, role *dbtest.SidecarR
 		requireSQLState(t, stmt, err, "42501")
 	}
 	// The helper is not executable by the role.
-	_, err := rc.ExecContext(ctx, `SELECT public.signal_sidecar_grant('postgres'::regrole)`)
+	_, err := rc.ExecContext(ctx, `SELECT public.signal_sidecar_grant(current_user::regrole)`)
 	requireSQLState(t, "signal_sidecar_grant", err, "42501")
 	// Attributes of the role.
 	var super, createDB, createRole, repl, bypass bool
