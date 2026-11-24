@@ -69,6 +69,10 @@ services:
       ARTEX_SIGNAL_API: "unix:/run/artex-private/signal/api.sock"
       # Password of the sidecar's database role. artex creates that role with this password.
       ARTEX_SIGNAL_DB_PASSWORD: ${ARTEX_SIGNAL_DB_PASSWORD:?set ARTEX_SIGNAL_DB_PASSWORD}
+      # The role name must be the same in both services: artex creates it, the sidecar logs in with it.
+      ARTEX_SIGNAL_DB_ROLE: ${ARTEX_SIGNAL_DB_ROLE:-artex_signal}
+      # Set to 1 only for an external PostgreSQL whose password authentication was checked by hand.
+      ARTEX_SIGNAL_DB_AUTH_ASSERTED: ${ARTEX_SIGNAL_DB_AUTH_ASSERTED:-}
     volumes:
       # The socket of the sidecar. This is the only path shared between the two containers.
       - artex-signal-sock:/run/artex-private/signal:z
