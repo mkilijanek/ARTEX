@@ -59,6 +59,8 @@ type signalRig struct {
 func newSignalRig(t *testing.T) *signalRig {
 	t.Helper()
 	useThrottle(t)
+	signalConfirmBackoff.clearAll()
+	t.Cleanup(signalConfirmBackoff.clearAll)
 	m, err := NewManager(t.TempDir(), "", testDSN())
 	if err != nil {
 		t.Skipf("postgres unavailable (%v)", err)
