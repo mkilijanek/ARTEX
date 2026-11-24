@@ -926,7 +926,7 @@ func TestSignalSenderDoesNotCacheAnAbandonedRead(t *testing.T) {
 	c := newSignalSender(g.pg)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if n, p := c.sender(ctx); n != "" || p != "Signal service is not connected" {
+	if n, p := c.sender(ctx); n != "" || p != "Signal state cannot be read: database unavailable" {
 		t.Fatalf("cancelled read: %q %q", n, p)
 	}
 	if !strings.Contains(g.logs.String(), "[signal] sender check failed") {
@@ -972,5 +972,157 @@ func TestStartSignalNeverFailsAndShowsTheRoleState(t *testing.T) {
 
 	if st := StartSignal(context.Background(), nil, db.SignalRoleConfig{}); st.State != db.SignalRoleUnchecked {
 		t.Fatalf("no database: %q", st.State)
+	}
+	if !strings.Contains(g.logs.String(), "[signal] no database") {
+		t.Fatalf("the missing database was not logged: %q", g.logs.String())
+	}
+}
+
+// A service that is not connected and a state that cannot be read may clear by themselves, so a delivery
+// that meets them is retried; the other problems need the operator.
+func TestSignalSenderSaysWhichProblemsMayClear(t *testing.T) {
+	g := newSignalRig(t)
+	clock := time.Unix(1_700_000_000, 0)
+	c := newSignalSender(g.pg)
+	c.now = func() time.Time { return clock }
+	next := func() (string, string, bool) {
+		clock = clock.Add(signalSenderTTL + time.Second)
+		return c.senderKind(context.Background())
+	}
+	want := func(what, problem string, retry bool) {
+		t.Helper()
+		if _, p, r := next(); p != problem || r != retry {
+			t.Fatalf("%s: problem %q retry %v, want %q %v", what, p, r, problem, retry)
+		}
+	}
+	want("no heartbeat", "Signal service is not connected", true)
+	g.sidecar(db.SignalStateUnlinked, 0, "", 0)
+	want("unlinked", "Signal account is not linked: link one under System, Notifications", false)
+	g.sidecar(db.SignalStateError, 0, "", 0)
+	want("error state", "Signal service is in an error state: unlink and link the account again", false)
+	g.exec(`UPDATE signal_sidecar_config SET gen=1 WHERE id`)
+	g.sidecar(db.SignalStateLinked, 1, sigTestNumber, 0)
+	want("not confirmed", "confirm the linked Signal account first", false)
+	g.sidecar(db.SignalStateLinked, 1, sigTestNumber, 40)
+	want("stale heartbeat", "Signal service is not connected", true)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, p, r := newSignalSender(g.pg).senderKind(ctx); p != "Signal state cannot be read: database unavailable" || !r {
+		t.Fatalf("unreadable state: %q %v", p, r)
+	}
+}
+
+// The notifier is not served an answer from before the account changed.
+func TestSignalRoutesDropTheSenderAnswer(t *testing.T) {
+	g := newSignalRig(t)
+	c := newSignalSender(g.pg)
+	signalSenderNow.Store(c)
+	t.Cleanup(func() { signalSenderNow.Store(nil) })
+	prime := func() {
+		t.Helper()
+		c.sender(context.Background())
+		c.mu.Lock()
+		ok := c.valid
+		c.mu.Unlock()
+		if !ok {
+			t.Fatal("the answer was not cached")
+		}
+	}
+	cached := func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.valid
+	}
+
+	g.sidecar(db.SignalStateUnlinked, 0, "", 0)
+	prime()
+	wantSignalCode(t, g.post("/api/notify/signal/link", signalLinkBody()), 202, "")
+	if cached() {
+		t.Error("a link request left the cached answer")
+	}
+
+	g.exec(`UPDATE signal_sidecar_config SET desired='idle' WHERE id`)
+	g.sidecar(db.SignalStateLinked, 1, sigTestNumber, 0)
+	prime()
+	wantSignalCode(t, g.post("/api/notify/signal/account/confirm", map[string]any{"gen": 1, "last_digits": "550101"}), 200, "")
+	if cached() {
+		t.Error("a confirmation left the cached answer")
+	}
+
+	prime()
+	wantSignalCode(t, g.post("/api/notify/signal/unlink", map[string]any{"password": sigTestPassword}), 202, "")
+	if cached() {
+		t.Error("an unlink request left the cached answer")
+	}
+}
+
+// A password check that cannot read the stored hash says so in the log.
+func TestSignalPasswordCheckLogsAFailedRead(t *testing.T) {
+	g := newSignalRig(t)
+	g.sidecar(db.SignalStateUnlinked, 0, "", 0)
+	closed, err := db.Open(testDSN())
+	if err != nil {
+		t.Skipf("postgres unavailable (%v)", err)
+	}
+	closed.Close()
+	orig := g.s.m.pg
+	g.s.m.pg = closed
+	defer func() { g.s.m.pg = orig }()
+	wantSignalCode(t, g.post("/api/notify/signal/link", signalLinkBody()), 503, "")
+	if !strings.Contains(g.logs.String(), "[signal] password check") {
+		t.Fatalf("the failed read was not logged: %q", g.logs.String())
+	}
+}
+
+// A role state that came from a failed database call is read again after a minute, so a start-up accident does
+// not stay on the status route; a refusal of another kind is not.
+func TestSignalStatusReadsARoleFailureAgain(t *testing.T) {
+	g := newSignalRig(t)
+	clock := time.Unix(1_700_000_000, 0)
+	oldNow := signalNow
+	signalNow = func() time.Time { return clock }
+	t.Cleanup(func() { signalNow = oldNow })
+	roleDetail := func() string {
+		t.Helper()
+		return decodeSignalMap(t, g.get("/api/notify/signal/account"))["db_role"].(map[string]any)["detail"].(string)
+	}
+
+	const accident = "cannot read the role: connection or driver error (timeout)"
+	setSignalRole(db.SignalRoleStatus{State: db.SignalRoleError, Detail: accident, Auth: "unchecked"})
+	clock = clock.Add(signalRoleRecheck - time.Second)
+	if got := roleDetail(); got != accident {
+		t.Fatalf("before a minute the state is kept, got %q", got)
+	}
+	clock = clock.Add(2 * time.Second)
+	if got := roleDetail(); got == accident {
+		t.Fatalf("after a minute the role was not read again: %v", currentSignalRole())
+	}
+
+	const refusal = "the role has SUPERUSER"
+	setSignalRole(db.SignalRoleStatus{State: db.SignalRoleError, Detail: refusal, Auth: "unchecked"})
+	clock = clock.Add(10 * signalRoleRecheck)
+	if got := roleDetail(); got != refusal {
+		t.Fatalf("a refusal of another kind was read again, got %q", got)
+	}
+}
+
+// The address of the link is a credential: fetching it leaves one audit line for each generation, and the line
+// does not carry it.
+func TestSignalLinkFetchIsAuditedOncePerGeneration(t *testing.T) {
+	g := newSignalRig(t)
+	signalLinkLogged.Store(0)
+	g.sidecar(db.SignalStateUnlinked, 0, "", 0)
+	wantSignalCode(t, g.post("/api/notify/signal/link", signalLinkBody()), 202, "")
+	g.pendingLink(60)
+	for i := 0; i < 3; i++ {
+		wantSignalCode(t, g.get("/api/notify/signal/link"), 200, "")
+	}
+	logs := g.logs.String()
+	if n := strings.Count(logs, "link address fetched by operator-7 (generation 1)"); n != 1 {
+		t.Fatalf("audit lines = %d, want 1:\n%s", n, logs)
+	}
+	if strings.Contains(logs, "SENTINELURI") {
+		t.Fatal("the log carries the link address")
 	}
 }

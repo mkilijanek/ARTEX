@@ -37,9 +37,14 @@ const (
 	// signalDefaultDevice is the device name shown on the phone when the request names none.
 	signalDefaultDevice = "ARTEX"
 
-	signalNotLinkedText    = "Signal account is not linked: link one under System, Notifications"
-	signalNotConfirmedText = "confirm the linked Signal account first"
-	signalNotConnectedText = "Signal service is not connected"
+	signalNotLinkedText     = "Signal account is not linked: link one under System, Notifications"
+	signalNotConfirmedText  = "confirm the linked Signal account first"
+	signalNotConnectedText  = "Signal service is not connected"
+	signalDBUnavailableText = "Signal state cannot be read: database unavailable"
+	signalErrorStateText    = "Signal service is in an error state: unlink and link the account again"
+
+	// signalRoleRecheck is how long the role state of the status route is kept before it is read again.
+	signalRoleRecheck = 60 * time.Second
 )
 
 // Reasons the Signal routes give in the "code" member of an error body.
@@ -68,7 +73,41 @@ const (
 // refuses to start a link unless it is "ok".
 var signalRole atomic.Pointer[db.SignalRoleStatus]
 
-func setSignalRole(st db.SignalRoleStatus) { signalRole.Store(&st) }
+func setSignalRole(st db.SignalRoleStatus) {
+	signalRole.Store(&st)
+	signalRoleAt.Store(signalNow().UnixNano())
+}
+
+// signalRoleAt is when the role state was set or read last (Unix nanoseconds), signalRoleName the role that was
+// provisioned, and signalNow the clock of the re-check.
+var (
+	signalRoleAt   atomic.Int64
+	signalRoleName atomic.Pointer[string]
+	signalNow      = time.Now
+)
+
+// signalRoleCurrent is the role state for the status route. A failure that came from the database (its text
+// starts with "cannot") may be a start-up accident, so after signalRoleRecheck the role is read again, changing
+// nothing, and the result replaces the state. Other refusals (a foreign role, authentication rules) are not
+// re-read: reading the role cannot tell whether they went away.
+func signalRoleCurrent(ctx context.Context, pg *db.DB) db.SignalRoleStatus {
+	st := currentSignalRole()
+	if st.State != db.SignalRoleError || !strings.HasPrefix(st.Detail, "cannot ") {
+		return st
+	}
+	if signalNow().Sub(time.Unix(0, signalRoleAt.Load())) < signalRoleRecheck {
+		return st
+	}
+	name := ""
+	if p := signalRoleName.Load(); p != nil {
+		name = *p
+	}
+	rctx, cancel := context.WithTimeout(ctx, signalReadTimeout)
+	defer cancel()
+	now := pg.SignalRoleState(rctx, name)
+	setSignalRole(now)
+	return now
+}
 
 func currentSignalRole() db.SignalRoleStatus {
 	if st := signalRole.Load(); st != nil {
@@ -82,9 +121,13 @@ func currentSignalRole() db.SignalRoleStatus {
 // never fails the start; the state is shown on the status route. A nil database installs nothing.
 func StartSignal(ctx context.Context, pg *db.DB, cfg db.SignalRoleConfig) db.SignalRoleStatus {
 	if pg == nil {
+		log.Printf("[signal] no database: the Signal account is not available")
 		return db.SignalRoleStatus{State: db.SignalRoleUnchecked, Detail: "no database", Auth: "unchecked"}
 	}
-	notify.SetSignalSender(newSignalSender(pg).sender)
+	sc := newSignalSender(pg)
+	signalSenderNow.Store(sc)
+	notify.SetSignalSenderKind(sc.senderKind)
+	signalRoleName.Store(&cfg.Role)
 	pctx, cancel := context.WithTimeout(ctx, signalProvisionTimeout)
 	defer cancel()
 	st := pg.ProvisionSignalRole(pctx, cfg)
@@ -105,6 +148,19 @@ type signalSenderCache struct {
 	valid   bool
 	number  string
 	problem string
+	retry   bool
+}
+
+// signalSenderNow is the cache the notifier asks, so a route that changes the account can drop its answer.
+var signalSenderNow atomic.Pointer[signalSenderCache]
+
+// resetSignalSender drops the cached answer: the next delivery reads the rows.
+func resetSignalSender() {
+	if c := signalSenderNow.Load(); c != nil {
+		c.mu.Lock()
+		c.valid = false
+		c.mu.Unlock()
+	}
 }
 
 func newSignalSender(pg *db.DB) *signalSenderCache {
@@ -113,10 +169,16 @@ func newSignalSender(pg *db.DB) *signalSenderCache {
 
 // sender is the hook for notify.SetSignalSender. The problem texts are the ones the notifier shows.
 func (c *signalSenderCache) sender(ctx context.Context) (number, problem string) {
+	number, problem, _ = c.senderKind(ctx)
+	return number, problem
+}
+
+// senderKind is sender with a third result: the problem may clear by itself, so the delivery is retried.
+func (c *signalSenderCache) senderKind(ctx context.Context) (number, problem string, retry bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.valid && c.now().Sub(c.at) < signalSenderTTL {
-		return c.number, c.problem
+		return c.number, c.problem, c.retry
 	}
 	rctx, cancel := context.WithTimeout(ctx, signalReadTimeout)
 	defer cancel()
@@ -126,27 +188,30 @@ func (c *signalSenderCache) sender(ctx context.Context) (number, problem string)
 		// database outage costs one read and one log line per interval.
 		log.Printf("[signal] sender check failed: %s", signalLogText(err.Error()))
 		if ctx.Err() == nil {
-			c.at, c.valid, c.number, c.problem = c.now(), true, "", signalNotConnectedText
+			c.at, c.valid, c.number, c.problem, c.retry = c.now(), true, "", signalDBUnavailableText, true
 		}
-		return "", signalNotConnectedText
+		return "", signalDBUnavailableText, true
 	}
-	number, problem = signalSenderFrom(st)
-	c.at, c.valid, c.number, c.problem = c.now(), true, number, problem
-	return number, problem
+	number, problem, retry = signalSenderFrom(st)
+	c.at, c.valid, c.number, c.problem, c.retry = c.now(), true, number, problem, retry
+	return number, problem, retry
 }
 
 // signalSenderFrom decides from both rows. The number is returned with the "not confirmed" problem so the
-// notifier can mask it in the texts it stores.
-func signalSenderFrom(st db.SignalSidecarState) (number, problem string) {
+// notifier can mask it in the texts it stores. A service that is not connected may come back; an account that
+// is not linked, not confirmed or in an error state needs the operator.
+func signalSenderFrom(st db.SignalSidecarState) (number, problem string, retry bool) {
 	switch {
 	case !st.HeartbeatFresh:
-		return "", signalNotConnectedText
+		return "", signalNotConnectedText, true
+	case st.State == db.SignalStateError:
+		return "", signalErrorStateText, false
 	case st.State != db.SignalStateLinked || st.AccountNumber == "":
-		return "", signalNotLinkedText
+		return "", signalNotLinkedText, false
 	case st.ConfirmedAccount == "" || st.ConfirmedAccount != st.AccountNumber:
-		return st.AccountNumber, signalNotConfirmedText
+		return st.AccountNumber, signalNotConfirmedText, false
 	}
-	return st.AccountNumber, ""
+	return st.AccountNumber, "", false
 }
 
 // ---- text helpers ----
@@ -318,6 +383,9 @@ func (s *Server) signalAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	role := currentSignalRole()
+	if signalOn() {
+		role = signalRoleCurrent(r.Context(), pg)
+	}
 	out := signalStatusJSON{
 		Mode: "off", State: db.SignalStateUnknown, DBAuth: signalAuthValue(role.Auth),
 		DBRole:   signalDBRoleJSON{State: role.State, Detail: role.Detail},
@@ -369,6 +437,7 @@ func (s *Server) signalAccount(w http.ResponseWriter, r *http.Request) {
 func (s *Server) signalCheckPassword(w http.ResponseWriter, pg *db.DB, sub *throttleSubject, operator, password string) bool {
 	hash, ok, err := pg.GetSetting(authPassKey)
 	if err != nil {
+		log.Printf("[signal] password check: cannot read the stored password: %s", signalLogText(err.Error()))
 		writeErr(w, http.StatusServiceUnavailable, errDataSourceUnavailable)
 		return false
 	}
@@ -471,11 +540,15 @@ func (s *Server) signalLink(w http.ResponseWriter, r *http.Request) {
 		writeSignalCode(w, status, code, msg)
 		return
 	}
+	resetSignalSender()
 	log.Printf("[signal] link requested by %s (generation %d)", logSafe(operator), gen)
 	writeJSON(w, http.StatusAccepted, map[string]any{"gen": gen})
 }
 
 var signalDeviceRe = regexp.MustCompile(`^[A-Za-z0-9 ._-]{1,50}$`)
+
+// signalLinkLogged is the generation whose address was fetched last; one audit line is written for each.
+var signalLinkLogged atomic.Int64
 
 // GET /api/notify/signal/link
 func (s *Server) signalLinkURI(w http.ResponseWriter, r *http.Request) {
@@ -491,6 +564,9 @@ func (s *Server) signalLinkURI(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		writeSignalCode(w, http.StatusNotFound, signalCodeNoLinkPending, "No link is pending")
 		return
+	}
+	if signalLinkLogged.Swap(info.Gen) != info.Gen {
+		log.Printf("[signal] link address fetched by %s (generation %d)", logSafe(operatorSubject(r)), info.Gen)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"gen": info.Gen, "uri": info.URI, "expires_at": *signalTime(info.ExpiresAt),
@@ -558,6 +634,7 @@ func (s *Server) signalConfirm(w http.ResponseWriter, r *http.Request) {
 	switch res {
 	case db.SignalConfirmed:
 		sub.throttleSuccess()
+		resetSignalSender()
 		log.Printf("[signal] account confirmed by %s", logSafe(operator))
 		w.WriteHeader(http.StatusOK)
 	case db.SignalConfirmMismatch:
@@ -628,6 +705,7 @@ func (s *Server) signalUnlink(w http.ResponseWriter, r *http.Request) {
 		writeSignalCode(w, status, code, msg)
 		return
 	}
+	resetSignalSender()
 	log.Printf("[signal] unlink requested by %s (generation %d)", logSafe(operator), gen)
 	w.WriteHeader(http.StatusAccepted)
 }
