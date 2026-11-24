@@ -4,6 +4,7 @@ import {
   signalCardView,
   signalFailureKind,
   signalRequest,
+  signalServiceLine,
   signalVersionLabel,
 } from "./signal-account.ts";
 import assert from "node:assert/strict";
@@ -33,7 +34,7 @@ const status = (over = {}) => ({
   ...over,
 });
 
-const view = (s, phase = "idle") => signalCardView(s, NOW, phase);
+const view = (s, phase = "idle", requestedAtMs = null) => signalCardView(s, NOW, phase, requestedAtMs);
 
 test("mode off shows the off view and no warnings", () => {
   assert.deepEqual(view(status({ mode: "off" })), { state: { kind: "off" }, warnings: [] });
@@ -174,8 +175,25 @@ test("a warning without text shows its kind, and no warning is ever an object", 
 test("a leftover error from an earlier link attempt is not shown while a new link is prepared", () => {
   const s = status({ last_error: "link interrupted" });
   assert.deepEqual(view(s, "preparing").state, { kind: "preparing" });
-  assert.deepEqual(view(s, "fetch_failed").state, { kind: "preparing_failed" });
+  assert.deepEqual(view(s, "fetch_failed", NOW).state, { kind: "preparing_failed" });
   assert.deepEqual(view(status(), "preparing").state, { kind: "preparing" });
+});
+
+test("preparing_failed shows the error of the current request and no older one", () => {
+  const REQ = NOW - 20_000;
+  const err = (at) => status({ last_error: "link failed", last_error_at: at });
+  // Older than the request, or no way to tell: hidden in both phases.
+  assert.deepEqual(view(err(iso(REQ - 60_000)), "preparing", REQ).state, { kind: "preparing" });
+  assert.deepEqual(view(err(iso(REQ - 60_000)), "fetch_failed", REQ).state, { kind: "preparing_failed" });
+  assert.deepEqual(view(err(null), "fetch_failed", REQ).state, { kind: "preparing_failed" });
+  assert.deepEqual(view(err(iso(REQ + 5_000)), "fetch_failed", null).state, { kind: "preparing_failed" });
+  assert.deepEqual(view(err("not a time"), "fetch_failed", REQ).state, { kind: "preparing_failed" });
+  // Newer than the request: shown after the failure, never while still preparing.
+  assert.deepEqual(view(err(iso(REQ + 5_000)), "fetch_failed", REQ).state, {
+    kind: "preparing_failed",
+    lastError: "link failed",
+  });
+  assert.deepEqual(view(err(iso(REQ + 5_000)), "preparing", REQ).state, { kind: "preparing" });
 });
 
 test("the version gets a v prefix only when it starts with a digit", () => {
@@ -183,6 +201,9 @@ test("the version gets a v prefix only when it starts with a digit", () => {
   assert.equal(signalVersionLabel("dev"), "dev");
   assert.equal(signalVersionLabel("v0.6.1m"), "v0.6.1m");
   assert.equal(signalVersionLabel(""), "");
+  assert.equal(signalServiceLine("0.6.1", "0.14.10"), "Service: connected (v0.6.1, signal-cli 0.14.10)");
+  assert.equal(signalServiceLine("", "0.14.10"), "Service: connected (signal-cli 0.14.10)");
+  assert.equal(signalServiceLine("dev", "0.14.10"), "Service: connected (dev, signal-cli 0.14.10)");
 });
 
 test("the failure kinds of the codes the server sends", () => {

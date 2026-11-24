@@ -23,7 +23,7 @@ export type SignalCardState =
   | { kind: "no_service" }
   | { kind: "unknown" }
   | { kind: "preparing" }
-  | { kind: "preparing_failed" }
+  | { kind: "preparing_failed"; lastError?: string }
   | { kind: "linking"; secondsLeft: number }
   | { kind: "linking_stale"; secondsLeft: number }
   | { kind: "expired" }
@@ -74,7 +74,12 @@ export function signalWarnings(status: SignalAccountStatus): SignalWarning[] {
   return out;
 }
 
-function cardState(status: SignalAccountStatus, nowMs: number, phase: SignalLinkPhase): SignalCardState {
+function cardState(
+  status: SignalAccountStatus,
+  nowMs: number,
+  phase: SignalLinkPhase,
+  requestedAtMs: number | null,
+): SignalCardState {
   const fresh = status.sidecar.alive && status.sidecar.heartbeat_age_s <= SIGNAL_HEARTBEAT_STALE_S;
 
   if (status.state === "linking") {
@@ -93,10 +98,16 @@ function cardState(status: SignalAccountStatus, nowMs: number, phase: SignalLink
     case "unknown":
       return { kind: "unknown" };
     case "unlinked": {
-      // last_error is left over from an earlier attempt and carries no generation, so it is not shown
-      // while a new link is prepared.
+      // last_error may be left over from an earlier attempt, so it is not shown while a new link is
+      // prepared. After the failure it is shown only when it is dated after the request was sent.
       if (phase === "preparing") return { kind: "preparing" };
-      if (phase === "fetch_failed") return { kind: "preparing_failed" };
+      if (phase === "fetch_failed") {
+        const at = status.last_error_at ? Date.parse(status.last_error_at) : Number.NaN;
+        if (status.last_error && requestedAtMs !== null && at > requestedAtMs) {
+          return { kind: "preparing_failed", lastError: status.last_error };
+        }
+        return { kind: "preparing_failed" };
+      }
       return {
         kind: "unlinked",
         removedOnSignal: status.remote_unlink || null,
@@ -125,14 +136,16 @@ function cardState(status: SignalAccountStatus, nowMs: number, phase: SignalLink
 }
 
 // signalCardView maps the status payload to the one card state to show. nowMs is passed in so the
-// countdowns stay a pure function of their inputs. phase is the browser's own link request progress.
+// countdowns stay a pure function of their inputs. phase is the browser's own link request progress and
+// requestedAtMs the time the browser sent that request (null when it did not, for example after a reload).
 export function signalCardView(
   status: SignalAccountStatus,
   nowMs: number,
   phase: SignalLinkPhase = "idle",
+  requestedAtMs: number | null = null,
 ): SignalCardView {
   if (status.mode === "off") return { state: { kind: "off" }, warnings: [] };
-  return { state: cardState(status, nowMs, phase), warnings: signalWarnings(status) };
+  return { state: cardState(status, nowMs, phase, requestedAtMs), warnings: signalWarnings(status) };
 }
 
 export class SignalRequestError extends Error {
@@ -258,4 +271,10 @@ export async function signalRequest<T>(t: SignalTransport, method: string, path:
 // such as "dev" or a tag that already has its own prefix is shown as it is.
 export function signalVersionLabel(version: string): string {
   return /^[0-9]/.test(version) ? `v${version}` : version;
+}
+
+// signalServiceLine is the card's line about the sidecar; an empty version leaves its segment out.
+export function signalServiceLine(version: string, cliVersion: string): string {
+  const parts = [signalVersionLabel(version), `signal-cli ${cliVersion}`].filter(Boolean);
+  return `Service: connected (${parts.join(", ")})`;
 }

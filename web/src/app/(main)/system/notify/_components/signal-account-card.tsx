@@ -16,7 +16,7 @@ import {
   SignalRequestError,
   type SignalWarning,
   signalCardView,
-  signalVersionLabel,
+  signalServiceLine,
 } from "@/lib/signal-account";
 import type { SignalAccountStatus, SignalGroup, SignalLinkURI } from "@/lib/types";
 
@@ -74,6 +74,7 @@ export function useSignalAccount(): SignalAccountApi {
   const [refreshFrom, setRefreshFrom] = React.useState<{ at: string | null } | null>(null);
   const [justUnlinked, setJustUnlinked] = React.useState(false);
   const [nowMs, setNowMs] = React.useState(() => Date.now());
+  const [requestedAtMs, setRequestedAtMs] = React.useState<number | null>(null);
   const preparingSince = React.useRef(0);
   const fetchingURI = React.useRef(false);
   const loadSeq = React.useRef(0);
@@ -126,11 +127,11 @@ export function useSignalAccount(): SignalAccountApi {
   const { view, viewError } = React.useMemo<{ view: SignalCardView | null; viewError: string | null }>(() => {
     if (!status) return { view: null, viewError: null };
     try {
-      return { view: signalCardView(status, nowMs, phase), viewError: null };
+      return { view: signalCardView(status, nowMs, phase, requestedAtMs), viewError: null };
     } catch (e) {
       return { view: null, viewError: (e as Error).message };
     }
-  }, [status, nowMs, phase]);
+  }, [status, nowMs, phase, requestedAtMs]);
 
   const fetchURI = React.useCallback(() => {
     if (fetchingURI.current) return;
@@ -237,6 +238,7 @@ export function useSignalAccount(): SignalAccountApi {
     reload: load,
     startLink: (v) =>
       guard(async () => {
+        setRequestedAtMs(Date.now());
         await api.signalStartLink(v);
         setJustUnlinked(false);
         setUri(null);
@@ -404,6 +406,7 @@ export function SignalAccountCard({ signal }: { signal: SignalAccountApi }) {
         return (
           <div className="flex flex-wrap items-center gap-3">
             <Line>Could not load the link code.</Line>
+            {state.lastError && <Line>{state.lastError}</Line>}
             <Button size="sm" variant="outline" onClick={signal.retryLink}>
               Retry
             </Button>
@@ -522,7 +525,7 @@ export function SignalAccountCard({ signal }: { signal: SignalAccountApi }) {
   const warnings = view?.warnings ?? [];
   const serviceLine =
     status?.sidecar.alive && !signal.mock
-      ? `Service: connected (${signalVersionLabel(status.sidecar.version)}, signal-cli ${status.sidecar.signal_cli_version})`
+      ? signalServiceLine(status.sidecar.version, status.sidecar.signal_cli_version)
       : "Service: not connected";
 
   return (
