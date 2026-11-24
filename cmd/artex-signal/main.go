@@ -30,6 +30,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/mkilijanek/artex/signalsidecar"
+	"golang.org/x/sys/unix"
 )
 
 // version is set at build time.
@@ -48,6 +49,10 @@ const (
 	exitConfig = 78
 
 	serviceName = "artex-signal"
+
+	// childDownGrace is how long signal-cli may be down or silent before the
+	// health check fails; a restart with backoff fits inside it.
+	childDownGrace = 2 * time.Minute
 )
 
 // Fixed places and values of the image; the child never gets more than these.
@@ -133,6 +138,14 @@ func realMain(args []string, getenv func(string) string, unsetenv func(string) e
 		return 2
 	}
 
+	// Unsetting a variable does not change /proc/<pid>/environ, which holds the
+	// initial environment, and the child runs as the same user. A process that
+	// is not dumpable makes its /proc files root-owned, so the child cannot read
+	// the password from them. This runs before anything is started.
+	if err := unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0); err != nil {
+		log.Printf("[signal] cannot make the process non-dumpable: %v", err)
+		return 1
+	}
 	s, err := readSettings(getenv)
 	if err != nil {
 		log.Printf("[signal] %v", err)
@@ -293,6 +306,9 @@ func healthcheck(socket string) error {
 	}
 	if about.Service != serviceName {
 		return errors.New("the socket belongs to another service")
+	}
+	if about.ChildDownSeconds > int64(childDownGrace/time.Second) {
+		return fmt.Errorf("signal-cli has been down or silent for %d s", about.ChildDownSeconds)
 	}
 	return nil
 }

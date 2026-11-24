@@ -25,6 +25,7 @@ import (
 	"github.com/mkilijanek/artex/db"
 	"github.com/mkilijanek/artex/db/dbtest"
 	"github.com/mkilijanek/artex/signalsidecar"
+	"golang.org/x/sys/unix"
 )
 
 // fakeBin is the stand-in for signal-cli, built once.
@@ -101,6 +102,27 @@ func TestReadSettings(t *testing.T) {
 	}
 }
 
+// The initial environment stays readable in /proc/<pid>/environ after
+// os.Unsetenv, and the child runs as the same user. A non-dumpable process
+// keeps its /proc files away from that user.
+func TestRealMainMakesTheProcessNonDumpable(t *testing.T) {
+	if err := unix.Prctl(unix.PR_SET_DUMPABLE, 1, 0, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = unix.Prctl(unix.PR_SET_DUMPABLE, 1, 0, 0, 0) })
+	none := func(string) string { return "" }
+	if code := realMain(nil, none, func(string) error { return nil }); code != exitConfig {
+		t.Fatalf("exit %d, want %d", code, exitConfig)
+	}
+	got, err := unix.PrctlRetInt(unix.PR_GET_DUMPABLE, 0, 0, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 0 {
+		t.Fatalf("PR_GET_DUMPABLE = %d after the sidecar started, want 0", got)
+	}
+}
+
 func TestRealMainExitCodes(t *testing.T) {
 	var removed []string
 	unset := func(k string) error { removed = append(removed, k); return nil }
@@ -150,6 +172,20 @@ func serveSocket(t *testing.T, handler http.Handler) string {
 	srv.Start()
 	t.Cleanup(srv.Close)
 	return path
+}
+
+func TestHealthcheckFailsWhenTheChildHasBeenDownBeyondTheGrace(t *testing.T) {
+	about := func(down int64) string {
+		return serveSocket(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(signalsidecar.About{Service: "artex-signal", State: "linked", ChildDownSeconds: down})
+		}))
+	}
+	if err := healthcheck(about(30)); err != nil {
+		t.Fatalf("a short outage must not fail the check: %v", err)
+	}
+	if err := healthcheck(about(121)); err == nil {
+		t.Fatal("a child down for 121 s passed the check")
+	}
 }
 
 func TestHealthcheckUsesTheSocketOnly(t *testing.T) {
@@ -385,12 +421,13 @@ func TestServeRunsTheSidecarEndToEnd(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- serve(ctx, settings{dsn: f.dsn, socket: socket, data: data}, h) }()
 
-	// The database has not confirmed password authentication: an error is
-	// reported and signal-cli is not started.
-	f.waitStatus("the error", 15*time.Second, func(state string, _ int64, errText, _ string) bool {
-		return state == "error" && strings.Contains(errText, "has not confirmed password authentication")
+	// The database has not confirmed password authentication: this is a
+	// transient condition, so no error is reported (the state stays unknown),
+	// and signal-cli is not started.
+	time.Sleep(2 * time.Second)
+	f.waitStatus("no error", time.Second, func(state string, _ int64, errText, _ string) bool {
+		return state == "unknown" && errText == ""
 	})
-	time.Sleep(time.Second)
 	if exists(starts) || exists(socket) {
 		t.Fatal("signal-cli or the socket was started before the database confirmed the authentication")
 	}
