@@ -679,7 +679,7 @@ func TestSignalConfirmGuessesAreThrottled(t *testing.T) {
 	g := newSignalRig(t)
 	g.exec(`UPDATE signal_sidecar_config SET gen=1 WHERE id`)
 	g.sidecar(db.SignalStateLinked, 1, sigTestNumber, 0)
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 3; i++ {
 		wantSignalCode(t, g.post("/api/notify/signal/account/confirm", map[string]any{"gen": 1, "last_digits": fmt.Sprintf("00000%d", i)}), 403, "number_mismatch")
 	}
 	w := g.post("/api/notify/signal/account/confirm", map[string]any{"gen": 1, "last_digits": "550101"})
@@ -689,6 +689,53 @@ func TestSignalConfirmGuessesAreThrottled(t *testing.T) {
 	}
 	if g.config().confirmed != "" {
 		t.Fatal("the account was confirmed while locked out")
+	}
+}
+
+// Wrong digits cost more with every further wrong attempt: from the 3rd the wait is 10 s and doubles up
+// to 15 minutes, whatever the shared password throttle would allow. A right answer or a new link clears it.
+func TestSignalConfirmWrongDigitsBackOffProgressively(t *testing.T) {
+	g := newSignalRig(t)
+	clk := useThrottle(t)
+	old := signalConfirmBackoff
+	signalConfirmBackoff = &signalConfirmBackoffState{now: clk.now, m: map[string]*signalConfirmEntry{}}
+	t.Cleanup(func() { signalConfirmBackoff = old })
+	g.exec(`UPDATE signal_sidecar_config SET gen=1 WHERE id`)
+	g.sidecar(db.SignalStateLinked, 1, sigTestNumber, 0)
+	wrong := func() *httptest.ResponseRecorder {
+		return g.post("/api/notify/signal/account/confirm", map[string]any{"gen": 1, "last_digits": "000000"})
+	}
+	retryAfter := func(w *httptest.ResponseRecorder) int {
+		t.Helper()
+		secs, err := strconv.Atoi(w.Header().Get("Retry-After"))
+		if err != nil {
+			t.Fatalf("Retry-After = %q", w.Header().Get("Retry-After"))
+		}
+		return secs
+	}
+	for i := 0; i < 3; i++ {
+		wantSignalCode(t, wrong(), 403, "number_mismatch")
+	}
+	for _, want := range []int{10, 20, 40, 80, 160, 320, 640, 900, 900} {
+		w := wrong()
+		wantSignalCode(t, w, 429, "")
+		if got := retryAfter(w); got != want {
+			t.Fatalf("Retry-After = %d, want %d", got, want)
+		}
+		// A correct answer is refused while the wait runs, and one second short of it still is.
+		clk.advance(time.Duration(want)*time.Second - time.Second)
+		wantSignalCode(t, g.post("/api/notify/signal/account/confirm", map[string]any{"gen": 1, "last_digits": "550101"}), 429, "")
+		clk.advance(time.Second)
+		wantSignalCode(t, wrong(), 403, "number_mismatch")
+	}
+	// A new link request clears the back-off.
+	signalConfirmBackoff.clearAll()
+	clk.advance(time.Hour)
+	wantSignalCode(t, wrong(), 403, "number_mismatch")
+	// A right answer clears it too.
+	wantSignalCode(t, g.post("/api/notify/signal/account/confirm", map[string]any{"gen": 1, "last_digits": "550101"}), 200, "")
+	if n := len(signalConfirmBackoff.m); n != 0 {
+		t.Fatalf("%d back-off entries left after a right answer", n)
 	}
 }
 

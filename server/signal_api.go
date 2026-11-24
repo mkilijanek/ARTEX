@@ -540,6 +540,7 @@ func (s *Server) signalLink(w http.ResponseWriter, r *http.Request) {
 		writeSignalCode(w, status, code, msg)
 		return
 	}
+	signalConfirmBackoff.clearAll()
 	resetSignalSender()
 	log.Printf("[signal] link requested by %s (generation %d)", logSafe(operator), gen)
 	writeJSON(w, http.StatusAccepted, map[string]any{"gen": gen})
@@ -594,6 +595,95 @@ func (s *Server) signalCancelLink(w http.ResponseWriter, r *http.Request) {
 
 // ---- confirm ----
 
+const (
+	signalConfirmFreeWrong = 2                // wrong digits tolerated before the waits start (the 3rd starts one)
+	signalConfirmBaseWait  = 10 * time.Second // wait after the 3rd wrong attempt; doubles with each further one
+	signalConfirmMaxWait   = 15 * time.Minute
+	signalConfirmMaxKeys   = 10000
+)
+
+type signalConfirmEntry struct {
+	wrong int
+	until time.Time
+	last  time.Time
+}
+
+// signalConfirmBackoffState makes wrong confirm digits progressively costly, on top of the shared password
+// throttle (which allows a retry after one second): from the 3rd wrong attempt of a source or device,
+// the wait doubles with each further wrong attempt, up to signalConfirmMaxWait. A right answer or a new
+// link request clears it.
+type signalConfirmBackoffState struct {
+	mu  sync.Mutex
+	now func() time.Time
+	m   map[string]*signalConfirmEntry
+}
+
+var signalConfirmBackoff = &signalConfirmBackoffState{now: time.Now, m: map[string]*signalConfirmEntry{}}
+
+func signalConfirmKey(sub *throttleSubject) string {
+	if sub.device {
+		return "device:" + sub.key
+	}
+	return "source:" + sub.key
+}
+
+// left is the time key still has to wait.
+func (b *signalConfirmBackoffState) left(key string) time.Duration {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if e, ok := b.m[key]; ok {
+		return e.until.Sub(b.now())
+	}
+	return 0
+}
+
+// wrong records one wrong attempt and starts the wait it earns.
+func (b *signalConfirmBackoffState) wrong(key string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	now := b.now()
+	if len(b.m) >= signalConfirmMaxKeys {
+		for k, e := range b.m {
+			if now.Sub(e.last) > 2*signalConfirmMaxWait {
+				delete(b.m, k)
+			}
+		}
+		if len(b.m) >= signalConfirmMaxKeys {
+			return
+		}
+	}
+	e, ok := b.m[key]
+	if !ok {
+		e = &signalConfirmEntry{}
+		b.m[key] = e
+	} else if now.Sub(e.last) > 2*signalConfirmMaxWait {
+		e.wrong = 0
+	}
+	e.wrong++
+	e.last = now
+	if e.wrong <= signalConfirmFreeWrong {
+		return
+	}
+	shift := e.wrong - signalConfirmFreeWrong - 1
+	wait := signalConfirmMaxWait
+	if shift < 20 && signalConfirmBaseWait<<shift < wait {
+		wait = signalConfirmBaseWait << shift
+	}
+	e.until = now.Add(wait)
+}
+
+func (b *signalConfirmBackoffState) clear(key string) {
+	b.mu.Lock()
+	delete(b.m, key)
+	b.mu.Unlock()
+}
+
+func (b *signalConfirmBackoffState) clearAll() {
+	b.mu.Lock()
+	clear(b.m)
+	b.mu.Unlock()
+}
+
 type signalConfirmRequest struct {
 	Gen        int64  `json:"gen"`
 	LastDigits string `json:"last_digits"`
@@ -605,6 +695,13 @@ var signalDigitsRe = regexp.MustCompile(`^[0-9]{6}$`)
 func (s *Server) signalConfirm(w http.ResponseWriter, r *http.Request) {
 	pg := s.signalReady(w)
 	if pg == nil {
+		return
+	}
+	// The back-off is tested before the shared throttle, so that its longer wait is the one reported.
+	subject := s.throttleSubjectOf(r)
+	ckey := signalConfirmKey(&subject)
+	if left := signalConfirmBackoff.left(ckey); left > 0 {
+		refuseThrottled(w, left)
 		return
 	}
 	sub, ok := s.admit(w, r)
@@ -634,11 +731,13 @@ func (s *Server) signalConfirm(w http.ResponseWriter, r *http.Request) {
 	switch res {
 	case db.SignalConfirmed:
 		sub.throttleSuccess()
+		signalConfirmBackoff.clear(ckey)
 		resetSignalSender()
 		log.Printf("[signal] account confirmed by %s", logSafe(operator))
 		w.WriteHeader(http.StatusOK)
 	case db.SignalConfirmMismatch:
 		sub.throttleFailure()
+		signalConfirmBackoff.wrong(ckey)
 		log.Printf("[signal] confirmation refused for %s: the digits do not match", logSafe(operator))
 		writeSignalCode(w, http.StatusForbidden, signalCodeNumberMismatch, "The digits do not match the linked number")
 	default:
