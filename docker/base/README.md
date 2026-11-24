@@ -2,8 +2,8 @@
 
 `docker/base/` builds the image that holds everything ARTEX needs at run time except ARTEX itself: apt
 packages, Node, the recon binaries, the tool user and run directories, Playwright, and bbot with its
-dependencies. The release `Dockerfile` starts from it by digest and adds the binary, the skills and the
-start script.
+dependencies. Once the release `Dockerfile` is switched to it, the release image starts from a pinned digest of
+this image and adds the binary, the skills and the start script.
 
 | File | Purpose |
 |---|---|
@@ -148,5 +148,6 @@ so the marker name, or the way it is checked. After changing `BBOT_VERSION`, re-
 
 Even with unchanged `docker/base/**` a rebuild can differ: `bbot --install-all-deps` (its own downloads
 and apt choices), the NodeSource setup script and the Node 22.x minor, Debian packages (updated on purpose
-by `apt-get upgrade`), and Playwright's `--with-deps` packages. The recon binaries, bbot, Playwright and
-sqlmap are version-pinned but not hash-pinned. The inventory diff is where to review them.
+by `apt-get upgrade`), and Playwright's `--with-deps` packages. The recon binaries and jadx are pinned by
+version and sha256; bbot, Playwright and sqlmap are version-pinned only. The inventory diff is where to review
+them.
