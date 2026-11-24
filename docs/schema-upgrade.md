@@ -438,8 +438,13 @@ the server creates and checks it at start when `ARTEX_SIGNAL_DB_PASSWORD` is set
   The sidecar's own data volume is not touched.
 - **Order.** Run this drop **first** of all the recipes (see "Order of the recipes"). All the others refuse while
   `5004` is recorded.
-- **Restore.** A dump taken after the upgrade holds `GRANT` lines for the role: create the role first, or restore
-  with `--no-acl` and start ARTEX, which grants again.
+- **Restore.** A dump taken after the upgrade holds `GRANT` lines for the role, but not the role (roles belong to the
+  cluster). Restored into a cluster without the role, those lines fail with `role "artex_signal" does not exist` and
+  the rest of the restore goes on; ARTEX creates the role and grants again at its next start with
+  `ARTEX_SIGNAL_DB_PASSWORD` set. Or create the role first (statements in the example deployment README, "Backup of
+  the account"). **Do not restore with `--no-acl`** (or dump with `--no-acl` / `-x`): that also drops the
+  `REVOKE ALL ON FUNCTION ... FROM PUBLIC` lines, so every role could execute the four functions; the same README
+  has the statements that close them again.
 
 ### Restores
 
