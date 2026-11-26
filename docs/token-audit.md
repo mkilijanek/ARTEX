@@ -1,26 +1,69 @@
 # Token and cost audit
 
-Baseline: `fc35dddee8286d584f71ba751a02c48bc60835a3`, reviewed 2026-11-14.
-References below are baseline line numbers; use function names after edits.
+Original review: baseline `fc35dddee8286d584f71ba751a02c48bc60835a3`, 2026-11-14. The path table below was
+refreshed against the code of release `v0.7.0m` (`b462710`). Line numbers in the table are checked with
+`bash scripts/check-doc-anchors.sh docs/token-audit.md`; after a code change, `--update` moves the anchors
+that still resolve to exactly one line. The sections after the table are dated review records: their line
+numbers, byte counts and test counts describe the code at their date, not the current code.
 No live model measurements or token savings have been established.
+
+Priority rule:
+- **P1**: on by default, sends context to the model, and its live token or correctness effect is unmeasured.
+- **P2**: opt-in (off by default) and waiting for a live comparison before any default change.
+- **P3**: accounting or measurement only, excluded from ARTEX reports, or external to the configured provider.
 
 | Path | Observation | Risk | Priority | Planned issue |
 | --- | --- | --- | --- | --- |
-| `agent/planner.go:299` `renderGraphOverview` | Serializes shared overview each planner round; fresh sessions cannot consume standalone deltas safely. | High input repetition; versioned snapshot, durable base and resync needed. | P1 | #17 |
-| `agent/worker.go:362` `renderWorkerGraphOverview`; `:435` initial context | Full overview repeated for each intent; assets also marshaled into system context. | Bound by intent relevance while preserving goals, scope and negative observations. | P1 | #18, #1, #2 |
-| `agent/tools.go:441` `graphOverviewData`; `:484–613` fact/digest selection | Cold members are already suppressed; do not assume every recent fact is duplicated. Inherited sources add another context path. | Measure ID overlap before changing selection. | P1 | #20 |
-| `agent/tools.go:1966` get_worker_trace; `:2037` step response | Five-step limit bounds count but not full content bytes. | Bounded excerpts and read-slice retrieval must retain original evidence in storage. | P1 | #19 |
-| `agent/compaction.go:516` `compress`; `:96` compactor session | Atomic model call returns usage; attribution depends on decorated provider, not the discarded return variable. | Count summary spend and preserve evidence source IDs. | P1 | #15, #21 |
-| `agent/provider.go:191` `compactionConfig` | SDK transcript compaction is a distinct path from cold-graph compaction. | Shared session can conceal summary cost within worker/main lane. Explicitly exclude purpose-level comparisons until tagged. | P1 | #15, #21 |
-| `llmrec/llmrec.go:121` `Stream`; `:223` `Complete` | Existing ledger runs with debug recording off. Stream input/cache deltas were summed even when SDK adapters echo totals. | Correctness before optimization; compare SDK `Usage.MergeEcho` contract. | P1 | #14, #16 |
-| `db/llm_usage.go:346` `applyCostEur` | Fresh input subtracts cache reads but originally not cache creation, although SDK Anthropic input includes both. | Cache-write tokens charged at both fresh and cache-write prices. | P1 | #16 |
-| `server/task_llm.go:319` `completeTaskLLM`; `:389` `streamTaskLLM` | Runtime retries and profile switches invoke decorated providers repeatedly. | Count physical invocations separately from logical rounds; do not add return usage to ledger totals. | P1 | #14, #15 |
-| `server/server.go:465`, `:600` recorder wrapping | Both environment and persisted-profile provider paths share recorder. | Label actual configured adapter; do not retain endpoint/key in metrics. Pool-internal retries require separate audit. | P1 | #14, #15 |
-| `server/intercept.go:51`, `:85` judge lane | Judge uses explicit worker override and decorated provider. | Retain judgement and safety context; no prompt trimming here. | P1 | #15 |
-| `sidequestion/context.go:111` summary completion; `sidequestion/service.go:25`, `:53` answers | Both invoke bound provider; summary and answer currently share lane. | Purpose-level breakdown is unavailable; zero reported tokens are not proof of zero spend. | P1 | #15 |
-| `agent/mainagent.go`, `agent/planner.go`, `agent/worker.go` prompt assembly | Shared instructions and dynamic intent tails require priority-aware review. | Stable prefix must preserve untrusted boundaries and current intent through compaction. | P1 | #22, #3 |
+| `agent/planner.go:324` `renderGraphOverview` | Serializes the shared overview each planner round. With `ARTEX_BOUNDED_CONTEXT=0` (default) the full overview is sent; the durable snapshot/delta path is opt-in. | High input repetition; snapshot, durable base and resync needed before a default change. | P1: default path, live effect unmeasured | #17 |
+| `agent/worker.go:366` `renderWorkerGraphOverview`; initial context `agent/worker.go:507` `"overview = renderWorkerGraphOverview(data, compact)"` | Full overview repeated for each intent; raw asset records appended to the system context. Compact launch (`ARTEX_WORKER_CONTEXT=1`) is opt-in. | Bound by intent relevance while preserving goals, scope and negative observations. | P1: legacy launch is the default, live effect unmeasured | #18, #1, #2 |
+| `agent/tools.go:442` `ToolSet.graphOverviewData`; fact/digest selection `agent/tools.go:491` `"members folded into an active digest"` to `agent/tools.go:617` `"coldDigestsRecent(t.ts, coldDigestsCap)"` | Cold members are already suppressed; do not assume every recent fact is duplicated. Inherited sources add another context path. | Measure ID overlap before changing selection. | P1: feeds both default launches | #20 |
+| `agent/tools.go:2017` `ToolSet.getWorkerTrace` | Five-step limit bounds count. Byte caps and paging exist only with `ARTEX_BOUNDED_CONTEXT=1`. | Bounded excerpts and read-slice retrieval must retain original evidence in storage. | P1: default trace detail has no byte cap | #19 |
+| `agent/compaction.go:582` `Compactor.compress`; summary call `agent/compaction.go:622` `"graph_summary"`; compactor session `agent/compaction.go:107` `"-compactor"` | Cold-graph summary call, tagged `graph_summary`; usage is recorded by the decorated provider. Memo (`ARTEX_COMPACTION_MEMO`) is opt-in. | Count summary spend and preserve evidence source IDs. | P1: default-on model call, frequency unmeasured | #15, #21 |
+| `agent/provider.go:200` `compactionConfig` | SDK transcript compaction, separate from cold-graph compaction; its provider is tagged `transcript_summary`. | Summary cost must stay visible per purpose; compare purposes only on post-tag rows. | P1: default-on model call, frequency unmeasured | #15, #21 |
+| `llmrec/llmrec.go:122` `Recorder.Stream`; `llmrec/llmrec.go:243` `Recorder.Complete` | Usage ledger. Echoed stream totals are no longer summed (#35, SDK integration #47); historical rows are not rewritten. | Compare post-fix cohorts only. | P3: accounting | #14, #16 |
+| `db/llm_usage.go:358` `applyCostEur` | Fresh input is priced as `max(0, input - cache_read - cache_write)` per call. | Unknown or zero cache tariffs leave cost unknown, not zero. | P3: accounting | #16 |
+| `server/task_llm.go:319` `completeTaskLLM`; `server/task_llm.go:401` `streamTaskLLM` | Runtime retries and profile switches invoke decorated providers repeatedly. | Count physical invocations separately from logical rounds; do not add returned usage to ledger totals. | P3: accounting | #14, #15 |
+| Recorder wrapping `server/server.go:483` `"cfg.Model, profName,"` (`Server.applyLLM`), `server/server.go:619` `"cfg.Model, p.Name,"` (`Server.providerForProfile`) | Environment and persisted-profile providers share the recorder. Failover members are built through `providerForProfile` (`server/llmpool.go:61` `"s.providerForProfile(p.ID)"`), so each member call is recorded. | SDK-internal HTTP retries below the recorder stay excluded. Do not store endpoint or key in metrics. | P3: accounting | #14, #15 |
+| `llmpool/pool.go:82` `Pool.Stream`; `llmpool/pool.go:130` `Pool.Complete` | Failover chain across profiles; attempt ordinals are shared within a logical call. | A failover attempt is a second physical call with its own usage. | P3: accounting | #14 |
+| Judge lane `server/intercept.go:52` `"llmrec.WithWorker(ctx, judgeWorkerLane)"`; call `server/intercept.go:87` `"prov.Stream(ctx, req)"` | Fallback judge for tool calls no rule matched, off by default (setting `llm_judge_enabled`, read with default `false` in `intercept/intercept.go:340` `"GetBool(settingJudgeEnabled, false)"`); usage is recorded under lane `judge`. | Retain judgement and safety context; no prompt trimming here. | P2: opt-in (`llm_judge_enabled`), volume unmeasured | #15 |
+| Side questions `sidequestion/context.go:112` `"side_summary"`; answers `sidequestion/service.go:27` `"s.Provider.Stream(ctx, req)"`, `sidequestion/service.go:57` `"s.Provider.Complete(ctx, req)"` | Summary and answer are tagged `side_summary` and `side_answer`. | Zero reported tokens are not proof of zero spend. | P1: default-on model calls, volume unmeasured | #15 |
+| `sidequestion/capture.go:142` `boundProvider` | Captures the model route for side questions; passes calls through, adds no request. | None for tokens. | P3: no added call | - |
+| `agent/mainagent.go`, `agent/planner.go`, `agent/worker.go` prompt assembly | Shared instructions and dynamic intent tails. The stable-prefix layout is opt-in (`ARTEX_CACHE_PREFIX=1`). | Stable prefix must preserve untrusted boundaries and current intent through compaction. | P1: default prompts, cache effect unmeasured | #22, #3 |
+| `agent/data_envelope.go:35` `dataEnvelopeEnabled` | Data envelope and planner goal anchor, on by default (`ARTEX_DATA_ENVELOPE=1`). Fixture overhead: planner input +2681 B, worker launch +1406 B (`TestEnvelopeOverheadMeasurement`, bytes, not tokens; an earlier run measured +1407 B, the figure varies by one byte between runs). | Adds bytes to every planner round and worker launch. | P1: default on, token effect unmeasured | - |
+| `agent/norma_trust.go:25` `attachNormaTrust`; `agent/norma_trust.go:59` `summaryTrustProvider.Complete` | SDK tool-output framing and summary trust rules, on by default (`ARTEX_UNTRUSTED_BOUNDARY=1`). | Adds bytes to tool results and SDK summary requests. | P1: default on, token effect unmeasured | - |
+| `agent/context_dedup.go:38` `withContextView` | Request-local field references; active only with `ARTEX_BOUNDED_CONTEXT=1` (`agent/trace_bounds.go:9` `boundedContextEnabled`). | Reference syntax must not be forgeable; omitted values are not negative evidence. | P2: opt-in | #17, #20 |
+| `agent/noa_budget.go:19` `noaBudgetProvider` | Refuses a request whose local estimate exceeds the window; used only with the NOA compaction setting (off by default). The estimate is not a provider token count. | A refusal stops the run instead of dropping evidence. | P2: opt-in | - |
+| `llmmeta/calls.go:56` `ForPurpose` | Tags calls with purpose and round; adds no request. | None for tokens. | P3: accounting | #14 |
+| DeepSeek web search `server/manager.go:311` `deepSeekWebSearchBackend`; credentials `server/manager.go:602` `"m.deepSeekSearchCreds()"` | When the `deepseek` search backend is selected, the SDK web_search tool sends inference to DeepSeek with the active profile's credentials, outside the recorded provider. Not in `llm_usage`. | Spend billed to the profile account but not visible in ARTEX reports. | P3: external, excluded from reports | - |
+| `agent/toolrag_observe.go:81` `toolRAGMode` | Tool RAG observation; tool list and request bytes are unchanged. | None for tokens; see "Tool RAG observation". | P3: measurement only | #25 |
+
+Not token paths (code of `b462710`, checked at `3990ab9`; the code is identical):
+- `agent/capture.go` matches the call-site search
+  (`grep -rln --include='*.go' -E '\.(Complete|Stream)\(|llmmeta\.WithCall\(' . | grep -v -E '_test.go|third_party'`)
+  only at `agent/capture.go:125` `"auditTrace.Complete("`, an audit trace record, not a model call.
+- SDK WebFetch imports no model package: its import block (`sed -n '/^import/,/^)/p' third_party/norma/tool/webfetch.go`)
+  lists the standard library, `github.com/Autumn-27/norma/permission` and `golang.org/x/net/html`.
+- The Signal sidecar makes no model call: `grep -rln -E 'norma/llm|llmrec' signalsidecar cmd/artex-signal`
+  returns nothing.
+- The base image change (PR #110) adds only the base image build, its checks and a workflow
+  (`git diff --stat fe742e2^1 fe742e2`: 8 files under `docker/base`, `docker/base-inventory` and
+  `.github/workflows/image.yml`).
+- The outgoing User-Agent settings (PR #105, `git diff --stat aba106e^1 aba106e`: 33 files) add no prompt or
+  body content; they can change the User-Agent header sent to model endpoints.
+
+Current byte measurements (fixtures, code of `b462710`, run at `3990ab9`; the code is identical; UTF-8 bytes, not provider tokens):
+
+| Measure | Worker | Planner | Main agent | Chat | Test |
+| --- | --- | --- | --- | --- | --- |
+| Rendered template / ceiling | 9833 / 10400 | 13478 / 13500 | 4051 / 4500 | 1457 / 1500 | `TestRenderedAgentPromptByteInventory` |
+| Provider-facing system, recording off / on; ceiling | 11783 / 12473; 14000 | 15431; 16000 | 6004; 7000 | 3407; 3500 | `TestProviderFacingPromptBudgetsWithTrafficAndDeferredTools` |
+
+The values are the same with `ARTEX_CACHE_PREFIX` off and on. No live token, cache or billing measurement
+exists for any row.
 
 ## Implemented instrumentation contract
+
+_Review record of 2026-11-14 (`fa01724`)._
 
 The Phase A foundation extends `llm_usage` with provider, intent ID, runtime
 attempt, completion reason and request byte counts. It keeps existing task,
@@ -45,6 +88,8 @@ provider errors and normal completion are distinct reasons. The observer is a
 measurement hook, not a second usage ledger to add to database counts.
 
 ## Phase A completion and reporting boundaries
+
+_Review record of 2026-11-15 (`7e7b385`)._
 
 Logical model calls carry a random `call_id`, a session-local round number and a
 code-selected purpose. Physical runtime retries share that identity and have
@@ -86,6 +131,8 @@ per-tool token precision. Security and context changes remain later phases.
 
 ## Phase B context contract
 
+_Review record of 2026-11-15 (`7c3044b`)._
+
 `ARTEX_BOUNDED_CONTEXT=1` opts into planner context, transcript references and
 trace slices; its default remains zero. Worker launch projection now has its own
 opt-in `ARTEX_WORKER_CONTEXT` switch (see milestone completion below). Mandatory system
@@ -120,6 +167,8 @@ operator; default code definitions include them without changing custom policy.
 
 ## Review correction: dimensions and call boundaries (#14)
 
+_Review record of 2026-11-15 (`e8060e8`)._
+
 `GET /api/tokens/dimensions?task=ID&purpose=agent&after=0&limit=100` returns
 physical-attempt rows with call ID, purpose, round, attempt and per-tool bytes;
 follow `next_after` until rows is empty. Limit is bounded to 500. Call and purpose
@@ -136,6 +185,8 @@ ordinal. Group by call ID for physical retries; never group solely by round acro
 resumes. Unexpected stream EOF without a stop event is an error, not completion.
 
 ## Phase B review corrections (#1, #2, #17–20)
+
+_Review record of 2026-11-15 (`52c0ba3`)._
 
 At this review stage the feature remained opt-in; the later worker-only rollout
 is documented below. Goals, hints, task identity, coverage, stagnation,
@@ -172,6 +223,8 @@ references and trace paging all remain opt-in.
 
 ## Phase C review: prompt inventory and memo acceptance
 
+_Review record of 2026-11-15 (`e0f4c3d`)._
+
 | Shared block | Previous copies | Current source | Behavior |
 | --- | --- | --- | --- |
 | Untrusted-content defense | mainAgentDefaultTmpl, workerDefaultTmpl, DefaultAssistantPrompt, pentestDefaultTmpl | `untrustedContentInstructions` in prompt_shared.go | Identical bytes at the same instruction priority and position |
@@ -194,6 +247,8 @@ not cached. This measures correctness and synthetic reuse, not production saving
 until that evidence exists.
 
 ## Review corrections, 2026-11-16
+
+_Review record of 2026-11-16 (`9101d03`)._
 
 Connection/model-listing probes are administrative validation traffic outside the
 recorded agent provider path and are excluded from task spend, as are dedicated
@@ -223,6 +278,8 @@ cache improvement is promised for that template without measurement.
 
 
 ## Token Efficiency implementation and rollout status, 2026-11-17
+
+_Review record of 2026-11-17 (`1744550`)._
 
 The implementation gaps in #1, #2 and #3 are addressed independently of the
 experimental planner/transcript features. Default rollout for #1/#2 remains
@@ -384,6 +441,8 @@ problems before the fix. With the revised 795-byte rule, the current fixture is
 
 ## Phase C completion follow-up
 
+_Review record of 2026-11-17 (`00e4b3a`)._
+
 The implementation audit, accelerated production-scheduler replay, usage and
 source-overlap counters, physical Anthropic cache-boundary verification and
 remaining rollout limits are in [phase-c-completion.md](phase-c-completion.md).
@@ -396,6 +455,8 @@ is still a Phase E/F gate, not inferred from fixture bytes or example tariffs.
 
 
 ## Phase D.1 PR 1: WebFetch tool order
+
+_Review record of 2026-11-18 (`13f78a7`)._
 
 WebFetch is now added by ARTEX instead of by the SDK, so the destination policy can
 wrap it (see [adr/0001-webfetch-destination-policy.md](adr/0001-webfetch-destination-policy.md)).
@@ -413,6 +474,8 @@ WebFetch now comes before the tools the SDK appends.
 
 
 ## Phase D.1 PR 2: data envelope overhead
+
+_Review record of 2026-11-18 (`f2a8a64`)._
 
 The data envelope (`agent/data_envelope.go`) and the planner goal anchor add bytes to
 every planner round and worker launch while `ARTEX_DATA_ENVELOPE` is on (the default).
@@ -450,6 +513,8 @@ Cache effects:
   to 1500 B because the untrusted-content block is now appended to chat prompts.
 
 ## Tool RAG observation
+
+_Review record of 2026-11-20 (`599b5c8`)._
 
 Phase D.3 adds a content-free record of what a lexical tool filter would have kept (observation only: the tools,
 schemas and request bytes the model receives are unchanged, and `ARTEX_TOOL_RAG=off` switches the record off). It adds
