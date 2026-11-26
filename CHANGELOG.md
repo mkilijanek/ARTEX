@@ -4,6 +4,26 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Token documentation and rollout acceptance
+
+Documentation only; no change to the program.
+
+- **New page `docs/rollout-acceptance.md`**: the acceptance criteria of #33, one row per setting that changes what
+  ARTEX sends to a model (default, enable, rollback, state left behind) and the rollback checklist. It now also
+  covers `ARTEX_DATA_ENVELOPE`, `ARTEX_UNTRUSTED_BOUNDARY` and `ARTEX_TOOL_RAG`. Live comparisons are recorded as
+  NOT RUN. `docs/token-benchmark.md` points to it.
+- **`docs/token-audit.md`**: the path table cites the code of v0.7.0m, adds the token paths added since the first
+  review and the paths that make no model call, rates priority by a written rule, and lists the current
+  deterministic prompt byte measurements (bytes, not tokens). Later sections are labelled as dated review records.
+- **`docs/token-benchmark.md`**: a Results table with one NOT RUN row per cohort and setting, an updated
+  implementation status, and reproduce steps that use containers and the CI database user.
+- **`docs/upstream-port-matrix.md`**: status notes for the Tool RAG report, the custom User-Agent, the Telegram
+  item and the first real migration.
+- **`scripts/check-doc-anchors.sh`** checks the `file:line` references in these documents (each names a
+  declaration or an exact substring) and, with `--update`, moves references whose target moved. Run
+  `bash scripts/check-doc-anchors.sh docs/token-audit.md docs/upstream-port-matrix.md docs/token-benchmark.md
+  docs/rollout-acceptance.md` after changing the code they cite.
+
 ### Signal service `artex-signal` (replaces the signal-cli REST bridge)
 
 The Signal entries further down (the bridge, `signal-proxy.conf`, `ARTEX_SIGNAL_NUMBER`) describe 0.5.19m to 0.6.0m.
