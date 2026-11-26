@@ -111,37 +111,5 @@ they are bytes, not tokens.
 
 ## Review acceptance checklist and rollback (#33)
 
-| Criterion | Evidence / gate | Result |
-| --- | --- | --- |
-| Task success | Identical authorized replay outcomes, no lost constraints/goals | Local regression tests; live comparison NOT RUN |
-| Scope and evidence safety | Graph provenance, negative evidence, permission and trace reconstruction fixtures | Regression gate; no production rollout approval |
-| Worker launch | Compare legacy and compact launches on the same representative authorized workload: task success, scope safety, evidence quality, duplicate findings, facts recorded and turns per intent; capture model, flags and provider usage | Live comparison NOT RUN; #1/#2 remain open, `ARTEX_WORKER_CONTEXT` defaults to 0 |
-| Recovery | Fresh planner snapshot after restart, immutable stored evidence | Local regression gate |
-| Existing data | Repeated additive usage migration preserves legacy rows; durable `planner_context_checkpoints` survive restart/flag rollback and resync correctly on re-enable | Local PostgreSQL regression gate |
-| Ollama compatibility | `go test ./server -run TestOllama -count=1` with isolated PostgreSQL; mock HTTP server verifies wire protocol/keyless behavior | Automated protocol check; live Ollama NOT RUN |
-| Prompt growth | TestRenderedAgentPromptByteInventory enforced per-role ceilings | PASS: byte budgets, not token savings |
-| Spend/cache benefits | Provider-reported tokens, retries, cost and memo hit frequency on representative workloads | NOT RUN; required before default-on rollout |
-
-Enable one flag at a time on an isolated replay deployment, restart and capture
-source SHA, inputs, outcome and usage before comparing with flag-off:
-`ARTEX_BOUNDED_CONTEXT=1`, then independently `ARTEX_CACHE_PREFIX=1`, then
-independently `ARTEX_COMPACTION_MEMO=1`, then independently
-`ARTEX_WORKER_CONTEXT=1`. Keep the other flags off for each individual comparison;
-validate the intended combination separately before rollout. Never infer benefits
-from synthetic reuse. All four flags default to off.
-
-Rollback checklist:
-- [ ] Set `ARTEX_BOUNDED_CONTEXT`, `ARTEX_CACHE_PREFIX`, `ARTEX_COMPACTION_MEMO`
-      and `ARTEX_WORKER_CONTEXT` to `0` (or unset), restart all ARTEX processes,
-      and verify the effective deployment environment. Restart clears in-memory
-      memo/cache state. Durable `planner_context_checkpoints` rows remain in
-      PostgreSQL and are read/resynchronized when bounded context is re-enabled.
-- [ ] Retry a known replay and confirm full overview, original cache boundary and
-      uncached summarization. Preserve transcripts and graph/evidence rows.
-- [ ] If metering itself causes failures, deploy the previous code version; retain
-      additive telemetry columns, historical rows and `planner_context_checkpoints`.
-      Do not run destructive DDL.
-- [ ] Confirm task state, scope constraints, evidence retrieval and Ollama mock
-      compatibility after rollback. Record pass/fail and source SHA per criterion.
-
-Unchecked rollback boxes are operator actions, not a claim they were executed.
+The acceptance criteria, the per-setting enable and rollback steps and the
+rollback checklist are in [rollout-acceptance.md](rollout-acceptance.md).
