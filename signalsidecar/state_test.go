@@ -501,6 +501,10 @@ func TestKilledChildIsReportedAndSendsAreRefusedUntilItIsBack(t *testing.T) {
 	mr.link()
 	mr.confirm(testNumber)
 	mr.waitStatus("ready", 10*time.Second, func(statusRow) bool { _, why := sc.m.ready(); return why == "" })
+	// The first group refresh follows the link on a later pass. A kill that
+	// lands inside it fails the listing, and the status row then carries the
+	// group error instead of being left alone, so the kill waits for it.
+	mr.waitStatus("the groups", 10*time.Second, func(s statusRow) bool { return s.GroupsAt.Valid })
 
 	killChild(t, mr)
 	// A child that is gone is a transient condition: the state is unknown, not
