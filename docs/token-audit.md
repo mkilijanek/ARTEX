@@ -25,11 +25,11 @@ Priority rule:
 | `server/task_llm.go:319` `completeTaskLLM`; `server/task_llm.go:401` `streamTaskLLM` | Runtime retries and profile switches invoke decorated providers repeatedly. | Count physical invocations separately from logical rounds; do not add returned usage to ledger totals. | P3: accounting | #14, #15 |
 | Recorder wrapping `server/server.go:483` `"cfg.Model, profName,"` (`Server.applyLLM`), `server/server.go:619` `"cfg.Model, p.Name,"` (`Server.providerForProfile`) | Environment and persisted-profile providers share the recorder. Failover members are built through `providerForProfile` (`server/llmpool.go:61` `"s.providerForProfile(p.ID)"`), so each member call is recorded. | SDK-internal HTTP retries below the recorder stay excluded. Do not store endpoint or key in metrics. | P3: accounting | #14, #15 |
 | `llmpool/pool.go:82` `Pool.Stream`; `llmpool/pool.go:130` `Pool.Complete` | Failover chain across profiles; attempt ordinals are shared within a logical call. | A failover attempt is a second physical call with its own usage. | P3: accounting | #14 |
-| Judge lane `server/intercept.go:52` `"llmrec.WithWorker(ctx, judgeWorkerLane)"`; call `server/intercept.go:87` `"prov.Stream(ctx, req)"` | Fallback judge for tool calls no rule matched; usage is recorded under lane `judge`. | Retain judgement and safety context; no prompt trimming here. | P1: model call on the default code path when the judge decides, volume unmeasured | #15 |
+| Judge lane `server/intercept.go:52` `"llmrec.WithWorker(ctx, judgeWorkerLane)"`; call `server/intercept.go:87` `"prov.Stream(ctx, req)"` | Fallback judge for tool calls no rule matched, off by default (setting `llm_judge_enabled`, read with default `false` in `intercept/intercept.go:340` `"GetBool(settingJudgeEnabled, false)"`); usage is recorded under lane `judge`. | Retain judgement and safety context; no prompt trimming here. | P2: opt-in (`llm_judge_enabled`), volume unmeasured | #15 |
 | Side questions `sidequestion/context.go:112` `"side_summary"`; answers `sidequestion/service.go:27` `"s.Provider.Stream(ctx, req)"`, `sidequestion/service.go:57` `"s.Provider.Complete(ctx, req)"` | Summary and answer are tagged `side_summary` and `side_answer`. | Zero reported tokens are not proof of zero spend. | P1: default-on model calls, volume unmeasured | #15 |
 | `sidequestion/capture.go:142` `boundProvider` | Captures the model route for side questions; passes calls through, adds no request. | None for tokens. | P3: no added call | - |
 | `agent/mainagent.go`, `agent/planner.go`, `agent/worker.go` prompt assembly | Shared instructions and dynamic intent tails. The stable-prefix layout is opt-in (`ARTEX_CACHE_PREFIX=1`). | Stable prefix must preserve untrusted boundaries and current intent through compaction. | P1: default prompts, cache effect unmeasured | #22, #3 |
-| `agent/data_envelope.go:35` `dataEnvelopeEnabled` | Data envelope and planner goal anchor, on by default (`ARTEX_DATA_ENVELOPE=1`). Fixture overhead: planner input +2681 B, worker launch +1407 B (`TestEnvelopeOverheadMeasurement`, bytes, not tokens). | Adds bytes to every planner round and worker launch. | P1: default on, token effect unmeasured | - |
+| `agent/data_envelope.go:35` `dataEnvelopeEnabled` | Data envelope and planner goal anchor, on by default (`ARTEX_DATA_ENVELOPE=1`). Fixture overhead: planner input +2681 B, worker launch +1406 B (`TestEnvelopeOverheadMeasurement`, bytes, not tokens; an earlier run measured +1407 B, the figure varies by one byte between runs). | Adds bytes to every planner round and worker launch. | P1: default on, token effect unmeasured | - |
 | `agent/norma_trust.go:25` `attachNormaTrust`; `agent/norma_trust.go:59` `summaryTrustProvider.Complete` | SDK tool-output framing and summary trust rules, on by default (`ARTEX_UNTRUSTED_BOUNDARY=1`). | Adds bytes to tool results and SDK summary requests. | P1: default on, token effect unmeasured | - |
 | `agent/context_dedup.go:38` `withContextView` | Request-local field references; active only with `ARTEX_BOUNDED_CONTEXT=1` (`agent/trace_bounds.go:9` `boundedContextEnabled`). | Reference syntax must not be forgeable; omitted values are not negative evidence. | P2: opt-in | #17, #20 |
 | `agent/noa_budget.go:19` `noaBudgetProvider` | Refuses a request whose local estimate exceeds the window; used only with the NOA compaction setting (off by default). The estimate is not a provider token count. | A refusal stops the run instead of dropping evidence. | P2: opt-in | - |
@@ -37,16 +37,21 @@ Priority rule:
 | DeepSeek web search `server/manager.go:311` `deepSeekWebSearchBackend`; credentials `server/manager.go:602` `"m.deepSeekSearchCreds()"` | When the `deepseek` search backend is selected, the SDK web_search tool sends inference to DeepSeek with the active profile's credentials, outside the recorded provider. Not in `llm_usage`. | Spend billed to the profile account but not visible in ARTEX reports. | P3: external, excluded from reports | - |
 | `agent/toolrag_observe.go:81` `toolRAGMode` | Tool RAG observation; tool list and request bytes are unchanged. | None for tokens; see "Tool RAG observation". | P3: measurement only | #25 |
 
-Not token paths (checked at `b462710`):
-- `agent/capture.go` matches the call-site search only through `auditTrace.Complete` (an audit trace record),
-  not a model call.
-- SDK WebFetch makes no model call: `grep -c "norma/llm" third_party/norma/tool/webfetch.go` returns 0.
+Not token paths (code of `b462710`, checked at `3990ab9`; the code is identical):
+- `agent/capture.go` matches the call-site search
+  (`grep -rln --include='*.go' -E '\.(Complete|Stream)\(|llmmeta\.WithCall\(' . | grep -v -E '_test.go|third_party'`)
+  only at `agent/capture.go:125` `"auditTrace.Complete("`, an audit trace record, not a model call.
+- SDK WebFetch imports no model package: its import block (`sed -n '/^import/,/^)/p' third_party/norma/tool/webfetch.go`)
+  lists the standard library, `github.com/Autumn-27/norma/permission` and `golang.org/x/net/html`.
 - The Signal sidecar makes no model call: `grep -rln -E 'norma/llm|llmrec' signalsidecar cmd/artex-signal`
   returns nothing.
-- The base image change (PR #110) and the outgoing User-Agent settings (PR #105) change no request content
-  sent to a model.
+- The base image change (PR #110) adds only the base image build, its checks and a workflow
+  (`git diff --stat fe742e2^1 fe742e2`: 8 files under `docker/base`, `docker/base-inventory` and
+  `.github/workflows/image.yml`).
+- The outgoing User-Agent settings (PR #105, `git diff --stat aba106e^1 aba106e`: 33 files) add no prompt or
+  body content; they can change the User-Agent header sent to model endpoints.
 
-Current byte measurements (deterministic fixtures at `b462710`, UTF-8 bytes, not provider tokens):
+Current byte measurements (fixtures, code of `b462710`, run at `3990ab9`; the code is identical; UTF-8 bytes, not provider tokens):
 
 | Measure | Worker | Planner | Main agent | Chat | Test |
 | --- | --- | --- | --- | --- | --- |

@@ -12,7 +12,7 @@ Rules:
 
 ## Acceptance criteria
 
-Results as of `v0.7.0m` (`b462710`).
+Results for the code of `v0.7.0m` (`b462710`), run at `3990ab9` (the code is identical).
 
 | Criterion | Evidence / gate | Result |
 | --- | --- | --- |
@@ -20,17 +20,18 @@ Results as of `v0.7.0m` (`b462710`).
 | Evidence quality | Full records stay retrievable (`node_detail`, `list_assets`, trace paging); provenance and confidence are kept; omitted data is never treated as negative evidence | Local regression tests; live comparison NOT RUN |
 | Scope safety | Scope constraints, destination checks and fact provenance are the same in every flag combination | Regression gate; no production rollout approval |
 | Tool and schema permission model | Each role's tool set and schemas are unchanged by the flags (`TestWebFetchToolSetPerRole`); Tool RAG observation never filters the tool list | Regression gate |
-| Ollama support | `go test ./server -v -run TestOllama -count=1` with an isolated PostgreSQL (`ARTEX_PG_DSN`); a mock HTTP server checks the wire protocol and keyless profiles | PASS at `b462710` (6 tests, 0 skipped, mock only); live Ollama NOT RUN |
+| Ollama support | `go test ./server -v -run TestOllama -count=1` with an isolated PostgreSQL (`ARTEX_PG_DSN`); a mock HTTP server checks the wire protocol and keyless profiles | PASS on the code of `b462710` (6 tests, 0 skipped, mock only); live Ollama NOT RUN |
 | Recovery | Planner snapshot is rebuilt after a restart; stored evidence is immutable | Local regression gate |
 | Data state | Additive migrations keep legacy rows; `planner_context_checkpoints` and `tool_rag_observations` rows survive a flag rollback | Local PostgreSQL regression gate |
 | Worker launch (#1, #2) | Same representative authorized workload in legacy and compact mode: task success, scope safety, evidence quality, duplicate findings, facts recorded, turns per intent; record model, flags and provider usage | NOT RUN; `ARTEX_WORKER_CONTEXT` defaults to 0 |
-| Prompt growth | `TestRenderedAgentPromptByteInventory` and `TestProviderFacingPromptBudgetsWithTrafficAndDeferredTools` enforce per-role byte ceilings | PASS at `b462710`: byte budgets, not tokens |
+| Prompt growth | `TestRenderedAgentPromptByteInventory` and `TestProviderFacingPromptBudgetsWithTrafficAndDeferredTools` enforce per-role byte ceilings | PASS on the code of `b462710`: byte budgets, not tokens |
 | Spend and cache | Provider-reported input, output, cache read and cache write tokens, retries, cost and memo hit frequency on representative workloads | NOT RUN; required before any default-on rollout of an opt-in flag |
 
 ## Settings
 
 All are environment variables read by the ARTEX server; restart all ARTEX processes after a change and check the
-effective environment of the deployment.
+effective environment of the deployment. The shipped `docker-compose.yml` forwards each of them to the service
+except `ARTEX_DATA_ENVELOPE` (see its row).
 
 | Setting | Default | What it changes | Enable | Rollback | State left behind | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -38,8 +39,8 @@ effective environment of the deployment.
 | `ARTEX_CACHE_PREFIX` | `0` | Code-owned rules move into a stable cached prefix; planner goal placed after the static rules | `1` | `0` or unset | None | Opt-in; comparison NOT RUN |
 | `ARTEX_COMPACTION_MEMO` | `0` | In-memory memo (64 entries) for source-identical cold-graph summaries | `1` | `0` or unset; restart clears the memo | None | Opt-in; comparison NOT RUN |
 | `ARTEX_WORKER_CONTEXT` | `0` | Compact worker launch data and projected target assets | `1`, `true`, `on` or `yes` | `0` or unset | None | Opt-in; comparison NOT RUN (#1, #2) |
-| `ARTEX_DATA_ENVELOPE` | `1` | Data envelope around derived text and the planner goal anchor; adds bytes per planner round and worker launch | on by default | `0`, `false`, `off` or `no` | None; the code-owned prompt rules stay | Default on; token effect NOT RUN |
-| `ARTEX_UNTRUSTED_BOUNDARY` | `1` | SDK tool-output framing; adds bytes per tool result | on by default | `0`; summary trust rules still apply | None | Default on; token effect NOT RUN |
+| `ARTEX_DATA_ENVELOPE` | `1` | Data envelope around derived text and the planner goal anchor; adds bytes per planner round and worker launch | on by default | `0`, `false`, `off` or `no`. `docker-compose.yml` does not forward this variable; add it to the service environment before relying on this rollback | None; the code-owned prompt rules stay | Default on; token effect NOT RUN |
+| `ARTEX_UNTRUSTED_BOUNDARY` | `1` | SDK tool-output framing; adds bytes per tool result | on by default | `0`, `false`, `off` or `no`; summary trust rules still apply | None | Default on; token effect NOT RUN |
 | `ARTEX_TOOL_RAG` | observe | Writes one observation row per planner round and worker run; requests are unchanged | on by default | `off` | `tool_rag_observations` rows stay until their task is deleted | Measurement only; see [tool-rag-observation.md](tool-rag-observation.md) |
 
 `ARTEX_DATA_ENVELOPE` and `ARTEX_UNTRUSTED_BOUNDARY` are security controls against content from targets and
