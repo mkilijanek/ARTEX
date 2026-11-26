@@ -523,10 +523,23 @@ func TestCrashLoopStartsAtMostOncePerBackoff(t *testing.T) {
 	if len(at) < 2 || len(at) > 7 {
 		t.Fatalf("%d starts in 1.6 s", len(at))
 	}
+	// The supervisor waits the backoff from the moment it spawns a child, but
+	// the times here are written by the child itself once its process and Go
+	// runtime are up. That start-up latency differs from one child to the next
+	// (tens of milliseconds, more under -race and load), so one gap can be
+	// shorter than the backoff by up to the latency of the earlier child. The
+	// allowance is half the backoff: a supervisor without the backoff restarts a
+	// child that exits after 5 ms at once, which gives gaps of a few tens of
+	// milliseconds. Over the whole run the latencies cancel except for the first
+	// one, so the span must be nearly the full n-1 backoffs.
+	const backoff, jitter = 250 * time.Millisecond, 125 * time.Millisecond
 	for i := 1; i < len(at); i++ {
-		if at[i].Sub(at[i-1]) < 240*time.Millisecond {
+		if at[i].Sub(at[i-1]) < backoff-jitter {
 			t.Fatalf("starts %d and %d are %v apart", i-1, i, at[i].Sub(at[i-1]))
 		}
+	}
+	if span := at[len(at)-1].Sub(at[0]); span < time.Duration(len(at)-1)*backoff-jitter {
+		t.Fatalf("%d starts span only %v", len(at), span)
 	}
 }
 
